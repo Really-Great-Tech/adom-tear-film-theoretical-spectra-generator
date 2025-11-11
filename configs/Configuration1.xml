@@ -1,0 +1,9 @@
+<Configuration>
+	<MaterialsDir>../data/Materials</MaterialsDir>
+	<WavelengthsFile>../data/wavelengths/Wavelengths813.csv</WavelengthsFile>
+	<Aperture>
+		<Item Angle="0" Weight="0.5"/>
+		<Item Angle="3" Weight="0.5"/>
+	</Aperture>
+	<SmearingLength>5</SmearingLength>
+</Configuration>

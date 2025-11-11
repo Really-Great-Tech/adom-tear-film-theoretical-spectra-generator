@@ -1,0 +1,144 @@
+# Tear Film Theoretical Spectra Generator Configuration
+# Edit these parameters to customize your measurement ranges
+
+# Parameter Ranges (constrained by Algorithm_eye_test_4.xml)
+parameters:
+  # Lipid layer thickness (nm) - Algorithm range: 120-200nm
+  lipid:
+    min: 120        # Algorithm minimum
+    max: 200        # Algorithm maximum
+    step: 5         # Algorithm step size
+    
+  # Aqueous layer thickness (nm) - Algorithm range: 680-1200nm
+  aqueous:
+    min: 680        # Algorithm minimum  
+    max: 1200       # Algorithm maximum
+    step: 10        # Algorithm step size
+    
+  # Mucus layer roughness (Angstroms) - Algorithm range: 600-2600Å
+  roughness:
+    min: 600        # Algorithm minimum
+    max: 2600       # Algorithm maximum
+    step: 50        # Algorithm step size
+
+# Fixed Parameters
+fixed:
+  mucus_thickness: 500    # Mucus layer thickness (nm) - kept constant
+
+# Wavelength Configuration
+wavelengths:
+  file: "Wavelengths813.csv"  # Options: Wavelengths813.csv, Wavelengths1024.csv, Wavelengths2061.csv
+  # Alternative: specify custom range
+  # custom:
+  #   min: 550
+  #   max: 1100
+  #   points: 500
+
+# Measurement spectra configuration
+measurements:
+  enabled: true
+  format: "txt"  # csv, xlsx, or txt
+  wavelength_column: 0  # Column index for wavelength data (0-based)
+  reflectance_column: 1  # Column index for reflectance data (0-based)
+  header_rows: 4  # Number of header rows to skip
+  file_pattern: "*.txt"  # File pattern to match (e.g., "*.csv", "*.txt", "measurement_*.xlsx")
+
+# Signal Analysis Configuration
+analysis:
+  detrending:
+    default_cutoff_frequency: 0.01  # Default high-pass filter cutoff
+    filter_order: 3  # Butterworth filter order
+  peak_detection:
+    default_prominence: 0.005  # Default peak prominence threshold
+    min_height: null  # Minimum peak height (null for no limit)
+
+# File Paths (relative to project root)
+paths:
+  dll: "src/SpAnalizer.dll"
+  algorithm: "configs/Algorithm_eye_test_4.xml"
+  configuration: "configs/Configuration1.xml"
+  stack: "configs/Stack_eye_test.xml"
+  materials: "data/Materials"
+  wavelengths_dir: "data/wavelengths"
+  measurements: "data/measurements"  # Directory containing measurement spectra
+
+# Output Configuration
+output:
+  format: "npy"           # Options: "npy", "xlsx"
+  base_dir: "outputs"     # Output directory
+  include_plots: true     # Generate interactive plots
+  plot_format: "html"     # Options: "html", "png", "pdf"
+
+# Plot Configuration
+plotting:
+  # Which spectra to plot (indices or "sample" for automatic selection)
+  spectra_to_plot: "sample"  # Options: "sample", "all", or specific indices like [[0,0,0], [1,2,1]]
+  
+  # Number of sample spectra to plot if "sample" is selected
+  num_samples: 6
+  
+  # Plot appearance
+  plot_style:
+    width: 1000
+    height: 600
+    title_size: 16
+    axis_label_size: 14
+    line_width: 2
+    measured_color: "red"
+    theoretical_color: "blue"
+
+# Presets for common measurement scenarios
+presets:
+  # Quick test - small parameter space around requested values
+  quick_test:
+    lipid: {min: 125, max: 135, step: 5}      # Around requested 129nm
+    aqueous: {min: 1150, max: 1200, step: 25} # Near max since 3194 exceeds algorithm limits
+    roughness: {min: 2550, max: 2600, step: 50}  # Near stack default 2700Å
+    
+  # Medium resolution scan
+  medium_scan:
+    lipid: {min: 120, max: 200, step: 10}
+    aqueous: {min: 700, max: 1200, step: 50}
+    roughness: {min: 1500, max: 2500, step: 100}
+    
+  # High resolution scan (warning: generates many spectra!)
+  high_resolution:
+    lipid: {min: 100, max: 250, step: 2}
+    aqueous: {min: 600, max: 1500, step: 10}
+    roughness: {min: 1000, max: 3000, step: 25}
+    
+  # Lipid thickness focus
+  lipid_focus:
+    lipid: {min: 80, max: 300, step: 5}
+    aqueous: {min: 900, max: 1000, step: 50}  # Keep aqueous relatively constant
+    roughness: {min: 2000, max: 2100, step: 100}  # Keep roughness relatively constant
+
+# Active preset (comment out to use manual parameters above)
+active_preset: "high_resolution"
+
+# Advanced Options
+advanced:
+  # Memory management
+  chunk_size: 1000      # Process in chunks to manage memory for large parameter spaces
+  
+  # Parallel processing (if supported)
+  use_parallel: false   # Enable parallel processing (experimental)
+  num_processes: 4      # Number of parallel processes
+  
+  # Validation
+  validate_materials: true    # Check that all material files exist
+  validate_wavelengths: true  # Check wavelength file format
+  
+  # Debugging
+  verbose: true         # Print detailed progress information
+  save_temp_files: false # Keep temporary XML files for debugging
+
+# UI (Streamlit) Configuration
+ui:
+  enabled: true                 # If true, runner can launch the Streamlit app with --ui
+  page_title: "Tear Film Spectra Explorer"
+  use_sidebar: true             # Put sliders in the sidebar
+  default_values:               # Initial slider values (optional; midpoints used if omitted)
+    lipid: 130
+    aqueous: 1000
+    roughness: 2000
