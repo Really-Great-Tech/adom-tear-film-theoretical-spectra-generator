@@ -361,6 +361,12 @@ def main():
         "🔍 Grid Search",
     ])
     
+    # Update sliders if a grid-search selection was applied in the previous run
+    pending_update = st.session_state.pop("pending_slider_update", None)
+    if pending_update:
+        for slider_key, slider_value in pending_update.items():
+            st.session_state[slider_key] = slider_value
+
     # Sidebar controls
     st.sidebar.markdown("## Layer Parameters")
     
@@ -781,10 +787,12 @@ def main():
                     )
                     if st.button("Apply Selection", key="apply_grid_selection"):
                         row = display_df.loc[selection]
-                        st.session_state["lipid_slider"] = float(row["lipid_nm"])
-                        st.session_state["aqueous_slider"] = float(row["aqueous_nm"])
-                        st.session_state["rough_slider"] = float(row["roughness_A"])
-                        st.experimental_rerun()
+                        st.session_state["pending_slider_update"] = {
+                            "lipid_slider": float(row["lipid_nm"]),
+                            "aqueous_slider": float(row["aqueous_nm"]),
+                            "rough_slider": float(row["roughness_A"]),
+                        }
+                        st.rerun()
             else:
                 st.info("Run the grid search to see ranked candidates.")
 
