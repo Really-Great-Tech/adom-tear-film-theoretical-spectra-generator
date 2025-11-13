@@ -59,11 +59,25 @@ analysis:
       phase: 0.2
     peak_matching:
       wavelength_tolerance_nm: 5.0
+    peak_count:
+      wavelength_tolerance_nm: 5.0
     peak_delta:
       wavelength_tau: 5.0
       unmatched_penalty: 0.1
+      tolerance_nm: 5.0
+      tau_nm: 15.0
+      penalty_unpaired: 0.05
     phase:
       window: "hann"
+    phase_overlap:
+      resample_points: 1024
+      window: "hann"
+    composite:
+      weights:
+        peak_count: 0.4
+        peak_delta: 0.4
+        phase_overlap: 0.2
+
 
 # File Paths (relative to project root)
 paths:

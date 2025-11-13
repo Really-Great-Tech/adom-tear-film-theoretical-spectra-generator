@@ -1,250 +1,240 @@
-"""Scoring utilities for comparing theoretical and measured spectra."""
+"""Metric implementations for comparing theoretical and measured spectra."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Dict, Iterable, List, Tuple
+from typing import Dict, Iterable, List, Optional, Tuple
 
-import math
 import numpy as np
-import pandas as pd
 
-from .measurement_utils import (
-    FFTArtifacts,
-    compute_fft,
-    detect_peaks,
-    detrend_signal,
-    interpolate_measurement_to_theoretical,
-)
+from .measurement_utils import PreparedMeasurement, PreparedTheoreticalSpectrum
 
 
-def _normalize_weights(weights: Dict[str, float]) -> Dict[str, float]:
-    total = sum(weights.values()) or 1.0
-    return {key: value / total for key, value in weights.items()}
+@dataclass
+class MetricResult:
+    score: float
+    diagnostics: Dict[str, float]
 
 
-@dataclass(slots=True)
-class MeasurementArtifacts:
-    wavelengths: np.ndarray
-    original_df: pd.DataFrame
-    measured_df: pd.DataFrame
-    detrended_df: pd.DataFrame
-    peaks_df: pd.DataFrame
-    fft: FFTArtifacts
-    cutoff_frequency: float
-    filter_order: int
-    prominence: float
+@dataclass
+class SpectrumScore:
+    lipid_nm: Optional[float]
+    aqueous_nm: Optional[float]
+    roughness_A: Optional[float]
+    scores: Dict[str, float]
+    diagnostics: Dict[str, Dict[str, float]]
 
+    @property
+    def composite(self) -> float:
+        return self.scores.get("composite", 0.0)
 
-@dataclass(slots=True)
-class MetricScores:
-    lipid_nm: float
-    aqueous_nm: float
-    roughness_A: float
-    peak_count_score: float
-    peak_delta_score: float
-    phase_overlap_score: float
-    composite_score: float
-    matched_peaks: int
-    unmatched_measured: int
-    unmatched_theoretical: int
+    @property
+    def peak_count(self) -> float:
+        return self.scores.get("peak_count", 0.0)
 
+    @property
+    def peak_delta(self) -> float:
+        return self.scores.get("peak_delta", 0.0)
 
-def prepare_measurement_artifacts(
-    measured_df: pd.DataFrame,
-    *,
-    wavelengths: np.ndarray,
-    analysis_config: Dict[str, object],
-) -> MeasurementArtifacts:
-    detrending_cfg = analysis_config.get("detrending", {}) or {}
-    peak_cfg = analysis_config.get("peak_detection", {}) or {}
+    @property
+    def phase_overlap(self) -> float:
+        return self.scores.get("phase_overlap", 0.0)
 
-    cutoff = float(detrending_cfg.get("default_cutoff_frequency", 0.01))
-    order = int(detrending_cfg.get("filter_order", 3))
-    prominence = float(peak_cfg.get("default_prominence", 0.005))
-
-    resampled_reflectance = interpolate_measurement_to_theoretical(
-        measured_df, wavelengths
-    )
-    resampled_df = pd.DataFrame(
-        {"wavelength": wavelengths, "reflectance": resampled_reflectance}
-    )
-
-    detrended_df = detrend_signal(
-        resampled_df,
-        cutoff_frequency=cutoff,
-        filter_order=order,
-    )
-    peaks_df = detect_peaks(
-        detrended_df,
-        column="detrended",
-        prominence=prominence,
-    )
-    fft_artifacts = compute_fft(detrended_df["detrended"].to_numpy())
-
-    return MeasurementArtifacts(
-        wavelengths=wavelengths,
-        original_df=measured_df,
-        measured_df=resampled_df,
-        detrended_df=detrended_df,
-        peaks_df=peaks_df,
-        fft=fft_artifacts,
-        cutoff_frequency=cutoff,
-        filter_order=order,
-        prominence=prominence,
-    )
-
-
-def score_spectrum(
-    theoretical_wavelengths: np.ndarray,
-    theoretical_reflectance: np.ndarray,
-    *,
-    measurement: MeasurementArtifacts,
-    metrics_config: Dict[str, object],
-    lipid_nm: float,
-    aqueous_nm: float,
-    roughness_A: float,
-) -> MetricScores:
-    detrended_df = detrend_signal(
-        pd.DataFrame(
-            {
-                "wavelength": theoretical_wavelengths,
-                "reflectance": theoretical_reflectance,
-            }
-        ),
-        cutoff_frequency=measurement.cutoff_frequency,
-        filter_order=measurement.filter_order,
-    )
-
-    peaks_df = detect_peaks(
-        detrended_df,
-        column="detrended",
-        prominence=measurement.prominence,
-    )
-
-    peak_matching_cfg = metrics_config.get("peak_matching", {}) or {}
-    peak_delta_cfg = metrics_config.get("peak_delta", {}) or {}
-    phase_cfg = metrics_config.get("phase", {}) or {}
-    weight_cfg = _normalize_weights(
-        metrics_config.get(
-            "weights",
-            {"peak_count": 0.4, "peak_delta": 0.4, "phase": 0.2},
-        )
-    )
-
-    pairs, unmatched_meas, unmatched_theor = _match_peaks(
-        measurement.peaks_df,
-        peaks_df,
-        tolerance_nm=float(peak_matching_cfg.get("wavelength_tolerance_nm", 5.0)),
-    )
-
-    peak_count = _peak_count_score(
-        len(measurement.peaks_df),
-        len(pairs),
-        unmatched_theor,
-    )
-
-    peak_delta = _peak_delta_score(
-        pairs,
-        tau=float(peak_delta_cfg.get("wavelength_tau", 5.0)),
-        unmatched_penalty=float(peak_delta_cfg.get("unmatched_penalty", 0.1)),
-        unmatched_total=unmatched_meas + unmatched_theor,
-    )
-
-    phase_score = _phase_overlap_score(
-        measurement.fft,
-        detrended_df["detrended"].to_numpy(),
-        window=phase_cfg.get("window", "hann"),
-    )
-
-    composite = (
-        weight_cfg.get("peak_count", 0.0) * peak_count
-        + weight_cfg.get("peak_delta", 0.0) * peak_delta
-        + weight_cfg.get("phase", 0.0) * phase_score
-    )
-
-    return MetricScores(
-        lipid_nm=lipid_nm,
-        aqueous_nm=aqueous_nm,
-        roughness_A=roughness_A,
-        peak_count_score=peak_count,
-        peak_delta_score=peak_delta,
-        phase_overlap_score=phase_score,
-        composite_score=composite,
-        matched_peaks=len(pairs),
-        unmatched_measured=unmatched_meas,
-        unmatched_theoretical=unmatched_theor,
-    )
+    def as_dict(self) -> Dict[str, float]:
+        payload: Dict[str, float] = {}
+        if self.lipid_nm is not None:
+            payload["lipid_nm"] = float(self.lipid_nm)
+        if self.aqueous_nm is not None:
+            payload["aqueous_nm"] = float(self.aqueous_nm)
+        if self.roughness_A is not None:
+            payload["roughness_A"] = float(self.roughness_A)
+        for key, value in self.scores.items():
+            payload[f"score_{key}"] = float(value)
+        for metric, diag in self.diagnostics.items():
+            for diag_key, diag_val in diag.items():
+                payload[f"{metric}_{diag_key}"] = float(diag_val)
+        return payload
 
 
 def _match_peaks(
-    measured_peaks: pd.DataFrame,
-    theoretical_peaks: pd.DataFrame,
+    measurement_peaks: np.ndarray,
+    theoretical_peaks: np.ndarray,
+    tolerance_nm: float,
+) -> Tuple[List[int], List[int], np.ndarray]:
+    if measurement_peaks.size == 0 or theoretical_peaks.size == 0:
+        return [], [], np.array([], dtype=float)
+
+    matched_measurement: List[int] = []
+    matched_theoretical: List[int] = []
+    deltas: List[float] = []
+
+    available = set(range(len(theoretical_peaks)))
+    for meas_idx, meas_peak in enumerate(measurement_peaks):
+        if not available:
+            break
+        candidates = sorted(available)
+        distances = np.abs(theoretical_peaks[candidates] - meas_peak)
+        best_local_idx = int(np.argmin(distances))
+        theo_idx = candidates[best_local_idx]
+        delta = distances[best_local_idx]
+        if delta <= tolerance_nm:
+            matched_measurement.append(meas_idx)
+            matched_theoretical.append(theo_idx)
+            deltas.append(float(delta))
+            available.remove(theo_idx)
+
+    return matched_measurement, matched_theoretical, np.asarray(deltas, dtype=float)
+
+
+def peak_count_score(
+    measurement: PreparedMeasurement,
+    theoretical: PreparedTheoreticalSpectrum,
     *,
     tolerance_nm: float,
-) -> Tuple[List[Tuple[int, int, float]], int, int]:
-    measured_wl = measured_peaks["wavelength"].to_numpy()
-    theoretical_wl = theoretical_peaks["wavelength"].to_numpy()
+) -> MetricResult:
+    meas_peaks = measurement.peaks["wavelength"].to_numpy(dtype=float)
+    theo_peaks = theoretical.peaks["wavelength"].to_numpy(dtype=float)
 
-    if len(measured_wl) == 0 or len(theoretical_wl) == 0:
-        return [], len(measured_wl), len(theoretical_wl)
+    matched_meas, matched_theo, _ = _match_peaks(meas_peaks, theo_peaks, tolerance_nm)
 
-    used = np.zeros(len(theoretical_wl), dtype=bool)
-    pairs: List[Tuple[int, int, float]] = []
+    meas_count = len(meas_peaks)
+    matched_count = len(matched_meas)
 
-    for idx_meas, wl in enumerate(measured_wl):
-        diffs = np.abs(theoretical_wl - wl)
-        best_idx = int(np.argmin(diffs))
-        if diffs[best_idx] <= tolerance_nm and not used[best_idx]:
-            used[best_idx] = True
-            pairs.append((idx_meas, best_idx, float(diffs[best_idx])))
+    if meas_count == 0:
+        score = 1.0 if len(theo_peaks) == 0 else 0.0
+    else:
+        score = 1.0 - abs(meas_count - matched_count) / float(meas_count)
+        score = max(0.0, min(1.0, score))
 
-    unmatched_theoretical = int((~used).sum())
-    unmatched_measured = len(measured_wl) - len(pairs)
-    return pairs, unmatched_measured, unmatched_theoretical
-
-
-def _peak_count_score(
-    measured_count: int,
-    matched_count: int,
-    unmatched_theoretical: int,
-) -> float:
-    if measured_count == 0:
-        return 1.0 if matched_count == 0 else 0.0
-
-    term = abs(measured_count - matched_count) / measured_count
-    theoretical_penalty = unmatched_theoretical / max(measured_count, 1)
-    return max(0.0, 1.0 - term - theoretical_penalty)
+    diagnostics = {
+        "measurement_peaks": float(meas_count),
+        "theoretical_peaks": float(len(theo_peaks)),
+        "matched_peaks": float(matched_count),
+    }
+    return MetricResult(score=score, diagnostics=diagnostics)
 
 
-def _peak_delta_score(
-    pairs: Iterable[Tuple[int, int, float]],
+def peak_delta_score(
+    measurement: PreparedMeasurement,
+    theoretical: PreparedTheoreticalSpectrum,
     *,
-    tau: float,
-    unmatched_penalty: float,
-    unmatched_total: int,
-) -> float:
-    deltas = [abs(delta) for *_, delta in pairs]
-    if not deltas:
+    tolerance_nm: float,
+    tau_nm: float,
+    penalty_unpaired: float,
+) -> MetricResult:
+    meas_peaks = measurement.peaks["wavelength"].to_numpy(dtype=float)
+    theo_peaks = theoretical.peaks["wavelength"].to_numpy(dtype=float)
+
+    matched_meas, matched_theo, deltas = _match_peaks(meas_peaks, theo_peaks, tolerance_nm)
+
+    if deltas.size == 0:
+        score = 0.0
+        mean_delta = 0.0
+    else:
+        mean_delta = float(np.mean(deltas))
+        score = float(np.exp(-mean_delta / max(tau_nm, 1e-6)))
+
+    unmatched_measurement = len(meas_peaks) - len(matched_meas)
+    unmatched_theoretical = len(theo_peaks) - len(matched_theo)
+    penalty = penalty_unpaired * float(unmatched_measurement + unmatched_theoretical)
+    score = max(0.0, min(1.0, score - penalty))
+
+    diagnostics = {
+        "matched_pairs": float(len(matched_meas)),
+        "mean_delta_nm": mean_delta,
+        "unpaired_measurement": float(unmatched_measurement),
+        "unpaired_theoretical": float(unmatched_theoretical),
+    }
+    return MetricResult(score=score, diagnostics=diagnostics)
+
+
+def phase_overlap_score(
+    measurement: PreparedMeasurement,
+    theoretical: PreparedTheoreticalSpectrum,
+) -> MetricResult:
+    reference_fft = measurement.fft_spectrum
+    candidate_fft = theoretical.fft_spectrum
+    numerator = np.vdot(candidate_fft, reference_fft)
+    denom = float(np.linalg.norm(candidate_fft) * np.linalg.norm(reference_fft))
+    score = float(abs(numerator) / denom) if denom else 0.0
+    diagnostics = {
+        "coherence": float(abs(numerator)),
+        "norm_reference": float(np.linalg.norm(reference_fft)),
+        "norm_candidate": float(np.linalg.norm(candidate_fft)),
+    }
+    return MetricResult(score=score, diagnostics=diagnostics)
+
+
+def composite_score(component_scores: Dict[str, float], weights: Dict[str, float]) -> float:
+    total_weight = float(sum(weights.values()))
+    if total_weight <= 0:
+        if component_scores:
+            return float(np.mean(list(component_scores.values())))
         return 0.0
 
-    mean_delta = sum(deltas) / len(deltas)
-    score = math.exp(-mean_delta / max(tau, 1e-6))
-    penalty = unmatched_penalty * unmatched_total
-    return max(0.0, score * math.exp(-penalty))
+    combined = 0.0
+    for key, score in component_scores.items():
+        weight = weights.get(key, 0.0)
+        combined += weight * score
+    return combined / total_weight
 
 
-def _phase_overlap_score(
-    measurement_fft: FFTArtifacts,
-    theoretical_signal: np.ndarray,
+def score_spectrum(
+    measurement: PreparedMeasurement,
+    theoretical: PreparedTheoreticalSpectrum,
+    metrics_cfg: Dict[str, Dict[str, float]],
     *,
-    window: str = "hann",
-) -> float:
-    theor_fft = compute_fft(theoretical_signal, window=window)
-    numerator = np.vdot(theor_fft.spectrum, measurement_fft.spectrum)
-    denominator = np.linalg.norm(theor_fft.spectrum) * np.linalg.norm(
-        measurement_fft.spectrum
+    lipid_nm: Optional[float] = None,
+    aqueous_nm: Optional[float] = None,
+    roughness_A: Optional[float] = None,
+) -> SpectrumScore:
+    peak_count_cfg = metrics_cfg.get("peak_count", {})
+    peak_delta_cfg = metrics_cfg.get("peak_delta", {})
+    weights_cfg = metrics_cfg.get("composite", {}).get("weights", {})
+
+    count_result = peak_count_score(
+        measurement,
+        theoretical,
+        tolerance_nm=float(peak_count_cfg.get("wavelength_tolerance_nm", 5.0)),
     )
-    if denominator == 0:
-        return 0.0
-    return float(abs(numerator) / denominator)
+    delta_result = peak_delta_score(
+        measurement,
+        theoretical,
+        tolerance_nm=float(peak_delta_cfg.get("tolerance_nm", 5.0)),
+        tau_nm=float(peak_delta_cfg.get("tau_nm", 15.0)),
+        penalty_unpaired=float(peak_delta_cfg.get("penalty_unpaired", 0.05)),
+    )
+    phase_result = phase_overlap_score(measurement, theoretical)
+
+    component_scores = {
+        "peak_count": count_result.score,
+        "peak_delta": delta_result.score,
+        "phase_overlap": phase_result.score,
+    }
+    composite = composite_score(component_scores, weights_cfg)
+    component_scores["composite"] = composite
+
+    diagnostics = {
+        "peak_count": count_result.diagnostics,
+        "peak_delta": delta_result.diagnostics,
+        "phase_overlap": phase_result.diagnostics,
+    }
+
+    return SpectrumScore(
+        lipid_nm=lipid_nm,
+        aqueous_nm=aqueous_nm,
+        roughness_A=roughness_A,
+        scores=component_scores,
+        diagnostics=diagnostics,
+    )
+
+
+__all__ = [
+    "MetricResult",
+    "SpectrumScore",
+    "peak_count_score",
+    "peak_delta_score",
+    "phase_overlap_score",
+    "composite_score",
+    "score_spectrum",
+]

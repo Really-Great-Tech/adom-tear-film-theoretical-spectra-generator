@@ -3,9 +3,12 @@
 Test script to verify measurement file loading
 """
 
-import pandas as pd
 import pathlib
 import glob
+
+import pytest
+
+pd = pytest.importorskip("pandas")
 
 def test_measurement_loading():
     """Test loading measurement files"""

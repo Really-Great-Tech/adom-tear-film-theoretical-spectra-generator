@@ -4,273 +4,368 @@
 from __future__ import annotations
 
 import argparse
-import itertools
+import copy
+import heapq
 import json
-import pathlib
-from dataclasses import asdict
+import sys
+from dataclasses import dataclass
 from datetime import datetime
-from heapq import heappush, heappushpop, nlargest
-from typing import Dict, Iterator, List, Tuple
+from pathlib import Path
+from typing import Any, Dict, Iterable, Iterator, List, Optional, Tuple
 
 import numpy as np
 import pandas as pd
 
-import sys
-
-REPO_ROOT = pathlib.Path(__file__).resolve().parent
+REPO_ROOT = Path(__file__).resolve().parent
 SRC_DIR = REPO_ROOT / "src"
 if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
 
-from analysis.measurement_utils import load_txt_file_enhanced
-from analysis.metrics import (
-    MeasurementArtifacts,
-    MetricScores,
-    prepare_measurement_artifacts,
+from analysis import (  # type: ignore  # pylint: disable=wrong-import-position
+    prepare_measurement,
+    prepare_theoretical_spectrum,
     score_spectrum,
+    SpectrumScore,
 )
-from tear_film_generator import (
+from analysis.measurement_utils import (  # type: ignore  # pylint: disable=wrong-import-position
+    load_measurement_spectrum,
+)
+from tear_film_generator import (  # type: ignore  # pylint: disable=wrong-import-position
     PROJECT_ROOT,
+    get_project_path,
     load_config,
     make_single_spectrum_calculator,
     validate_config,
 )
 
 
+@dataclass
+class ParameterGrid:
+    lipid: np.ndarray
+    aqueous: np.ndarray
+    roughness: np.ndarray
+
+    @property
+    def size(self) -> int:
+        return int(len(self.lipid) * len(self.aqueous) * len(self.roughness))
+
+
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser("Grid search for best-fit tear film spectra")
+    parser = argparse.ArgumentParser(description="Score theoretical spectra against a measurement")
     parser.add_argument(
-        "--config-file",
-        type=pathlib.Path,
-        default=PROJECT_ROOT / "config.yaml",
-        help="Configuration YAML (defaults to project config.yaml)",
+        "measurement",
+        nargs="?",
+        type=Path,
+        help="Path to measurement spectrum file",
     )
     parser.add_argument(
         "--measurement",
-        type=pathlib.Path,
-        required=True,
-        help="Measurement TXT file to match",
+        dest="measurement_flag",
+        type=Path,
+        help="Explicit measurement spectrum path (overrides positional)",
+    )
+    parser.add_argument(
+        "--config",
+        "--config-file",
+        dest="config_path",
+        type=Path,
+        default=None,
+        help="Configuration YAML (defaults to config.yaml)",
+    )
+    parser.add_argument(
+        "--grid-dir",
+        type=Path,
+        default=None,
+        help="Directory containing grid.npy and meta.json produced by run_tear_film_generator",
     )
     parser.add_argument(
         "--grid-file",
-        type=pathlib.Path,
-        help="Precomputed grid.npy file to score instead of calling the DLL",
+        type=Path,
+        default=None,
+        help="Specific grid.npy file to score",
     )
     parser.add_argument(
         "--meta-file",
-        type=pathlib.Path,
-        help="Metadata JSON describing parameter axes (defaults to grid sibling meta.json)",
+        type=Path,
+        default=None,
+        help="Metadata JSON describing parameter axes (defaults to sibling meta.json)",
     )
     parser.add_argument(
         "--top-k",
         type=int,
-        default=10,
-        help="Number of top candidates to retain (default: 10)",
-    )
-    parser.add_argument(
-        "--max-spectra",
-        type=int,
-        help="Optional limit on number of spectra evaluated (for smoke tests)",
+        default=20,
+        help="Number of best candidates to keep (default: 20)",
     )
     parser.add_argument(
         "--output-dir",
-        type=pathlib.Path,
-        default=PROJECT_ROOT / "outputs" / "grid_search",
-        help="Directory to store scoring artifacts",
+        type=Path,
+        default=None,
+        help="Directory to write results (defaults to outputs/grid_search)",
+    )
+    parser.add_argument(
+        "--max-spectra",
+        "--max-results",
+        dest="max_spectra",
+        type=int,
+        default=None,
+        help="Optional cap on evaluated spectra (useful for smoke tests)",
     )
     parser.add_argument(
         "--verbose",
         action="store_true",
-        help="Print progress for every spectrum",
+        help="Print progress updates during evaluation",
+    )
+    parser.add_argument(
+        "--peak-count-tol",
+        type=float,
+        default=None,
+        help="Override peak-count wavelength tolerance in nanometers",
+    )
+    parser.add_argument(
+        "--peak-delta-tol",
+        type=float,
+        default=None,
+        help="Override paired-peak tolerance window in nanometers",
+    )
+    parser.add_argument(
+        "--peak-delta-tau",
+        type=float,
+        default=None,
+        help="Override exponential decay factor (tau) for paired-peak delta metric",
+    )
+    parser.add_argument(
+        "--peak-delta-penalty",
+        type=float,
+        default=None,
+        help="Override penalty applied per unmatched peak in the delta metric",
+    )
+    parser.add_argument(
+        "--metric-weights",
+        type=float,
+        nargs=3,
+        metavar=("W_PEAK_COUNT", "W_PEAK_DELTA", "W_PHASE"),
+        help="Override composite metric weights (peak_count, peak_delta, phase_overlap)",
     )
     return parser.parse_args()
 
 
-def _load_config(config_path: pathlib.Path) -> Dict[str, object]:
+def _resolve_measurement_path(args: argparse.Namespace) -> Path:
+    path = args.measurement_flag or args.measurement
+    if path is None:
+        raise SystemExit("Measurement path is required")
+    return path
+
+
+def _load_config(config_path: Optional[Path]) -> Dict[str, Any]:
     config = load_config(config_path)
     if not validate_config(config):
         raise SystemExit("Configuration validation failed.")
     return config
 
 
-def _load_measurement(path: pathlib.Path) -> pd.DataFrame:
-    if not path.exists():
-        raise FileNotFoundError(f"Measurement file not found: {path}")
-    df = load_txt_file_enhanced(path)
-    if df.empty:
-        raise ValueError(f"Measurement contained no usable data: {path}")
-    return df.dropna()
+def _apply_metric_overrides(metrics_cfg: Dict[str, Any], args: argparse.Namespace) -> None:
+    peak_count_cfg = metrics_cfg.setdefault("peak_count", {})
+    if args.peak_count_tol is not None:
+        peak_count_cfg["wavelength_tolerance_nm"] = float(args.peak_count_tol)
+
+    peak_delta_cfg = metrics_cfg.setdefault("peak_delta", {})
+    if args.peak_delta_tol is not None:
+        peak_delta_cfg["tolerance_nm"] = float(args.peak_delta_tol)
+    if args.peak_delta_tau is not None:
+        peak_delta_cfg["tau_nm"] = float(args.peak_delta_tau)
+    if args.peak_delta_penalty is not None:
+        peak_delta_cfg["penalty_unpaired"] = float(args.peak_delta_penalty)
+
+    if args.metric_weights is not None:
+        w_count, w_delta, w_phase = args.metric_weights
+        composite_cfg = metrics_cfg.setdefault("composite", {})
+        composite_cfg["weights"] = {
+            "peak_count": float(w_count),
+            "peak_delta": float(w_delta),
+            "phase_overlap": float(w_phase),
+        }
 
 
-def _parameter_ranges(config: Dict[str, object]) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
-    params = config["parameters"]  # type: ignore[index]
+def _prepare_parameter_arrays(config: Dict[str, Any]) -> ParameterGrid:
+    params = config["parameters"]
     lipid_cfg = params["lipid"]
     aqueous_cfg = params["aqueous"]
     rough_cfg = params["roughness"]
+
     lipid_vals = np.arange(lipid_cfg["min"], lipid_cfg["max"], lipid_cfg["step"], dtype=float)
     aqueous_vals = np.arange(aqueous_cfg["min"], aqueous_cfg["max"], aqueous_cfg["step"], dtype=float)
     rough_vals = np.arange(rough_cfg["min"], rough_cfg["max"], rough_cfg["step"], dtype=float)
-    return lipid_vals, aqueous_vals, rough_vals
+    return ParameterGrid(lipid=lipid_vals, aqueous=aqueous_vals, roughness=rough_vals)
 
 
-def _grid_iterator_from_calc(
-    calc_func,
-    wavelengths: np.ndarray,
-    lipid_vals: np.ndarray,
-    aqueous_vals: np.ndarray,
-    rough_vals: np.ndarray,
-) -> Iterator[Tuple[float, float, float, np.ndarray]]:
-    total = len(lipid_vals) * len(aqueous_vals) * len(rough_vals)
-    count = 0
-    for l, a, r in itertools.product(lipid_vals, aqueous_vals, rough_vals):
-        count += 1
-        yield float(l), float(a), float(r), calc_func(l, a, r)
-        if count % 100 == 0:
-            progress = 100.0 * count / total
-            print(f"{count}/{total} spectra evaluated ({progress:5.1f}%)", flush=True)
+def _load_grid_from_directory(cache_dir: Path) -> Tuple[np.ndarray, np.ndarray, ParameterGrid]:
+    grid_path = cache_dir / "grid.npy"
+    meta_path = cache_dir / "meta.json"
+    return _load_grid(grid_path, meta_path)
 
 
-def _grid_iterator_from_numpy(
-    grid: np.ndarray,
-    lipid_vals: np.ndarray,
-    aqueous_vals: np.ndarray,
-    rough_vals: np.ndarray,
-) -> Iterator[Tuple[float, float, float, np.ndarray]]:
-    for i, l in enumerate(lipid_vals):
-        for j, a in enumerate(aqueous_vals):
-            for k, r in enumerate(rough_vals):
-                yield float(l), float(a), float(r), grid[i, j, k, :]
-
-
-def _load_grid_with_meta(grid_path: pathlib.Path, meta_path: pathlib.Path | None):
-    grid = np.load(grid_path)
+def _load_grid(grid_path: Path, meta_path: Optional[Path]) -> Tuple[np.ndarray, np.ndarray, ParameterGrid]:
+    if not grid_path.exists():
+        raise FileNotFoundError(f"Grid file not found: {grid_path}")
     if meta_path is None:
         meta_path = grid_path.with_name("meta.json")
+    if not meta_path.exists():
+        raise FileNotFoundError(f"Metadata JSON not found: {meta_path}")
+
+    grid = np.load(grid_path, allow_pickle=False)
     with meta_path.open("r", encoding="utf-8") as handle:
         meta = json.load(handle)
+
     lipid_vals = np.asarray(meta["lipid_nm"], dtype=float)
     aqueous_vals = np.asarray(meta["aqueous_nm"], dtype=float)
     rough_vals = np.asarray(meta["rough_A"], dtype=float)
     wavelengths = np.asarray(meta["wavelengths_nm"], dtype=float)
-    return grid, wavelengths, lipid_vals, aqueous_vals, rough_vals
+    return grid, wavelengths, ParameterGrid(lipid_vals, aqueous_vals, rough_vals)
+
+
+def _iter_cached_spectra(
+    grid: np.ndarray,
+    params: ParameterGrid,
+) -> Iterable[Tuple[Tuple[float, float, float], np.ndarray]]:
+    for i, lipid in enumerate(params.lipid):
+        for j, aqueous in enumerate(params.aqueous):
+            for k, rough in enumerate(params.roughness):
+                yield (float(lipid), float(aqueous), float(rough)), grid[i, j, k, :]
+
+
+def _iter_generated_spectra(
+    calculator,
+    params: ParameterGrid,
+) -> Iterable[Tuple[Tuple[float, float, float], np.ndarray]]:
+    for lipid in params.lipid:
+        for aqueous in params.aqueous:
+            for rough in params.roughness:
+                spectrum = calculator(float(lipid), float(aqueous), float(rough))
+                yield (float(lipid), float(aqueous), float(rough)), spectrum
+
+
+def _score_candidate(
+    measurement_features,
+    wavelengths: np.ndarray,
+    spectrum: np.ndarray,
+    analysis_cfg: Dict[str, Any],
+    metrics_cfg: Dict[str, Any],
+    params: Tuple[float, float, float],
+) -> SpectrumScore:
+    theoretical_features = prepare_theoretical_spectrum(
+        wavelengths,
+        spectrum,
+        measurement_features,
+        analysis_cfg,
+    )
+    lipid_nm, aqueous_nm, roughness_A = params
+    return score_spectrum(
+        measurement_features,
+        theoretical_features,
+        metrics_cfg,
+        lipid_nm=lipid_nm,
+        aqueous_nm=aqueous_nm,
+        roughness_A=roughness_A,
+    )
 
 
 def main() -> int:
     args = parse_args()
-    config = _load_config(args.config_file)
+    measurement_path = _resolve_measurement_path(args)
+    config = _load_config(args.config_path)
 
-    measurement_df = _load_measurement(args.measurement)
-    measurement_name = args.measurement.stem
+    analysis_cfg = copy.deepcopy(config.get("analysis", {}))
+    metrics_cfg = analysis_cfg.setdefault("metrics", {})
+    _apply_metric_overrides(metrics_cfg, args)
 
-    if args.grid_file:
-        grid, wavelengths, lipid_vals, aqueous_vals, rough_vals = _load_grid_with_meta(
-            args.grid_file,
-            args.meta_file,
-        )
-        calc_iterator = _grid_iterator_from_numpy(
-            grid,
-            lipid_vals,
-            aqueous_vals,
-            rough_vals,
-        )
+    measurement_cfg = config.get("measurements", {})
+    measurement_df = load_measurement_spectrum(measurement_path, measurement_cfg)
+    measurement_features = prepare_measurement(measurement_df, analysis_cfg)
+
+    output_dir = args.output_dir or get_project_path("outputs/grid_search")
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    iterator: Iterable[Tuple[Tuple[float, float, float], np.ndarray]]
+    wavelengths: np.ndarray
+    params: ParameterGrid
+
+    if args.grid_dir is not None:
+        grid, wavelengths, params = _load_grid_from_directory(args.grid_dir)
+        iterator = _iter_cached_spectra(grid, params)
+    elif args.grid_file is not None:
+        grid, wavelengths, params = _load_grid(args.grid_file, args.meta_file)
+        iterator = _iter_cached_spectra(grid, params)
     else:
-        calc_func, wavelengths = make_single_spectrum_calculator(config)
-        lipid_vals, aqueous_vals, rough_vals = _parameter_ranges(config)
-        calc_iterator = _grid_iterator_from_calc(
-            calc_func,
-            wavelengths,
-            lipid_vals,
-            aqueous_vals,
-            rough_vals,
-        )
+        calculator, wavelengths = make_single_spectrum_calculator(config)
+        params = _prepare_parameter_arrays(config)
+        iterator = _iter_generated_spectra(calculator, params)
 
-    analysis_config = config.get("analysis", {}) or {}
-    metrics_config = analysis_config.get("metrics", {}) or {}
-    measurement_artifacts = prepare_measurement_artifacts(
-        measurement_df,
-        wavelengths=wavelengths,
-        analysis_config=analysis_config,
-    )
-
-    heap: List[Tuple[float, MetricScores]] = []
+    heap: List[Tuple[float, SpectrumScore]] = []
     evaluated = 0
+    total_candidates = params.size
 
-    for lipid_nm, aqueous_nm, roughness_A, spectrum in calc_iterator:
-        evaluated += 1
-        if args.max_spectra and evaluated > args.max_spectra:
+    for (lipid_nm, aqueous_nm, roughness_A), spectrum in iterator:
+        if args.max_spectra is not None and evaluated >= args.max_spectra:
             break
 
-        if args.verbose and evaluated % 25 == 0:
+        candidate = _score_candidate(
+            measurement_features,
+            wavelengths,
+            spectrum,
+            analysis_cfg,
+            metrics_cfg,
+            (lipid_nm, aqueous_nm, roughness_A),
+        )
+        evaluated += 1
+
+        if args.verbose and evaluated % 100 == 0:
+            progress = 100.0 * evaluated / max(total_candidates, 1)
             print(
-                f"Evaluated {evaluated} spectra "
-                f"(L={lipid_nm:.1f}, A={aqueous_nm:.1f}, R={roughness_A:.1f})",
+                f"{evaluated}/{total_candidates} spectra evaluated ({progress:5.1f}%)",
                 flush=True,
             )
 
-        scores = score_spectrum(
-            wavelengths,
-            spectrum,
-            measurement=measurement_artifacts,
-            metrics_config=metrics_config,
-            lipid_nm=lipid_nm,
-            aqueous_nm=aqueous_nm,
-            roughness_A=roughness_A,
-        )
-
-        entry = (scores.composite_score, scores)
+        entry = (candidate.composite, candidate)
         if len(heap) < args.top_k:
-            heappush(heap, entry)
+            heapq.heappush(heap, entry)
         else:
-            heappushpop(heap, entry)
+            if candidate.composite > heap[0][0]:
+                heapq.heapreplace(heap, entry)
 
     if not heap:
-        print("No spectra evaluated; check configuration.")
+        print("No spectra evaluated; check configuration and grid parameters.")
         return 1
 
-    output_dir = args.output_dir
-    output_dir.mkdir(parents=True, exist_ok=True)
+    top_scores = [score for _, score in sorted(heap, key=lambda item: item[0], reverse=True)]
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    output_prefix = output_dir / f"grid_search_{measurement_name}_{timestamp}"
+    measurement_stem = measurement_path.stem
+    prefix = output_dir / f"grid_search_{measurement_stem}_{timestamp}"
 
-    top_results = [
-        result for _, result in sorted(nlargest(args.top_k, heap), reverse=True)
-    ]
-
-    csv_rows = [
-        {
-            "lipid_nm": res.lipid_nm,
-            "aqueous_nm": res.aqueous_nm,
-            "roughness_A": res.roughness_A,
-            "peak_count_score": res.peak_count_score,
-            "peak_delta_score": res.peak_delta_score,
-            "phase_overlap_score": res.phase_overlap_score,
-            "composite_score": res.composite_score,
-            "matched_peaks": res.matched_peaks,
-            "unmatched_measured": res.unmatched_measured,
-            "unmatched_theoretical": res.unmatched_theoretical,
-        }
-        for res in top_results
-    ]
-
-    pd.DataFrame(csv_rows).to_csv(output_prefix.with_suffix(".csv"), index=False)
+    df = pd.DataFrame(score.as_dict() for score in top_scores)
+    df.insert(0, "rank", np.arange(1, len(df) + 1))
+    csv_path = prefix.with_suffix(".csv")
+    df.to_csv(csv_path, index=False)
 
     summary = {
-        "measurement_file": str(args.measurement),
-        "config_file": str(args.config_file),
-        "grid_file": str(args.grid_file) if args.grid_file else None,
+        "measurement_file": str(measurement_path),
+        "config_file": str(args.config_path or PROJECT_ROOT / "config.yaml"),
         "evaluated_spectra": evaluated,
         "top_k": args.top_k,
-        "results_csv": str(output_prefix.with_suffix(".csv")),
-        "results": [asdict(res) for res in top_results],
-        "analysis_config": analysis_config,
+        "results_csv": str(csv_path),
+        "results": df.to_dict(orient="records"),
     }
-
-    with output_prefix.with_suffix(".json").open("w", encoding="utf-8") as handle:
+    summary_path = prefix.with_suffix(".json")
+    with summary_path.open("w", encoding="utf-8") as handle:
         json.dump(summary, handle, indent=2)
 
-    print(f"Evaluated {evaluated} spectra. Top-{len(top_results)} results saved to:")
-    print(f"  - {output_prefix.with_suffix('.csv')}")
-    print(f"  - {output_prefix.with_suffix('.json')}")
+    best_fit_path = prefix.with_name(prefix.name + "_best.json")
+    with best_fit_path.open("w", encoding="utf-8") as handle:
+        json.dump([score.as_dict() for score in top_scores], handle, indent=2)
+
+    print(f"Evaluated {evaluated} spectra. Top-{len(top_scores)} results saved to:")
+    print(f"  - {csv_path}")
+    print(f"  - {summary_path}")
+    print(f"  - {best_fit_path}")
     return 0
 
 
