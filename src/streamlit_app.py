@@ -19,7 +19,19 @@ from plotly.subplots import make_subplots
 from typing import Dict, Any, List, Tuple, Optional
 import glob
 import os
-from scipy.signal import butter, filtfilt, find_peaks
+
+from analysis import (
+    load_measurement_spectrum,
+    detrend_signal,
+    detect_peaks,
+    detect_valleys,
+    prepare_measurement,
+    prepare_theoretical_spectrum,
+    peak_count_score,
+    peak_delta_score,
+    phase_overlap_score,
+    composite_score,
+)
 
 from tear_film_generator import (
     load_config,
@@ -35,149 +47,183 @@ def clamp_to_step(value: float, min_val: float, step: float) -> float:
     return min_val + round((value - min_val) / step) * step
 
 
-def load_txt_file_enhanced(file_path):
-    """
-    Load spectral data from a given txt file, automatically detecting headers or metadata.
-    Enhanced version based on your code.
+def detrend_dataframe(df: pd.DataFrame, cutoff_frequency: float, filter_order: int) -> pd.DataFrame:
+    """Apply shared detrending routine and attach the result to the dataframe."""
 
-    Args:
-        file_path (str or Path): Path to the text file.
-
-    Returns:
-        pd.DataFrame: DataFrame with two columns ['wavelength', 'reflectance'].
-    """
-    data_started = False
-    wavelengths = []
-    intensities = []
-
-    with open(file_path, 'r') as f:
-        for line in f:
-            line = line.strip()
-
-            # Skip empty lines
-            if not line:
-                continue
-
-            # Detect the spectral data start (for non-best-fit files)
-            if line.startswith('>>>>>Begin Spectral Data<<<<<'):
-                data_started = True
-                continue
-
-            # Check if line contains two numerical columns
-            parts = line.split()
-            if len(parts) == 2:
-                try:
-                    wavelength, intensity = float(parts[0]), float(parts[1])
-                    wavelengths.append(wavelength)
-                    intensities.append(intensity)
-                    data_started = True  # for BestFit files, data immediately starts
-                except ValueError:
-                    # Skip lines that don't have numerical data
-                    if data_started:
-                        # If data previously started but now hit non-numerical, break
-                        break
-                    else:
-                        continue
-
-    return pd.DataFrame({"wavelength": wavelengths, "reflectance": intensities})
-
-
-def detrend_signal(df, cutoff_frequency=0.01, filter_order=3):
-    """
-    Detrends a signal using a high-pass Butterworth filter.
-
-    Parameters:
-    df (DataFrame): Input DataFrame with 'wavelength' and 'reflectance' columns.
-    cutoff_frequency (float): Cutoff frequency for the high-pass filter (default=0.01).
-    filter_order (int): Order of the Butterworth filter (default=3).
-
-    Returns:
-    DataFrame: DataFrame with an additional 'detrended' column.
-    """
-    # Ensure the DataFrame is sorted by wavelength
     df = df.sort_values(by="wavelength").reset_index(drop=True)
-    
-    # Create a copy to avoid modifying original
+    detrended = detrend_signal(
+        df["wavelength"].to_numpy(),
+        df["reflectance"].to_numpy(),
+        cutoff_frequency,
+        filter_order,
+    )
     df_result = df.copy()
-
-    # Sampling frequency calculation from wavelength spacing
-    sampling_interval = df['wavelength'].diff().mean()
-    if sampling_interval <= 0:
-        raise ValueError("Invalid wavelength spacing for detrending")
-    
-    sampling_frequency = 1 / sampling_interval
-
-    # Normalize cutoff frequency
-    nyquist_freq = 0.5 * sampling_frequency
-    normal_cutoff = min(cutoff_frequency / nyquist_freq, 0.99)  # Ensure it's less than 1
-
-    try:
-        # High-pass Butterworth filter design
-        b, a = butter(filter_order, normal_cutoff, btype='high', analog=False)
-
-        # Apply filter using filtfilt for zero-phase filtering
-        detrended_intensity = filtfilt(b, a, df['reflectance'])
-
-        # Add detrended data to DataFrame
-        df_result['detrended'] = detrended_intensity
-    except Exception as e:
-        st.warning(f"Detrending failed: {e}. Using original signal.")
-        df_result['detrended'] = df_result['reflectance']
-
+    df_result["detrended"] = detrended
     return df_result
 
 
-def detect_peaks(df, column='reflectance', prominence=0.005, height=None):
-    """Detect peaks in the signal"""
-    peaks_indices, properties = find_peaks(df[column], prominence=prominence, height=height)
-    peaks_df = df.iloc[peaks_indices].copy()
-    peaks_df['peak_prominence'] = properties.get('prominences', [0] * len(peaks_indices))
-    return peaks_df.reset_index(drop=True)
+def detect_peaks_df(df: pd.DataFrame, column: str, prominence: float, height: Optional[float] = None) -> pd.DataFrame:
+    """Convenience wrapper using the shared peak detector."""
+
+    peaks = detect_peaks(
+        df["wavelength"].to_numpy(),
+        df[column].to_numpy(),
+        prominence=prominence,
+        height=height,
+    )
+    result = pd.DataFrame({
+        "wavelength": peaks["wavelength"],
+        column: peaks["amplitude"],
+        "peak_prominence": peaks["prominence"],
+    })
+    return result
 
 
-def detect_valleys(df, column='reflectance', prominence=0.005):
-    """Detect valleys in the signal"""
-    valleys_indices, properties = find_peaks(-df[column], prominence=prominence)
-    valleys_df = df.iloc[valleys_indices].copy()
-    valleys_df['valley_prominence'] = properties.get('prominences', [0] * len(valleys_indices))
-    return valleys_df.reset_index(drop=True)
+def detect_valleys_df(df: pd.DataFrame, column: str, prominence: float) -> pd.DataFrame:
+    """Convenience wrapper for detecting valleys."""
+
+    valleys = detect_valleys(
+        df["wavelength"].to_numpy(),
+        df[column].to_numpy(),
+        prominence=prominence,
+    )
+    result = pd.DataFrame({
+        "wavelength": valleys["wavelength"],
+        column: valleys["amplitude"],
+        "valley_prominence": valleys["prominence"],
+    })
+    return result
 
 
 def load_measurement_files(measurements_dir: pathlib.Path, config: Dict[str, Any]) -> Dict[str, pd.DataFrame]:
-    """Load all measurement files from the specified directory using enhanced loading."""
-    measurements = {}
-    
+    """Load measurement spectra using the shared loader."""
+
+    measurements: Dict[str, pd.DataFrame] = {}
     if not measurements_dir.exists():
         st.warning(f"Measurements directory not found: {measurements_dir}")
         return measurements
-    
-    meas_config = config.get('measurements', {})
-    file_pattern = meas_config.get('file_pattern', '*.csv')
-    
-    # Find all matching files
+
+    meas_config = config.get("measurements", {})
+    file_pattern = meas_config.get("file_pattern", "*.csv")
     pattern_path = measurements_dir / file_pattern
     file_paths = glob.glob(str(pattern_path))
-    
+
     if not file_paths:
         st.warning(f"No measurement files found matching pattern: {file_pattern} in {measurements_dir}")
         return measurements
-    
+
     for file_path in sorted(file_paths):
         try:
             file_name = pathlib.Path(file_path).stem
-            
-            # Use enhanced loading function
-            meas_df = load_txt_file_enhanced(file_path)
-            
-            if len(meas_df) > 0:
-                # Remove any NaN values
-                meas_df = meas_df.dropna()
+            meas_df = load_measurement_spectrum(file_path, meas_config)
+            if not meas_df.empty:
                 measurements[file_name] = meas_df
-                
-        except Exception as e:
-            st.warning(f"Error loading {file_path}: {e}")
-    
+        except Exception as exc:  # pragma: no cover - UI warning path
+            st.warning(f"Error loading {file_path}: {exc}")
+
     return measurements
+
+
+def generate_parameter_values(cfg: Dict[str, Any], stride: int) -> np.ndarray:
+    step = float(cfg["step"]) * max(1, stride)
+    values = np.arange(cfg["min"], cfg["max"], step, dtype=float)
+    if len(values) == 0:
+        values = np.array([float(cfg["min"])])
+    return values
+
+
+def score_candidate(
+    measurement_features,
+    theoretical_features,
+    metrics_cfg: Dict[str, Any],
+):
+    peak_count_cfg = metrics_cfg.get("peak_count", {})
+    peak_delta_cfg = metrics_cfg.get("peak_delta", {})
+    weights = metrics_cfg.get("composite", {}).get("weights", {})
+
+    count_result = peak_count_score(
+        measurement_features,
+        theoretical_features,
+        tolerance_nm=float(peak_count_cfg.get("wavelength_tolerance_nm", 5.0)),
+    )
+    delta_result = peak_delta_score(
+        measurement_features,
+        theoretical_features,
+        tolerance_nm=float(peak_delta_cfg.get("tolerance_nm", 5.0)),
+        tau_nm=float(peak_delta_cfg.get("tau_nm", 15.0)),
+        penalty_unpaired=float(peak_delta_cfg.get("penalty_unpaired", 0.05)),
+    )
+    phase_result = phase_overlap_score(measurement_features, theoretical_features)
+
+    component_scores = {
+        "peak_count": count_result.score,
+        "peak_delta": delta_result.score,
+        "phase_overlap": phase_result.score,
+    }
+    composite = composite_score(component_scores, weights)
+    component_scores["composite"] = composite
+
+    diagnostics = {
+        "peak_count": count_result.diagnostics,
+        "peak_delta": delta_result.diagnostics,
+        "phase_overlap": phase_result.diagnostics,
+    }
+    return component_scores, diagnostics
+
+
+def run_inline_grid_search(
+    single_spectrum,
+    wavelengths: np.ndarray,
+    measurement_features,
+    analysis_cfg: Dict[str, Any],
+    metrics_cfg: Dict[str, Any],
+    lipid_vals: np.ndarray,
+    aqueous_vals: np.ndarray,
+    rough_vals: np.ndarray,
+    max_results: Optional[int],
+) -> pd.DataFrame:
+    records: List[Dict[str, float]] = []
+    evaluated = 0
+    for lipid in lipid_vals:
+        for aqueous in aqueous_vals:
+            for rough in rough_vals:
+                if max_results is not None and evaluated >= max_results:
+                    break
+                spectrum = single_spectrum(float(lipid), float(aqueous), float(rough))
+                theoretical = prepare_theoretical_spectrum(
+                    wavelengths,
+                    spectrum,
+                    measurement_features,
+                    analysis_cfg,
+                )
+                scores, diagnostics = score_candidate(
+                    measurement_features,
+                    theoretical,
+                    metrics_cfg,
+                )
+                record = {
+                    "lipid_nm": float(lipid),
+                    "aqueous_nm": float(aqueous),
+                    "roughness_A": float(rough),
+                }
+                for key, value in scores.items():
+                    record[f"score_{key}"] = float(value)
+                for metric, diag in diagnostics.items():
+                    for diag_key, diag_val in diag.items():
+                        record[f"{metric}_{diag_key}"] = float(diag_val)
+                records.append(record)
+                evaluated += 1
+            if max_results is not None and evaluated >= max_results:
+                break
+        if max_results is not None and evaluated >= max_results:
+            break
+
+    if not records:
+        return pd.DataFrame(), 0
+
+    results_df = pd.DataFrame(records)
+    results_df = results_df.sort_values("score_composite", ascending=False).reset_index(drop=True)
+    return results_df, evaluated
 
 
 def interpolate_measurement_to_theoretical(measured_df: pd.DataFrame, theoretical_wavelengths: np.ndarray) -> np.ndarray:
@@ -270,6 +316,8 @@ def main():
         st.error("Invalid configuration. See terminal for details.")
         st.stop()
 
+    analysis_cfg: Dict[str, Any] = config.get("analysis", {})
+    metrics_cfg: Dict[str, Any] = analysis_cfg.get("metrics", {})
     ui_cfg: Dict[str, Any] = config.get("ui", {})
     st.set_page_config(
         page_title=ui_cfg.get("page_title", "Tear Film Spectra Explorer"), 
@@ -306,7 +354,12 @@ def main():
     st.markdown("Adjust layer properties to view theoretical reflectance spectrum and compare with measurements.")
 
     # Create tabs
-    tab1, tab2, tab3 = st.tabs(["📊 Spectrum Comparison", "📈 Detrended Analysis", "⚙️ Parameters"])
+    tab1, tab2, tab3, tab4 = st.tabs([
+        "📊 Spectrum Comparison",
+        "📈 Detrended Analysis",
+        "⚙️ Parameters",
+        "🔍 Grid Search",
+    ])
     
     # Sidebar controls
     st.sidebar.markdown("## Layer Parameters")
@@ -318,6 +371,7 @@ def main():
         value=float(default_lipid),
         step=float(lipid_cfg["step"]),
         format="%.0f",
+        key="lipid_slider",
     )
 
     aqueous_val = st.sidebar.slider(
@@ -327,6 +381,7 @@ def main():
         value=float(default_aqueous),
         step=float(aqueous_cfg["step"]),
         format="%.0f",
+        key="aqueous_slider",
     )
 
     rough_val = st.sidebar.slider(
@@ -336,6 +391,7 @@ def main():
         value=float(default_rough),
         step=float(rough_cfg["step"]),
         format="%.0f",
+        key="rough_slider",
     )
 
     # Measurement file selection
@@ -444,16 +500,17 @@ def main():
             selected_measurement = measurements[selected_file]
             
             # Detrend both theoretical and measured signals
-            theoretical_detrended = detrend_signal(theoretical_df, cutoff_freq)
-            measured_detrended = detrend_signal(selected_measurement, cutoff_freq)
-            
+            filter_order = config.get("analysis", {}).get("detrending", {}).get("filter_order", 3)
+            theoretical_detrended = detrend_dataframe(theoretical_df, cutoff_freq, filter_order)
+            measured_detrended = detrend_dataframe(selected_measurement, cutoff_freq, filter_order)
+
             # Detect peaks in detrended signals
-            theo_peaks = detect_peaks(theoretical_detrended, 'detrended', peak_prominence)
-            meas_peaks = detect_peaks(measured_detrended, 'detrended', peak_prominence)
-            
+            theo_peaks = detect_peaks_df(theoretical_detrended, 'detrended', peak_prominence)
+            meas_peaks = detect_peaks_df(measured_detrended, 'detrended', peak_prominence)
+
             # Detect valleys in detrended signals
-            theo_valleys = detect_valleys(theoretical_detrended, 'detrended', peak_prominence)
-            meas_valleys = detect_valleys(measured_detrended, 'detrended', peak_prominence)
+            theo_valleys = detect_valleys_df(theoretical_detrended, 'detrended', peak_prominence)
+            meas_valleys = detect_valleys_df(measured_detrended, 'detrended', peak_prominence)
             
             # Create subplot figure
             fig = make_subplots(
@@ -569,9 +626,10 @@ def main():
             
         else:
             # Show only theoretical detrended
-            theoretical_detrended = detrend_signal(theoretical_df, cutoff_freq)
-            theo_peaks = detect_peaks(theoretical_detrended, 'detrended', peak_prominence)
-            theo_valleys = detect_valleys(theoretical_detrended, 'detrended', peak_prominence)
+            filter_order = config.get("analysis", {}).get("detrending", {}).get("filter_order", 3)
+            theoretical_detrended = detrend_dataframe(theoretical_df, cutoff_freq, filter_order)
+            theo_peaks = detect_peaks_df(theoretical_detrended, 'detrended', peak_prominence)
+            theo_valleys = detect_valleys_df(theoretical_detrended, 'detrended', peak_prominence)
             
             fig = go.Figure()
             
@@ -660,6 +718,75 @@ def main():
                 st.info(f"No measurement files found in: {get_project_path(config['paths']['measurements'])}")
         else:
             st.info("Measurement comparison is disabled. Enable in config.yaml under 'measurements.enabled' to compare with experimental data.")
+
+    with tab4:
+        st.markdown("## Grid Search Ranking")
+        if not (measurements_enabled and selected_file and selected_file != "None"):
+            st.info("Select a measurement spectrum to run the grid search.")
+        else:
+            selected_measurement = measurements[selected_file]
+            controls = st.columns(3)
+            top_k_display = int(
+                controls[0].number_input("Top results", min_value=5, max_value=100, value=10, step=5)
+            )
+            stride = int(
+                controls[1].number_input("Stride multiplier", min_value=1, max_value=10, value=1, step=1)
+            )
+            max_results_input = int(
+                controls[2].number_input("Max spectra", min_value=0, value=500, step=50)
+            )
+            max_results = None if max_results_input == 0 else max_results_input
+
+            run_pressed = st.button("Run Grid Search", key="run_grid_search_button")
+            cache_key = f"grid_search_{selected_file}"
+            if run_pressed:
+                with st.spinner("Scoring theoretical spectra..."):
+                    measurement_features = prepare_measurement(selected_measurement, analysis_cfg)
+                    lipid_vals = generate_parameter_values(config["parameters"]["lipid"], stride)
+                    aqueous_vals = generate_parameter_values(config["parameters"]["aqueous"], stride)
+                    rough_vals = generate_parameter_values(config["parameters"]["roughness"], stride)
+                    results_df, evaluated = run_inline_grid_search(
+                        single_spectrum,
+                        wavelengths,
+                        measurement_features,
+                        analysis_cfg,
+                        metrics_cfg,
+                        lipid_vals,
+                        aqueous_vals,
+                        rough_vals,
+                        max_results,
+                    )
+                    st.session_state[cache_key] = {
+                        "results": results_df,
+                        "evaluated": evaluated,
+                        "stride": stride,
+                        "max_results": max_results_input,
+                    }
+
+            cache_entry = st.session_state.get(cache_key)
+            if cache_entry:
+                results_df = cache_entry["results"]
+                evaluated = cache_entry.get("evaluated", len(results_df))
+                if results_df.empty:
+                    st.warning("No spectra were evaluated with the current settings.")
+                else:
+                    st.caption(
+                        f"Evaluated {evaluated} spectra (stride ×{cache_entry.get('stride', stride)})."
+                    )
+                    display_df = results_df.head(top_k_display)
+                    st.dataframe(display_df, use_container_width=True)
+                    options = list(display_df.index)
+                    selection = st.selectbox(
+                        "Select a candidate to apply", options=options, format_func=lambda idx: f"Rank {idx + 1}"
+                    )
+                    if st.button("Apply Selection", key="apply_grid_selection"):
+                        row = display_df.loc[selection]
+                        st.session_state["lipid_slider"] = float(row["lipid_nm"])
+                        st.session_state["aqueous_slider"] = float(row["aqueous_nm"])
+                        st.session_state["rough_slider"] = float(row["roughness_A"])
+                        st.experimental_rerun()
+            else:
+                st.info("Run the grid search to see ranked candidates.")
 
 
 if __name__ == "__main__":
