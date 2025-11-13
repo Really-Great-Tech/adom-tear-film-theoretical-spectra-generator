@@ -1,0 +1,277 @@
+{
+  "measurement_file": "data\\measurements\\(Run)spectra_10-20-45-060.txt",
+  "config_file": "\\\\localhost@9843\\DavWWWRoot\\adom-tear-film-theoretical-spectra-generator\\config.yaml",
+  "grid_file": null,
+  "evaluated_spectra": 67725,
+  "top_k": 20,
+  "results_csv": "outputs\\grid_search\\demo\\grid_search_(Run)spectra_10-20-45-060_20251113_104534.csv",
+  "results": [
+    {
+      "lipid_nm": 149.0,
+      "aqueous_nm": 1760.0,
+      "roughness_A": 2700.0,
+      "peak_count_score": 1.0,
+      "peak_delta_score": 0.0,
+      "phase_overlap_score": 0.6443966191378061,
+      "composite_score": 0.5288793238275613,
+      "matched_peaks": 0,
+      "unmatched_measured": 0,
+      "unmatched_theoretical": 0
+    },
+    {
+      "lipid_nm": 144.0,
+      "aqueous_nm": 1760.0,
+      "roughness_A": 2700.0,
+      "peak_count_score": 1.0,
+      "peak_delta_score": 0.0,
+      "phase_overlap_score": 0.6441296200068464,
+      "composite_score": 0.5288259240013693,
+      "matched_peaks": 0,
+      "unmatched_measured": 0,
+      "unmatched_theoretical": 0
+    },
+    {
+      "lipid_nm": 144.0,
+      "aqueous_nm": 1770.0,
+      "roughness_A": 2700.0,
+      "peak_count_score": 1.0,
+      "peak_delta_score": 0.0,
+      "phase_overlap_score": 0.6438048999149104,
+      "composite_score": 0.5287609799829821,
+      "matched_peaks": 0,
+      "unmatched_measured": 0,
+      "unmatched_theoretical": 0
+    },
+    {
+      "lipid_nm": 139.0,
+      "aqueous_nm": 1770.0,
+      "roughness_A": 2700.0,
+      "peak_count_score": 1.0,
+      "peak_delta_score": 0.0,
+      "phase_overlap_score": 0.6432233322849713,
+      "composite_score": 0.5286446664569943,
+      "matched_peaks": 0,
+      "unmatched_measured": 0,
+      "unmatched_theoretical": 0
+    },
+    {
+      "lipid_nm": 154.0,
+      "aqueous_nm": 1760.0,
+      "roughness_A": 2700.0,
+      "peak_count_score": 1.0,
+      "peak_delta_score": 0.0,
+      "phase_overlap_score": 0.6431275205230813,
+      "composite_score": 0.5286255041046163,
+      "matched_peaks": 0,
+      "unmatched_measured": 0,
+      "unmatched_theoretical": 0
+    },
+    {
+      "lipid_nm": 149.0,
+      "aqueous_nm": 1770.0,
+      "roughness_A": 2700.0,
+      "peak_count_score": 1.0,
+      "peak_delta_score": 0.0,
+      "phase_overlap_score": 0.6429420478662574,
+      "composite_score": 0.5285884095732515,
+      "matched_peaks": 0,
+      "unmatched_measured": 0,
+      "unmatched_theoretical": 0
+    },
+    {
+      "lipid_nm": 149.0,
+      "aqueous_nm": 1750.0,
+      "roughness_A": 2700.0,
+      "peak_count_score": 1.0,
+      "peak_delta_score": 0.0,
+      "phase_overlap_score": 0.6428708142348015,
+      "composite_score": 0.5285741628469603,
+      "matched_peaks": 0,
+      "unmatched_measured": 0,
+      "unmatched_theoretical": 0
+    },
+    {
+      "lipid_nm": 154.0,
+      "aqueous_nm": 1750.0,
+      "roughness_A": 2700.0,
+      "peak_count_score": 1.0,
+      "peak_delta_score": 0.0,
+      "phase_overlap_score": 0.6428113559553681,
+      "composite_score": 0.5285622711910737,
+      "matched_peaks": 0,
+      "unmatched_measured": 0,
+      "unmatched_theoretical": 0
+    },
+    {
+      "lipid_nm": 139.0,
+      "aqueous_nm": 1760.0,
+      "roughness_A": 2700.0,
+      "peak_count_score": 1.0,
+      "peak_delta_score": 0.0,
+      "phase_overlap_score": 0.6425049432823352,
+      "composite_score": 0.5285009886564671,
+      "matched_peaks": 0,
+      "unmatched_measured": 0,
+      "unmatched_theoretical": 0
+    },
+    {
+      "lipid_nm": 144.0,
+      "aqueous_nm": 1750.0,
+      "roughness_A": 2700.0,
+      "peak_count_score": 1.0,
+      "peak_delta_score": 0.0,
+      "phase_overlap_score": 0.6414873253096041,
+      "composite_score": 0.5282974650619209,
+      "matched_peaks": 0,
+      "unmatched_measured": 0,
+      "unmatched_theoretical": 0
+    },
+    {
+      "lipid_nm": 134.0,
+      "aqueous_nm": 1770.0,
+      "roughness_A": 2700.0,
+      "peak_count_score": 1.0,
+      "peak_delta_score": 0.0,
+      "phase_overlap_score": 0.6413644370747115,
+      "composite_score": 0.5282728874149423,
+      "matched_peaks": 0,
+      "unmatched_measured": 0,
+      "unmatched_theoretical": 0
+    },
+    {
+      "lipid_nm": 159.0,
+      "aqueous_nm": 1750.0,
+      "roughness_A": 2700.0,
+      "peak_count_score": 1.0,
+      "peak_delta_score": 0.0,
+      "phase_overlap_score": 0.6411074639134627,
+      "composite_score": 0.5282214927826926,
+      "matched_peaks": 0,
+      "unmatched_measured": 0,
+      "unmatched_theoretical": 0
+    },
+    {
+      "lipid_nm": 139.0,
+      "aqueous_nm": 1780.0,
+      "roughness_A": 2700.0,
+      "peak_count_score": 1.0,
+      "peak_delta_score": 0.0,
+      "phase_overlap_score": 0.6409636765939682,
+      "composite_score": 0.5281927353187936,
+      "matched_peaks": 0,
+      "unmatched_measured": 0,
+      "unmatched_theoretical": 0
+    },
+    {
+      "lipid_nm": 154.0,
+      "aqueous_nm": 1770.0,
+      "roughness_A": 2700.0,
+      "peak_count_score": 1.0,
+      "peak_delta_score": 0.0,
+      "phase_overlap_score": 0.6404767707995689,
+      "composite_score": 0.5280953541599138,
+      "matched_peaks": 0,
+      "unmatched_measured": 0,
+      "unmatched_theoretical": 0
+    },
+    {
+      "lipid_nm": 144.0,
+      "aqueous_nm": 1780.0,
+      "roughness_A": 2700.0,
+      "peak_count_score": 1.0,
+      "peak_delta_score": 0.0,
+      "phase_overlap_score": 0.6404626579152756,
+      "composite_score": 0.5280925315830551,
+      "matched_peaks": 0,
+      "unmatched_measured": 0,
+      "unmatched_theoretical": 0
+    },
+    {
+      "lipid_nm": 159.0,
+      "aqueous_nm": 1760.0,
+      "roughness_A": 2700.0,
+      "peak_count_score": 1.0,
+      "peak_delta_score": 0.0,
+      "phase_overlap_score": 0.6401493959281287,
+      "composite_score": 0.5280298791856257,
+      "matched_peaks": 0,
+      "unmatched_measured": 0,
+      "unmatched_theoretical": 0
+    },
+    {
+      "lipid_nm": 134.0,
+      "aqueous_nm": 1780.0,
+      "roughness_A": 2700.0,
+      "peak_count_score": 1.0,
+      "peak_delta_score": 0.0,
+      "phase_overlap_score": 0.640100513781042,
+      "composite_score": 0.5280201027562085,
+      "matched_peaks": 0,
+      "unmatched_measured": 0,
+      "unmatched_theoretical": 0
+    },
+    {
+      "lipid_nm": 134.0,
+      "aqueous_nm": 1760.0,
+      "roughness_A": 2700.0,
+      "peak_count_score": 1.0,
+      "peak_delta_score": 0.0,
+      "phase_overlap_score": 0.6397090902434298,
+      "composite_score": 0.527941818048686,
+      "matched_peaks": 0,
+      "unmatched_measured": 0,
+      "unmatched_theoretical": 0
+    },
+    {
+      "lipid_nm": 139.0,
+      "aqueous_nm": 1750.0,
+      "roughness_A": 2700.0,
+      "peak_count_score": 1.0,
+      "peak_delta_score": 0.0,
+      "phase_overlap_score": 0.6388562751269027,
+      "composite_score": 0.5277712550253806,
+      "matched_peaks": 0,
+      "unmatched_measured": 0,
+      "unmatched_theoretical": 0
+    },
+    {
+      "lipid_nm": 149.0,
+      "aqueous_nm": 1780.0,
+      "roughness_A": 2700.0,
+      "peak_count_score": 1.0,
+      "peak_delta_score": 0.0,
+      "phase_overlap_score": 0.6384546662810971,
+      "composite_score": 0.5276909332562194,
+      "matched_peaks": 0,
+      "unmatched_measured": 0,
+      "unmatched_theoretical": 0
+    }
+  ],
+  "analysis_config": {
+    "detrending": {
+      "default_cutoff_frequency": 0.01,
+      "filter_order": 3
+    },
+    "peak_detection": {
+      "default_prominence": 0.005,
+      "min_height": null
+    },
+    "metrics": {
+      "weights": {
+        "peak_count": 0.4,
+        "peak_delta": 0.4,
+        "phase": 0.2
+      },
+      "peak_matching": {
+        "wavelength_tolerance_nm": 5.0
+      },
+      "peak_delta": {
+        "wavelength_tau": 5.0,
+        "unmatched_penalty": 0.1
+      },
+      "phase": {
+        "window": "hann"
+      }
+    }
+  }
+}
