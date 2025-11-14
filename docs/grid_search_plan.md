@@ -1,5 +1,32 @@
 # Grid Search Plan for Spectrum Matching
 
+## Implementation Status (2025-11-13)
+- Shared measurement helpers live in `src/analysis/measurement_utils.py` and power both the Streamlit app and CLI.
+- Metric scoring utilities are implemented in `src/analysis/metrics.py`.
+- A CLI driver `run_grid_search.py` streams through either generated spectra or cached `grid.npy` files and persists the top-K candidates plus a JSON summary.
+- Configuration defaults for weights/tolerances are defined in `analysis.metrics` within `config.yaml`.
+
+### CLI Usage
+Run against a measurement spectrum while reusing the DLL calculator:
+
+```bash
+python run_grid_search.py \
+  --measurement Z:/measurements/Patient_01_Sample/Spectra/GoodSpectra/Corrected/(Run)spectra_10-20-45-060.txt \
+  --top-k 20 \
+  --output-dir outputs/grid_search/demo
+```
+
+To score an existing `grid.npy` bundle:
+
+```bash
+python run_grid_search.py \
+  --measurement Z:/measurements/.../(Run)spectra_10-20-45-060.txt \
+  --grid-file outputs/spectra_20251113_120000/grid.npy \
+  --meta-file outputs/spectra_20251113_120000/meta.json
+```
+
+Outputs land in the requested directory as `<prefix>.csv` (ranked table) and `<prefix>.json` (full metadata).
+
 ## Objectives
 - **Goal:** rank each (lipid, aqueous, roughness) tuple by how well its theoretical spectrum matches a measured spectrum using three metrics: (1) peak-count agreement, (2) delta between paired peaks, and (3) a phase-overlap / frequency-domain similarity term.
 - **Deliverables:** reusable scoring utilities, a grid-search driver (CLI + optional Streamlit hooks), configurable metric weights/tolerances, and reporting artifacts (top-N table plus serialized results).

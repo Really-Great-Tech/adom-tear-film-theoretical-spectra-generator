@@ -5,20 +5,20 @@
 parameters:
   # Lipid layer thickness (nm) - Algorithm range: 120-200nm
   lipid:
-    min: 120        # Algorithm minimum
-    max: 200        # Algorithm maximum
+    min: 9          # Algorithm minimum
+    max: 180        # Algorithm maximum
     step: 5         # Algorithm step size
     
   # Aqueous layer thickness (nm) - Algorithm range: 680-1200nm
   aqueous:
-    min: 680        # Algorithm minimum  
-    max: 1200       # Algorithm maximum
+    min: 1750      # Algorithm minimum
+    max: 2200       # Algorithm maximum
     step: 10        # Algorithm step size
     
   # Mucus layer roughness (Angstroms) - Algorithm range: 600-2600Å
   roughness:
     min: 600        # Algorithm minimum
-    max: 2600       # Algorithm maximum
+    max: 2750       # Algorithm maximum
     step: 50        # Algorithm step size
 
 # Fixed Parameters
@@ -37,6 +37,7 @@ wavelengths:
 # Measurement spectra configuration
 measurements:
   enabled: true
+  base_dir: "data/measurements"
   format: "txt"  # csv, xlsx, or txt
   wavelength_column: 0  # Column index for wavelength data (0-based)
   reflectance_column: 1  # Column index for reflectance data (0-based)
@@ -51,6 +52,22 @@ analysis:
   peak_detection:
     default_prominence: 0.005  # Default peak prominence threshold
     min_height: null  # Minimum peak height (null for no limit)
+  metrics:
+    peak_count:
+      wavelength_tolerance_nm: 5.0
+    peak_delta:
+      tolerance_nm: 5.0
+      tau_nm: 15.0
+      penalty_unpaired: 0.05
+    phase_overlap:
+      resample_points: 1024
+      window: "hann"
+    composite:
+      weights:
+        peak_count: 0.4
+        peak_delta: 0.4
+        phase_overlap: 0.2
+
 
 # File Paths (relative to project root)
 paths:
@@ -114,7 +131,8 @@ presets:
     roughness: {min: 2000, max: 2100, step: 100}  # Keep roughness relatively constant
 
 # Active preset (comment out to use manual parameters above)
-active_preset: "high_resolution"
+# active_preset disabled
+# active_preset: "high_resolution"
 
 # Advanced Options
 advanced:
