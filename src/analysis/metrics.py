@@ -127,15 +127,18 @@ def peak_delta_score(
 
     matched_meas, matched_theo, deltas = _match_peaks(meas_peaks, theo_peaks, tolerance_nm)
 
+    unmatched_measurement = len(meas_peaks) - len(matched_meas)
+    unmatched_theoretical = len(theo_peaks) - len(matched_theo)
     if deltas.size == 0:
-        score = 0.0
         mean_delta = 0.0
+        if unmatched_measurement == 0 and unmatched_theoretical == 0:
+            score = 1.0
+        else:
+            score = 0.0
     else:
         mean_delta = float(np.mean(deltas))
         score = float(np.exp(-mean_delta / max(tau_nm, 1e-6)))
 
-    unmatched_measurement = len(meas_peaks) - len(matched_meas)
-    unmatched_theoretical = len(theo_peaks) - len(matched_theo)
     penalty = penalty_unpaired * float(unmatched_measurement + unmatched_theoretical)
     score = max(0.0, min(1.0, score - penalty))
 
