@@ -49,7 +49,7 @@ class SpectrumScore:
         if self.roughness_A is not None:
             payload["roughness_A"] = float(self.roughness_A)
         for key, value in self.scores.items():
-            payload[f"score_{key}"] = float(value)
+            payload[f"{key}_score"] = float(value)
         for metric, diag in self.diagnostics.items():
             for diag_key, diag_val in diag.items():
                 payload[f"{metric}_{diag_key}"] = float(diag_val)

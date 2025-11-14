@@ -125,10 +125,21 @@ def load_measurement_files(measurements_dir: pathlib.Path, config: Dict[str, Any
 
 
 def generate_parameter_values(cfg: Dict[str, Any], stride: int) -> np.ndarray:
-    step = float(cfg["step"]) * max(1, stride)
-    values = np.arange(cfg["min"], cfg["max"], step, dtype=float)
-    if len(values) == 0:
-        values = np.array([float(cfg["min"])])
+    stride = max(1, stride)
+    min_val = float(cfg["min"])
+    max_val = float(cfg["max"])
+    step = float(cfg["step"]) * stride
+    if step <= 0:
+        return np.array([min_val, max_val], dtype=float)
+
+    values = np.arange(min_val, max_val + step * 0.5, step, dtype=float)
+    if values.size == 0:
+        values = np.array([min_val], dtype=float)
+
+    if values[-1] < max_val - 1e-9:
+        values = np.append(values, max_val)
+    else:
+        values[-1] = max_val
     return values
 
 

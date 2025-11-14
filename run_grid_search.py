@@ -186,15 +186,34 @@ def _apply_metric_overrides(metrics_cfg: Dict[str, Any], args: argparse.Namespac
         }
 
 
+
+def _build_axis(cfg: Dict[str, Any]) -> np.ndarray:
+    min_val = float(cfg["min"])
+    max_val = float(cfg["max"])
+    step = float(cfg["step"])
+    if step <= 0:
+        return np.array([min_val, max_val], dtype=float)
+
+    values = np.arange(min_val, max_val + step * 0.5, step, dtype=float)
+    if values.size == 0:
+        values = np.array([min_val], dtype=float)
+
+    if values[-1] < max_val - 1e-9:
+        values = np.append(values, max_val)
+    else:
+        values[-1] = max_val
+    return values
+
+
 def _prepare_parameter_arrays(config: Dict[str, Any]) -> ParameterGrid:
     params = config["parameters"]
     lipid_cfg = params["lipid"]
     aqueous_cfg = params["aqueous"]
     rough_cfg = params["roughness"]
 
-    lipid_vals = np.arange(lipid_cfg["min"], lipid_cfg["max"], lipid_cfg["step"], dtype=float)
-    aqueous_vals = np.arange(aqueous_cfg["min"], aqueous_cfg["max"], aqueous_cfg["step"], dtype=float)
-    rough_vals = np.arange(rough_cfg["min"], rough_cfg["max"], rough_cfg["step"], dtype=float)
+    lipid_vals = _build_axis(lipid_cfg)
+    aqueous_vals = _build_axis(aqueous_cfg)
+    rough_vals = _build_axis(rough_cfg)
     return ParameterGrid(lipid=lipid_vals, aqueous=aqueous_vals, roughness=rough_vals)
 
 
