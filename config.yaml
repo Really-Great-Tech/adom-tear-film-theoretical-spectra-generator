@@ -52,7 +52,31 @@ analysis:
   peak_detection:
     default_prominence: 0.005  # Default peak prominence threshold
     min_height: null  # Minimum peak height (null for no limit)
+  quality_gates:
+    enabled: true
+    min_quality_score: 0.5
+    min_peaks: 3
+    min_signal_amplitude: 0.02
+    min_wavelength_span_nm: 150.0
+  grid_search:
+    use_temporal_seeding: true
+    temporal_window_multiplier: 0.3
+    confidence_threshold_for_narrow_window: 0.8
+    max_total_evals: null
+    coarse:
+      top_k: 20
+      lipid: {min: 9, max: 180, step: 30}
+      aqueous: {min: 1750, max: 2200, step: 60}
+      roughness: {min: 600, max: 2750, step: 150}
+    refine:
+      lipid: {window_nm: 20, step_nm: 5}
+      aqueous: {window_nm: 40, step_nm: 10}
+      roughness: {window_A: 200, step_A: 25}
+      max_refine_candidates: 5000
   metrics:
+    residual:
+      tau_rmse: 0.015
+      max_rmse: 0.1
     peak_count:
       wavelength_tolerance_nm: 5.0
     peak_delta:
@@ -62,11 +86,19 @@ analysis:
     phase_overlap:
       resample_points: 1024
       window: "hann"
+    temporal_continuity:
+      enabled: false
+      tau_lipid_nm: 10.0
+      tau_aqueous_nm: 30.0
+      tau_roughness_A: 150.0
     composite:
       weights:
+        residual: 0.5
         peak_count: 0.4
         peak_delta: 0.4
         phase_overlap: 0.2
+        quality: 0.1
+        temporal_continuity: 0.1
 
 
 # File Paths (relative to project root)
