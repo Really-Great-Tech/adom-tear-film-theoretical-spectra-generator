@@ -3,7 +3,7 @@ import pytest
 np = pytest.importorskip("numpy")
 pd = pytest.importorskip("pandas")
 
-from analysis import (
+from src.analysis import (
     prepare_measurement,
     prepare_theoretical_spectrum,
     peak_count_score,
