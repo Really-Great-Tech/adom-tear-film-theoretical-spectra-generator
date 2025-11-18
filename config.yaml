@@ -5,20 +5,20 @@
 parameters:
   # Lipid layer thickness (nm) - Algorithm range: 120-200nm
   lipid:
-    min: 9          # Algorithm minimum
-    max: 180        # Algorithm maximum
+    min: 120        # Algorithm minimum
+    max: 200        # Algorithm maximum
     step: 5         # Algorithm step size
     
   # Aqueous layer thickness (nm) - Algorithm range: 680-1200nm
   aqueous:
-    min: 1750      # Algorithm minimum
-    max: 2200       # Algorithm maximum
+    min: 680        # Algorithm minimum
+    max: 1200       # Algorithm maximum
     step: 10        # Algorithm step size
     
   # Mucus layer roughness (Angstroms) - Algorithm range: 600-2600Å
   roughness:
     min: 600        # Algorithm minimum
-    max: 2750       # Algorithm maximum
+    max: 2600       # Algorithm maximum
     step: 50        # Algorithm step size
 
 # Fixed Parameters
@@ -109,8 +109,8 @@ presets:
   # Quick test - small parameter space around requested values
   quick_test:
     lipid: {min: 125, max: 135, step: 5}      # Around requested 129nm
-    aqueous: {min: 1150, max: 1200, step: 25} # Near max since 3194 exceeds algorithm limits
-    roughness: {min: 2550, max: 2600, step: 50}  # Near stack default 2700Å
+    aqueous: {min: 1000, max: 1200, step: 25} # Near max (clamped to algorithm range 680-1200nm)
+    roughness: {min: 2550, max: 2600, step: 50}  # Near stack default (clamped to algorithm range 600-2600Å)
     
   # Medium resolution scan
   medium_scan:
@@ -120,13 +120,13 @@ presets:
     
   # High resolution scan (warning: generates many spectra!)
   high_resolution:
-    lipid: {min: 100, max: 250, step: 2}
-    aqueous: {min: 600, max: 1500, step: 10}
-    roughness: {min: 1000, max: 3000, step: 25}
+    lipid: {min: 120, max: 200, step: 2}      # Clamped to algorithm range
+    aqueous: {min: 680, max: 1200, step: 10}  # Clamped to algorithm range
+    roughness: {min: 600, max: 2600, step: 25}  # Clamped to algorithm range
     
   # Lipid thickness focus
   lipid_focus:
-    lipid: {min: 80, max: 300, step: 5}
+    lipid: {min: 120, max: 200, step: 5}      # Clamped to algorithm range
     aqueous: {min: 900, max: 1000, step: 50}  # Keep aqueous relatively constant
     roughness: {min: 2000, max: 2100, step: 100}  # Keep roughness relatively constant
 

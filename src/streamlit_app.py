@@ -17,7 +17,8 @@ import streamlit as st
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 from typing import Dict, Any, List, Tuple, Optional
-import glob
+import itertools
+import random
 import os
 
 from analysis import (
@@ -96,30 +97,64 @@ def detect_valleys_df(df: pd.DataFrame, column: str, prominence: float) -> pd.Da
 
 
 def load_measurement_files(measurements_dir: pathlib.Path, config: Dict[str, Any]) -> Dict[str, pd.DataFrame]:
-    """Load measurement spectra using the shared loader."""
+    """Load measurement spectra using the shared loader.
+    
+    Searches both the configured measurements directory and exploration/sample_data/
+    to support Silas's data structure with good_fit/bad_fit folders.
+    """
 
     measurements: Dict[str, pd.DataFrame] = {}
-    if not measurements_dir.exists():
-        st.warning(f"Measurements directory not found: {measurements_dir}")
-        return measurements
-
     meas_config = config.get("measurements", {})
     file_pattern = meas_config.get("file_pattern", "*.txt")
-    pattern_path = measurements_dir / file_pattern
-    file_paths = glob.glob(str(pattern_path))
+    
+    # Search in both configured directory and exploration/sample_data/
+    search_dirs = [measurements_dir]
+    exploration_dir = PROJECT_ROOT / "exploration" / "sample_data"
+    if exploration_dir.exists():
+        search_dirs.append(exploration_dir)
+    
+    all_file_path_objs = []
+    for search_dir in search_dirs:
+        if not search_dir.exists():
+            continue
+        # Normalize the base directory path for Windows UNC paths
+        search_dir_normalized = pathlib.Path(os.path.normpath(str(search_dir.resolve())))
+        file_path_objs = [
+            p for p in search_dir_normalized.rglob(file_pattern)
+            if p.is_file() and not p.name.endswith("_BestFit.txt")  # Skip BestFit files
+        ]
+        all_file_path_objs.extend(file_path_objs)
 
-    if not file_paths:
-        st.warning(f"No measurement files found matching pattern: {file_pattern} in {measurements_dir}")
+    if not all_file_path_objs:
+        st.warning(f"No measurement files found matching pattern: {file_pattern}")
         return measurements
 
-    for file_path in sorted(file_paths):
+    for file_path_obj in sorted(all_file_path_objs):
         try:
-            file_name = pathlib.Path(file_path).stem
-            meas_df = load_measurement_spectrum(file_path, meas_config)
+            # Normalize path for Windows UNC paths (handle backslash issues)
+            normalized_str = os.path.normpath(str(file_path_obj))
+            file_path_obj = pathlib.Path(normalized_str)
+            
+            # Ensure path exists
+            if not file_path_obj.exists():
+                st.warning(f"File does not exist: {file_path_obj}")
+                continue
+            
+            # Determine which base directory this file is relative to
+            if exploration_dir.exists() and str(file_path_obj).startswith(str(exploration_dir.resolve())):
+                base_dir = exploration_dir
+            else:
+                base_dir = measurements_dir
+            
+            # Include subdirectory path in key (e.g., "good_fit/(Run)spectra_09-46-14-250")
+            base_dir_normalized = pathlib.Path(os.path.normpath(str(base_dir.resolve())))
+            rel_path = file_path_obj.relative_to(base_dir_normalized)
+            file_name = str(rel_path.with_suffix(""))  # Remove .txt extension
+            meas_df = load_measurement_spectrum(file_path_obj, meas_config)
             if not meas_df.empty:
                 measurements[file_name] = meas_df
         except Exception as exc:  # pragma: no cover - UI warning path
-            st.warning(f"Error loading {file_path}: {exc}")
+            st.warning(f"Error loading {file_path_obj}: {exc}")
 
     return measurements
 
@@ -195,39 +230,99 @@ def run_inline_grid_search(
 ) -> pd.DataFrame:
     records: List[Dict[str, float]] = []
     evaluated = 0
-    for lipid in lipid_vals:
-        for aqueous in aqueous_vals:
-            for rough in rough_vals:
+    
+    # Calculate total search space
+    total_combinations = len(lipid_vals) * len(aqueous_vals) * len(rough_vals)
+    
+    # Use random sampling if max_results is set and covers less than 10% of search space
+    # This prevents bias toward lower parameter values
+    use_random_sampling = max_results is not None and max_results > 0 and max_results < total_combinations * 0.1
+    
+    if use_random_sampling:
+        # Generate all combinations and randomly sample
+        all_combinations = list(itertools.product(lipid_vals, aqueous_vals, rough_vals))
+        # Use fixed seed for reproducibility
+        random.seed(42)
+        sampled_combinations = random.sample(all_combinations, min(max_results, len(all_combinations)))
+        
+        for lipid, aqueous, rough in sampled_combinations:
+            spectrum = single_spectrum(float(lipid), float(aqueous), float(rough))
+            # Validate spectrum is not flat/zero
+            if spectrum is None or len(spectrum) == 0 or np.all(spectrum == 0):
+                # Skip invalid spectra
+                continue
+            # Check if spectrum has variation (before detrending)
+            spectrum_std = np.std(spectrum)
+            if spectrum_std < 1e-6:
+                # Skip flat spectra
+                continue
+            theoretical = prepare_theoretical_spectrum(
+                wavelengths,
+                spectrum,
+                measurement_features,
+                analysis_cfg,
+            )
+            scores, diagnostics = score_candidate(
+                measurement_features,
+                theoretical,
+                metrics_cfg,
+            )
+            record = {
+                "lipid_nm": float(lipid),
+                "aqueous_nm": float(aqueous),
+                "roughness_A": float(rough),
+            }
+            for key, value in scores.items():
+                record[f"score_{key}"] = float(value)
+            for metric, diag in diagnostics.items():
+                for diag_key, diag_val in diag.items():
+                    record[f"{metric}_{diag_key}"] = float(diag_val)
+            records.append(record)
+            evaluated += 1
+    else:
+        # Use systematic grid search (original nested loop approach)
+        for lipid in lipid_vals:
+            for aqueous in aqueous_vals:
+                for rough in rough_vals:
+                    if max_results is not None and evaluated >= max_results:
+                        break
+                    spectrum = single_spectrum(float(lipid), float(aqueous), float(rough))
+                    # Validate spectrum is not flat/zero
+                    if spectrum is None or len(spectrum) == 0 or np.all(spectrum == 0):
+                        # Skip invalid spectra
+                        continue
+                    # Check if spectrum has variation (before detrending)
+                    spectrum_std = np.std(spectrum)
+                    if spectrum_std < 1e-6:
+                        # Skip flat spectra
+                        continue
+                    theoretical = prepare_theoretical_spectrum(
+                        wavelengths,
+                        spectrum,
+                        measurement_features,
+                        analysis_cfg,
+                    )
+                    scores, diagnostics = score_candidate(
+                        measurement_features,
+                        theoretical,
+                        metrics_cfg,
+                    )
+                    record = {
+                        "lipid_nm": float(lipid),
+                        "aqueous_nm": float(aqueous),
+                        "roughness_A": float(rough),
+                    }
+                    for key, value in scores.items():
+                        record[f"score_{key}"] = float(value)
+                    for metric, diag in diagnostics.items():
+                        for diag_key, diag_val in diag.items():
+                            record[f"{metric}_{diag_key}"] = float(diag_val)
+                    records.append(record)
+                    evaluated += 1
                 if max_results is not None and evaluated >= max_results:
                     break
-                spectrum = single_spectrum(float(lipid), float(aqueous), float(rough))
-                theoretical = prepare_theoretical_spectrum(
-                    wavelengths,
-                    spectrum,
-                    measurement_features,
-                    analysis_cfg,
-                )
-                scores, diagnostics = score_candidate(
-                    measurement_features,
-                    theoretical,
-                    metrics_cfg,
-                )
-                record = {
-                    "lipid_nm": float(lipid),
-                    "aqueous_nm": float(aqueous),
-                    "roughness_A": float(rough),
-                }
-                for key, value in scores.items():
-                    record[f"score_{key}"] = float(value)
-                for metric, diag in diagnostics.items():
-                    for diag_key, diag_val in diag.items():
-                        record[f"{metric}_{diag_key}"] = float(diag_val)
-                records.append(record)
-                evaluated += 1
             if max_results is not None and evaluated >= max_results:
                 break
-        if max_results is not None and evaluated >= max_results:
-            break
 
     if not records:
         return pd.DataFrame(), 0
@@ -778,6 +873,9 @@ def main():
                         "evaluated": evaluated,
                         "stride": stride,
                         "max_results": max_results_input,
+                        "lipid_vals": lipid_vals,
+                        "aqueous_vals": aqueous_vals,
+                        "rough_vals": rough_vals,
                     }
 
             cache_entry = st.session_state.get(cache_key)
@@ -790,6 +888,52 @@ def main():
                     st.caption(
                         f"Evaluated {evaluated} spectra (stride ×{cache_entry.get('stride', stride)})."
                     )
+                    # Show score statistics for debugging
+                    if "score_composite" in results_df.columns:
+                        score_min = results_df["score_composite"].min()
+                        score_max = results_df["score_composite"].max()
+                        score_mean = results_df["score_composite"].mean()
+                        st.caption(f"Composite scores: min={score_min:.4f}, max={score_max:.4f}, mean={score_mean:.4f}")
+                    
+                    # Show peak detection diagnostics
+                    if "peak_count_measurement_peaks" in results_df.columns:
+                        meas_peaks = results_df["peak_count_measurement_peaks"].iloc[0] if len(results_df) > 0 else 0
+                        theo_peaks_col = "peak_count_theoretical_peaks"
+                        if theo_peaks_col in results_df.columns:
+                            theo_peaks_avg = results_df[theo_peaks_col].mean()
+                            theo_peaks_max = results_df[theo_peaks_col].max()
+                            st.caption(f"Peak detection: measurement={int(meas_peaks)} peaks, theoretical avg={theo_peaks_avg:.1f}, max={int(theo_peaks_max)}")
+                            if theo_peaks_max == 0:
+                                st.warning("⚠️ No peaks detected in theoretical spectra! Try lowering the prominence threshold in Analysis Parameters.")
+                    
+                    # Show parameter range diagnostics
+                    if "lipid_nm" in results_df.columns:
+                        lipid_min = results_df["lipid_nm"].min()
+                        lipid_max = results_df["lipid_nm"].max()
+                        lipid_unique = results_df["lipid_nm"].nunique()
+                        aqueous_min = results_df["aqueous_nm"].min()
+                        aqueous_max = results_df["aqueous_nm"].max()
+                        aqueous_unique = results_df["aqueous_nm"].nunique()
+                        rough_min = results_df["roughness_A"].min()
+                        rough_max = results_df["roughness_A"].max()
+                        rough_unique = results_df["roughness_A"].nunique()
+                        st.caption(f"Parameter ranges explored: lipid={lipid_min:.0f}-{lipid_max:.0f} ({lipid_unique} values), "
+                                 f"aqueous={aqueous_min:.0f}-{aqueous_max:.0f} ({aqueous_unique} values), "
+                                 f"roughness={rough_min:.0f}-{rough_max:.0f} ({rough_unique} values)")
+                        
+                        # Warn if search space is too large
+                        cached_lipid_vals = cache_entry.get("lipid_vals")
+                        cached_aqueous_vals = cache_entry.get("aqueous_vals")
+                        cached_rough_vals = cache_entry.get("rough_vals")
+                        if cached_lipid_vals is not None and cached_aqueous_vals is not None and cached_rough_vals is not None:
+                            total_combinations = len(cached_lipid_vals) * len(cached_aqueous_vals) * len(cached_rough_vals)
+                            max_results_cached = cache_entry.get("max_results")
+                            if max_results_cached is not None and max_results_cached > 0 and max_results_cached < total_combinations * 0.1:
+                                coverage = 100 * evaluated / total_combinations
+                                st.warning(f"⚠️ Only {coverage:.1f}% of parameter space explored ({evaluated}/{total_combinations} combinations). "
+                                         f"Grid search may be biased toward lower parameter values. "
+                                         f"Consider increasing 'Max spectra' or using a larger 'Stride multiplier'.")
+                    
                     display_df = results_df.head(top_k_display)
                     st.dataframe(display_df, use_container_width=True)
                     options = list(display_df.index)
