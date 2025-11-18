@@ -7,7 +7,11 @@ from typing import Dict, Iterable, List, Optional, Tuple
 
 import numpy as np
 
-from .measurement_utils import PreparedMeasurement, PreparedTheoreticalSpectrum
+from .measurement_utils import (
+    PreparedMeasurement,
+    PreparedTheoreticalSpectrum,
+    calculate_fit_metrics,
+)
 
 
 @dataclass
@@ -168,6 +172,28 @@ def phase_overlap_score(
     return MetricResult(score=score, diagnostics=diagnostics)
 
 
+def residual_score(
+    measurement: PreparedMeasurement,
+    theoretical: PreparedTheoreticalSpectrum,
+    *,
+    tau_rmse: float,
+    max_rmse: Optional[float] = None,
+) -> MetricResult:
+    fit_metrics = calculate_fit_metrics(measurement.detrended, theoretical.detrended)
+    rmse = float(fit_metrics.get("RMSE", 0.0))
+    tau = max(float(tau_rmse), 1e-9)
+    score = float(np.exp(-rmse / tau))
+    if max_rmse is not None and rmse >= float(max_rmse):
+        score = 0.0
+    diagnostics = {
+        "rmse": rmse,
+        "mae": float(fit_metrics.get("MAE", 0.0)),
+        "r2": float(fit_metrics.get("R²", 0.0)),
+        "mape_pct": float(fit_metrics.get("MAPE (%)", 0.0)),
+    }
+    return MetricResult(score=score, diagnostics=diagnostics)
+
+
 def composite_score(component_scores: Dict[str, float], weights: Dict[str, float]) -> float:
     total_weight = float(sum(weights.values()))
     if total_weight <= 0:
@@ -182,6 +208,94 @@ def composite_score(component_scores: Dict[str, float], weights: Dict[str, float
     return combined / total_weight
 
 
+def measurement_quality_score(
+    measurement: PreparedMeasurement,
+    *,
+    min_peaks: Optional[int] = None,
+    min_signal_amplitude: Optional[float] = None,
+    min_wavelength_span_nm: Optional[float] = None,
+) -> Tuple[MetricResult, List[str]]:
+    peak_count = float(len(measurement.peaks))
+    signal_amplitude = float(np.ptp(measurement.detrended)) if measurement.detrended.size else 0.0
+    if measurement.wavelengths.size:
+        span = float(measurement.wavelengths.max() - measurement.wavelengths.min())
+    else:
+        span = 0.0
+
+    diagnostics: Dict[str, float] = {
+        "peak_count": peak_count,
+        "signal_amplitude": signal_amplitude,
+        "wavelength_span_nm": span,
+    }
+
+    failures: List[str] = []
+    checks = 0
+
+    if min_peaks is not None:
+        checks += 1
+        diagnostics["min_peaks"] = float(min_peaks)
+        if peak_count < float(min_peaks):
+            failures.append("min_peaks")
+
+    if min_signal_amplitude is not None:
+        checks += 1
+        diagnostics["min_signal_amplitude"] = float(min_signal_amplitude)
+        if signal_amplitude < float(min_signal_amplitude):
+            failures.append("min_signal_amplitude")
+
+    if min_wavelength_span_nm is not None:
+        checks += 1
+        diagnostics["min_wavelength_span_nm"] = float(min_wavelength_span_nm)
+        if span < float(min_wavelength_span_nm):
+            failures.append("min_wavelength_span_nm")
+
+    if checks == 0:
+        score = 1.0
+    else:
+        score = float((checks - len(failures)) / checks)
+
+    diagnostics["failed_checks"] = float(len(failures))
+    return MetricResult(score=score, diagnostics=diagnostics), failures
+
+
+def temporal_continuity_score(
+    current_params: Dict[str, Optional[float]],
+    previous_params: Optional[Dict[str, float]],
+    *,
+    tau_lipid_nm: float,
+    tau_aqueous_nm: float,
+    tau_roughness_A: float,
+) -> MetricResult:
+    if not previous_params:
+        diagnostics = {
+            "lipid_jump_nm": 0.0,
+            "aqueous_jump_nm": 0.0,
+            "roughness_jump_A": 0.0,
+        }
+        return MetricResult(score=1.0, diagnostics=diagnostics)
+
+    lipid_jump = abs(float(current_params.get("lipid_nm") or 0.0) - previous_params.get("lipid_nm", 0.0))
+    aqueous_jump = abs(
+        float(current_params.get("aqueous_nm") or 0.0) - previous_params.get("aqueous_nm", 0.0)
+    )
+    roughness_jump = abs(
+        float(current_params.get("roughness_A") or 0.0) - previous_params.get("roughness_A", 0.0)
+    )
+
+    tau_lipid = max(float(tau_lipid_nm), 1e-6)
+    tau_aqueous = max(float(tau_aqueous_nm), 1e-6)
+    tau_roughness = max(float(tau_roughness_A), 1e-6)
+
+    penalty = (lipid_jump / tau_lipid) + (aqueous_jump / tau_aqueous) + (roughness_jump / tau_roughness)
+    score = float(np.exp(-penalty))
+    diagnostics = {
+        "lipid_jump_nm": float(lipid_jump),
+        "aqueous_jump_nm": float(aqueous_jump),
+        "roughness_jump_A": float(roughness_jump),
+    }
+    return MetricResult(score=score, diagnostics=diagnostics)
+
+
 def score_spectrum(
     measurement: PreparedMeasurement,
     theoretical: PreparedTheoreticalSpectrum,
@@ -190,9 +304,13 @@ def score_spectrum(
     lipid_nm: Optional[float] = None,
     aqueous_nm: Optional[float] = None,
     roughness_A: Optional[float] = None,
+    measurement_quality: Optional[MetricResult] = None,
+    previous_params: Optional[Dict[str, float]] = None,
 ) -> SpectrumScore:
     peak_count_cfg = metrics_cfg.get("peak_count", {})
     peak_delta_cfg = metrics_cfg.get("peak_delta", {})
+    residual_cfg = metrics_cfg.get("residual", {})
+    temporal_cfg = metrics_cfg.get("temporal_continuity", {})
     weights_cfg = metrics_cfg.get("composite", {}).get("weights", {})
 
     count_result = peak_count_score(
@@ -209,19 +327,44 @@ def score_spectrum(
     )
     phase_result = phase_overlap_score(measurement, theoretical)
 
-    component_scores = {
+    component_scores: Dict[str, float] = {
         "peak_count": count_result.score,
         "peak_delta": delta_result.score,
         "phase_overlap": phase_result.score,
     }
-    composite = composite_score(component_scores, weights_cfg)
-    component_scores["composite"] = composite
-
-    diagnostics = {
+    diagnostics: Dict[str, Dict[str, float]] = {
         "peak_count": count_result.diagnostics,
         "peak_delta": delta_result.diagnostics,
         "phase_overlap": phase_result.diagnostics,
     }
+
+    if residual_cfg:
+        residual_result = residual_score(
+            measurement,
+            theoretical,
+            tau_rmse=float(residual_cfg.get("tau_rmse", 0.02)),
+            max_rmse=residual_cfg.get("max_rmse"),
+        )
+        component_scores["residual"] = residual_result.score
+        diagnostics["residual"] = residual_result.diagnostics
+
+    if measurement_quality is not None:
+        component_scores["quality"] = measurement_quality.score
+        diagnostics["quality"] = measurement_quality.diagnostics
+
+    if temporal_cfg.get("enabled") and previous_params is not None:
+        temporal_result = temporal_continuity_score(
+            {"lipid_nm": lipid_nm, "aqueous_nm": aqueous_nm, "roughness_A": roughness_A},
+            previous_params,
+            tau_lipid_nm=float(temporal_cfg.get("tau_lipid_nm", 10.0)),
+            tau_aqueous_nm=float(temporal_cfg.get("tau_aqueous_nm", 10.0)),
+            tau_roughness_A=float(temporal_cfg.get("tau_roughness_A", 50.0)),
+        )
+        component_scores["temporal_continuity"] = temporal_result.score
+        diagnostics["temporal_continuity"] = temporal_result.diagnostics
+
+    composite = composite_score(component_scores, weights_cfg)
+    component_scores["composite"] = composite
 
     return SpectrumScore(
         lipid_nm=lipid_nm,
@@ -238,6 +381,9 @@ __all__ = [
     "peak_count_score",
     "peak_delta_score",
     "phase_overlap_score",
+    "residual_score",
+    "measurement_quality_score",
+    "temporal_continuity_score",
     "composite_score",
     "score_spectrum",
 ]
