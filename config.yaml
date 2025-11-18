@@ -65,9 +65,9 @@ analysis:
     max_total_evals: null
     coarse:
       top_k: 20
-      lipid: {min: 9, max: 180, step: 30}
-      aqueous: {min: 1750, max: 2200, step: 60}
-      roughness: {min: 600, max: 2750, step: 150}
+      lipid: {min: 120, max: 200, step: 20}      # Algorithm range: 120-200nm
+      aqueous: {min: 680, max: 1200, step: 100}  # Algorithm range: 680-1200nm
+      roughness: {min: 600, max: 2600, step: 400}  # Algorithm range: 600-2600Å
     refine:
       lipid: {window_nm: 20, step_nm: 5}
       aqueous: {window_nm: 40, step_nm: 10}
