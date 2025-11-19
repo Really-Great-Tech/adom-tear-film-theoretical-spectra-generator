@@ -47,10 +47,10 @@ measurements:
 # Signal Analysis Configuration
 analysis:
   detrending:
-    default_cutoff_frequency: 0.01  # Default high-pass filter cutoff
+    default_cutoff_frequency: 0.008  # Default high-pass filter cutoff
     filter_order: 3  # Butterworth filter order
   peak_detection:
-    default_prominence: 0.005  # Default peak prominence threshold
+    default_prominence: 0.0001  # Default peak prominence threshold
     min_height: null  # Minimum peak height (null for no limit)
   quality_gates:
     enabled: true
@@ -58,6 +58,23 @@ analysis:
     min_peaks: 3
     min_signal_amplitude: 0.02
     min_wavelength_span_nm: 150.0
+  edge_case_detection:
+    enabled: true
+    threshold_high_score: 0.9    # Flag scores >= this as exceptional (algorithm outperforming)
+    threshold_low_score: 0.3     # Flag scores <= this as poor fits
+    threshold_no_fit: 0.4        # If best score <= this, flag as "no good fit found"
+    # Acceptable parameter ranges (wider than search ranges - these are physically/biologically feasible)
+    # If best fit is outside these, it's flagged as potentially invalid
+    acceptable_ranges:
+      lipid:
+        min: 0                   # Minimum feasible lipid thickness (nm) - can be 0
+        max: 500                 # Maximum feasible lipid thickness (nm) - wider than search range
+      aqueous:
+        min: 0                   # Minimum feasible aqueous thickness (nm) - CAN BE ZERO
+        max: 2000                # Maximum feasible aqueous thickness (nm) - wider than search range
+      roughness:
+        min: 0                   # Minimum feasible roughness (Å) - can be 0
+        max: 5000                # Maximum feasible roughness (Å) - wider than search range
   grid_search:
     use_temporal_seeding: true
     temporal_window_multiplier: 0.3
