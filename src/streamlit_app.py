@@ -368,6 +368,8 @@ def run_coarse_fine_grid_search(
     metrics_cfg: Dict[str, Any],
     config: Dict[str, Any],
     max_results: Optional[int],
+    *,
+    measurement_quality=None,
 ) -> pd.DataFrame:
     """Run a two-stage coarse-to-fine grid search.
     
@@ -418,6 +420,7 @@ def run_coarse_fine_grid_search(
                     lipid_nm=float(lipid),
                     aqueous_nm=float(aqueous),
                     roughness_A=float(rough),
+                    measurement_quality=measurement_quality,
                 )
                 record = {
                     "lipid_nm": float(lipid),
@@ -515,6 +518,7 @@ def run_coarse_fine_grid_search(
                         lipid_nm=float(lipid),
                         aqueous_nm=float(aqueous),
                         roughness_A=float(rough),
+                        measurement_quality=measurement_quality,
                     )
                     record = {
                         "lipid_nm": float(lipid),
@@ -560,6 +564,8 @@ def run_inline_grid_search(
     aqueous_vals: np.ndarray,
     rough_vals: np.ndarray,
     max_results: Optional[int],
+    *,
+    measurement_quality=None,
 ) -> pd.DataFrame:
     records: List[Dict[str, float]] = []
     evaluated = 0
@@ -602,6 +608,7 @@ def run_inline_grid_search(
                 lipid_nm=float(lipid),
                 aqueous_nm=float(aqueous),
                 roughness_A=float(rough),
+                measurement_quality=measurement_quality,
             )
             record = {
                 "lipid_nm": float(lipid),
@@ -645,6 +652,7 @@ def run_inline_grid_search(
                         lipid_nm=float(lipid),
                         aqueous_nm=float(aqueous),
                         roughness_A=float(rough),
+                        measurement_quality=measurement_quality,
                     )
                     record = {
                         "lipid_nm": float(lipid),
@@ -1358,6 +1366,15 @@ def main():
                 start_time = time.time()
                 with st.spinner("Scoring theoretical spectra..."):
                     measurement_features = prepare_measurement(selected_measurement, analysis_cfg)
+                    quality_cfg = analysis_cfg.get("quality_gates", {})
+                    measurement_quality_result = None
+                    if quality_cfg:
+                        measurement_quality_result, _ = measurement_quality_score(
+                            measurement_features,
+                            min_peaks=quality_cfg.get("min_peaks"),
+                            min_signal_amplitude=quality_cfg.get("min_signal_amplitude"),
+                            min_wavelength_span_nm=quality_cfg.get("min_wavelength_span_nm"),
+                        )
                     
                     if search_strategy == "coarse-fine":
                         # Use coarse-to-fine workflow
@@ -1369,6 +1386,7 @@ def main():
                             metrics_cfg,
                             config,
                             max_results,
+                            measurement_quality=measurement_quality_result,
                         )
                         # For coarse-fine, we don't have the original parameter arrays
                         lipid_vals = None
@@ -1389,6 +1407,7 @@ def main():
                             aqueous_vals,
                             rough_vals,
                             max_results,
+                            measurement_quality=measurement_quality_result,
                         )
                     
                     elapsed_time = time.time() - start_time

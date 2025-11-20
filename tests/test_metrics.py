@@ -1,3 +1,4 @@
+import copy
 import pytest
 
 np = pytest.importorskip("numpy")
@@ -13,6 +14,8 @@ from src.analysis import (
     residual_score,
     measurement_quality_score,
     temporal_continuity_score,
+    score_spectrum,
+    MetricResult,
 )
 
 
@@ -159,3 +162,28 @@ def test_temporal_continuity_penalizes_jumps():
         tau_roughness_A=100.0,
     )
     assert close.score > far.score
+
+
+def test_score_spectrum_includes_measurement_quality(analysis_cfg, measurement_df):
+    measurement_features = prepare_measurement(measurement_df, analysis_cfg)
+    theoretical = prepare_theoretical_spectrum(
+        measurement_df["wavelength"].to_numpy(),
+        measurement_df["reflectance"].to_numpy(),
+        measurement_features,
+        analysis_cfg,
+    )
+
+    metrics_cfg = copy.deepcopy(analysis_cfg["metrics"])
+    metrics_cfg["composite"]["weights"]["quality"] = 0.1
+    quality_result = MetricResult(score=0.2, diagnostics={"dummy": 1.0})
+
+    spectrum_score = score_spectrum(
+        measurement_features,
+        theoretical,
+        metrics_cfg,
+        measurement_quality=quality_result,
+    )
+
+    assert spectrum_score.scores["quality"] == pytest.approx(0.2)
+    expected_composite = (1.0 + 0.1 * 0.2) / 1.1
+    assert spectrum_score.scores["composite"] == pytest.approx(expected_composite, rel=1e-4)
