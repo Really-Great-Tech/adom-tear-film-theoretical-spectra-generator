@@ -24,6 +24,9 @@ from .metrics import (
     peak_count_score,
     peak_delta_score,
     phase_overlap_score,
+    residual_score,
+    measurement_quality_score,
+    temporal_continuity_score,
     composite_score,
     score_spectrum,
 )
@@ -50,6 +53,9 @@ __all__ = [
     "peak_count_score",
     "peak_delta_score",
     "phase_overlap_score",
+    "residual_score",
+    "measurement_quality_score",
+    "temporal_continuity_score",
     "composite_score",
     "score_spectrum",
 ]

@@ -1,15 +1,21 @@
+import copy
 import pytest
 
 np = pytest.importorskip("numpy")
 pd = pytest.importorskip("pandas")
 
-from analysis import (
+from src.analysis import (
     prepare_measurement,
     prepare_theoretical_spectrum,
     peak_count_score,
     peak_delta_score,
     phase_overlap_score,
     composite_score,
+    residual_score,
+    measurement_quality_score,
+    temporal_continuity_score,
+    score_spectrum,
+    MetricResult,
 )
 
 
@@ -92,3 +98,92 @@ def test_peak_delta_penalty_for_shift(analysis_cfg, measurement_df):
 
     assert delta_result.score < 1.0
     assert delta_result.diagnostics["mean_delta_nm"] > 0
+
+
+def test_residual_score_rewards_close_fit(analysis_cfg, measurement_df):
+    measurement_features = prepare_measurement(measurement_df, analysis_cfg)
+    theoretical_identical = prepare_theoretical_spectrum(
+        measurement_df["wavelength"].to_numpy(),
+        measurement_df["reflectance"].to_numpy(),
+        measurement_features,
+        analysis_cfg,
+    )
+    noisy_reflectance = measurement_df["reflectance"].to_numpy() + 0.05
+    theoretical_noisy = prepare_theoretical_spectrum(
+        measurement_df["wavelength"].to_numpy(),
+        noisy_reflectance,
+        measurement_features,
+        analysis_cfg,
+    )
+
+    good = residual_score(measurement_features, theoretical_identical, tau_rmse=0.01, max_rmse=1.0)
+    bad = residual_score(measurement_features, theoretical_noisy, tau_rmse=0.01, max_rmse=1.0)
+
+    assert good.score > bad.score
+    assert good.diagnostics["rmse"] < bad.diagnostics["rmse"]
+
+
+def test_measurement_quality_score_flags_low_amplitude(analysis_cfg, measurement_df):
+    measurement_features = prepare_measurement(measurement_df, analysis_cfg)
+    score, failures = measurement_quality_score(
+        measurement_features,
+        min_peaks=1,
+        min_signal_amplitude=0.01,
+        min_wavelength_span_nm=10,
+    )
+    assert score.score == pytest.approx(1.0)
+    assert not failures
+
+    flat_df = measurement_df.copy()
+    flat_df["reflectance"] = 0.5
+    flat_features = prepare_measurement(flat_df, analysis_cfg)
+    low_score, low_failures = measurement_quality_score(
+        flat_features,
+        min_peaks=1,
+        min_signal_amplitude=0.01,
+    )
+    assert low_score.score < 1.0
+    assert "min_signal_amplitude" in low_failures
+
+
+def test_temporal_continuity_penalizes_jumps():
+    close = temporal_continuity_score(
+        {"lipid_nm": 80.0, "aqueous_nm": 1000.0, "roughness_A": 2000.0},
+        {"lipid_nm": 82.0, "aqueous_nm": 995.0, "roughness_A": 2010.0},
+        tau_lipid_nm=10.0,
+        tau_aqueous_nm=50.0,
+        tau_roughness_A=100.0,
+    )
+    far = temporal_continuity_score(
+        {"lipid_nm": 80.0, "aqueous_nm": 1000.0, "roughness_A": 2000.0},
+        {"lipid_nm": 140.0, "aqueous_nm": 800.0, "roughness_A": 2600.0},
+        tau_lipid_nm=10.0,
+        tau_aqueous_nm=50.0,
+        tau_roughness_A=100.0,
+    )
+    assert close.score > far.score
+
+
+def test_score_spectrum_includes_measurement_quality(analysis_cfg, measurement_df):
+    measurement_features = prepare_measurement(measurement_df, analysis_cfg)
+    theoretical = prepare_theoretical_spectrum(
+        measurement_df["wavelength"].to_numpy(),
+        measurement_df["reflectance"].to_numpy(),
+        measurement_features,
+        analysis_cfg,
+    )
+
+    metrics_cfg = copy.deepcopy(analysis_cfg["metrics"])
+    metrics_cfg["composite"]["weights"]["quality"] = 0.1
+    quality_result = MetricResult(score=0.2, diagnostics={"dummy": 1.0})
+
+    spectrum_score = score_spectrum(
+        measurement_features,
+        theoretical,
+        metrics_cfg,
+        measurement_quality=quality_result,
+    )
+
+    assert spectrum_score.scores["quality"] == pytest.approx(0.2)
+    expected_composite = (1.0 + 0.1 * 0.2) / 1.1
+    assert spectrum_score.scores["composite"] == pytest.approx(expected_composite, rel=1e-4)

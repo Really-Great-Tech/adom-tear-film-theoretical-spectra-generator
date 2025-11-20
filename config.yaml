@@ -5,20 +5,20 @@
 parameters:
   # Lipid layer thickness (nm) - Algorithm range: 120-200nm
   lipid:
-    min: 9          # Algorithm minimum
-    max: 180        # Algorithm maximum
+    min: 120        # Algorithm minimum
+    max: 200        # Algorithm maximum
     step: 5         # Algorithm step size
     
   # Aqueous layer thickness (nm) - Algorithm range: 680-1200nm
   aqueous:
-    min: 1750      # Algorithm minimum
-    max: 2200       # Algorithm maximum
+    min: 680        # Algorithm minimum
+    max: 1200       # Algorithm maximum
     step: 10        # Algorithm step size
     
   # Mucus layer roughness (Angstroms) - Algorithm range: 600-2600Å
   roughness:
     min: 600        # Algorithm minimum
-    max: 2750       # Algorithm maximum
+    max: 2600       # Algorithm maximum
     step: 50        # Algorithm step size
 
 # Fixed Parameters
@@ -47,12 +47,53 @@ measurements:
 # Signal Analysis Configuration
 analysis:
   detrending:
-    default_cutoff_frequency: 0.01  # Default high-pass filter cutoff
+    default_cutoff_frequency: 0.008  # Default high-pass filter cutoff
     filter_order: 3  # Butterworth filter order
   peak_detection:
-    default_prominence: 0.005  # Default peak prominence threshold
+    default_prominence: 0.0001  # Default peak prominence threshold
     min_height: null  # Minimum peak height (null for no limit)
+  quality_gates:
+    enabled: true
+    min_quality_score: 0.5
+    min_peaks: 3
+    min_signal_amplitude: 0.02
+    min_wavelength_span_nm: 150.0
+  edge_case_detection:
+    enabled: true
+    threshold_high_score: 0.9    # Flag scores >= this as exceptional (algorithm outperforming)
+    threshold_low_score: 0.3     # Flag scores <= this as poor fits
+    threshold_no_fit: 0.4        # If best score <= this, flag as "no good fit found"
+    # Acceptable parameter ranges (wider than search ranges - these are physically/biologically feasible)
+    # If best fit is outside these, it's flagged as potentially invalid
+    acceptable_ranges:
+      lipid:
+        min: 0                   # Minimum feasible lipid thickness (nm) - can be 0
+        max: 500                 # Maximum feasible lipid thickness (nm) - wider than search range
+      aqueous:
+        min: 0                   # Minimum feasible aqueous thickness (nm) - CAN BE ZERO
+        max: 2000                # Maximum feasible aqueous thickness (nm) - wider than search range
+      roughness:
+        min: 0                   # Minimum feasible roughness (Å) - can be 0
+        max: 5000                # Maximum feasible roughness (Å) - wider than search range
+  grid_search:
+    use_temporal_seeding: true
+    temporal_window_multiplier: 0.3
+    confidence_threshold_for_narrow_window: 0.8
+    max_total_evals: null
+    coarse:
+      top_k: 20
+      lipid: {min: 120, max: 200, step: 20}      # Algorithm range: 120-200nm
+      aqueous: {min: 680, max: 1200, step: 100}  # Algorithm range: 680-1200nm
+      roughness: {min: 600, max: 2600, step: 400}  # Algorithm range: 600-2600Å
+    refine:
+      lipid: {window_nm: 20, step_nm: 5}
+      aqueous: {window_nm: 40, step_nm: 10}
+      roughness: {window_A: 200, step_A: 25}
+      max_refine_candidates: 5000
   metrics:
+    residual:
+      tau_rmse: 0.015
+      max_rmse: 0.1
     peak_count:
       wavelength_tolerance_nm: 5.0
     peak_delta:
@@ -62,11 +103,19 @@ analysis:
     phase_overlap:
       resample_points: 1024
       window: "hann"
+    temporal_continuity:
+      enabled: false
+      tau_lipid_nm: 10.0
+      tau_aqueous_nm: 30.0
+      tau_roughness_A: 150.0
     composite:
       weights:
+        residual: 0.5
         peak_count: 0.4
         peak_delta: 0.4
         phase_overlap: 0.2
+        quality: 0.1
+        temporal_continuity: 0.1
 
 
 # File Paths (relative to project root)
@@ -109,8 +158,8 @@ presets:
   # Quick test - small parameter space around requested values
   quick_test:
     lipid: {min: 125, max: 135, step: 5}      # Around requested 129nm
-    aqueous: {min: 1150, max: 1200, step: 25} # Near max since 3194 exceeds algorithm limits
-    roughness: {min: 2550, max: 2600, step: 50}  # Near stack default 2700Å
+    aqueous: {min: 1000, max: 1200, step: 25} # Near max (clamped to algorithm range 680-1200nm)
+    roughness: {min: 2550, max: 2600, step: 50}  # Near stack default (clamped to algorithm range 600-2600Å)
     
   # Medium resolution scan
   medium_scan:
@@ -120,13 +169,13 @@ presets:
     
   # High resolution scan (warning: generates many spectra!)
   high_resolution:
-    lipid: {min: 100, max: 250, step: 2}
-    aqueous: {min: 600, max: 1500, step: 10}
-    roughness: {min: 1000, max: 3000, step: 25}
+    lipid: {min: 120, max: 200, step: 2}      # Clamped to algorithm range
+    aqueous: {min: 680, max: 1200, step: 10}  # Clamped to algorithm range
+    roughness: {min: 600, max: 2600, step: 25}  # Clamped to algorithm range
     
   # Lipid thickness focus
   lipid_focus:
-    lipid: {min: 80, max: 300, step: 5}
+    lipid: {min: 120, max: 200, step: 5}      # Clamped to algorithm range
     aqueous: {min: 900, max: 1000, step: 50}  # Keep aqueous relatively constant
     roughness: {min: 2000, max: 2100, step: 100}  # Keep roughness relatively constant
 
