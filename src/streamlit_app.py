@@ -770,6 +770,8 @@ def main():
         st.stop()
 
     analysis_cfg: Dict[str, Any] = config.get("analysis", {})
+    analysis_cfg.setdefault("detrending", {})
+    analysis_cfg.setdefault("peak_detection", {})
     metrics_cfg: Dict[str, Any] = analysis_cfg.get("metrics", {})
     ui_cfg: Dict[str, Any] = config.get("ui", {})
     st.set_page_config(
@@ -802,14 +804,12 @@ def main():
     default_aqueous = defaults.get("aqueous", midpoint(aqueous_cfg))
     default_rough = defaults.get("roughness", midpoint(rough_cfg))
 
-    # Initialize session state defaults for sliders so they can be reset later
+    # Initialize session state defaults for sliders and analysis controls so they can be reset later
     slider_defaults = {
         "lipid_slider": float(default_lipid),
         "aqueous_slider": float(default_aqueous),
         "rough_slider": float(default_rough),
     }
-    for slider_key, slider_default in slider_defaults.items():
-        st.session_state.setdefault(slider_key, slider_default)
 
     # Main content
     st.markdown("# Tear Film Spectra Explorer")
@@ -833,7 +833,10 @@ def main():
     st.sidebar.markdown("## Layer Parameters")
 
     if st.sidebar.button("Reset parameters", type="secondary", use_container_width=True):
-        st.session_state.update(slider_defaults)
+        reset_values = {**slider_defaults, **analysis_defaults}
+        st.session_state.update(reset_values)
+        analysis_cfg["detrending"]["default_cutoff_frequency"] = default_cutoff
+        analysis_cfg["peak_detection"]["default_prominence"] = default_prominence
         st.rerun()
 
     lipid_val = st.sidebar.slider(
@@ -889,11 +892,16 @@ def main():
     default_cutoff = float(detrending_cfg.get("default_cutoff_frequency", 0.01))
     default_prominence = float(peak_detection_cfg.get("default_prominence", 0.005))
     
+    analysis_defaults = {
+        "analysis_cutoff_freq": default_cutoff,
+        "analysis_peak_prominence": default_prominence,
+        "cutoff_freq_slider": default_cutoff,
+        "peak_prominence_slider": default_prominence,
+    }
+
     # Initialize session state with config defaults if not set
-    if "analysis_cutoff_freq" not in st.session_state:
-        st.session_state["analysis_cutoff_freq"] = default_cutoff
-    if "analysis_peak_prominence" not in st.session_state:
-        st.session_state["analysis_peak_prominence"] = default_prominence
+    for key, value in {**slider_defaults, **analysis_defaults}.items():
+        st.session_state.setdefault(key, value)
     
     st.sidebar.markdown("## Analysis Parameters")
     
