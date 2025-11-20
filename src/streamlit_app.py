@@ -802,6 +802,15 @@ def main():
     default_aqueous = defaults.get("aqueous", midpoint(aqueous_cfg))
     default_rough = defaults.get("roughness", midpoint(rough_cfg))
 
+    # Initialize session state defaults for sliders so they can be reset later
+    slider_defaults = {
+        "lipid_slider": float(default_lipid),
+        "aqueous_slider": float(default_aqueous),
+        "rough_slider": float(default_rough),
+    }
+    for slider_key, slider_default in slider_defaults.items():
+        st.session_state.setdefault(slider_key, slider_default)
+
     # Main content
     st.markdown("# Tear Film Spectra Explorer")
     st.markdown("Adjust layer properties to view theoretical reflectance spectrum and compare with measurements.")
@@ -822,12 +831,16 @@ def main():
     
     # Sidebar controls
     st.sidebar.markdown("## Layer Parameters")
-    
+
+    if st.sidebar.button("Reset parameters", type="secondary", use_container_width=True):
+        st.session_state.update(slider_defaults)
+        st.rerun()
+
     lipid_val = st.sidebar.slider(
         "Lipid thickness (nm)",
         min_value=float(lipid_cfg["min"]),
         max_value=float(lipid_cfg["max"]),
-        value=float(default_lipid),
+        value=st.session_state["lipid_slider"],
         step=float(lipid_cfg["step"]),
         format="%.0f",
         key="lipid_slider",
@@ -837,7 +850,7 @@ def main():
         "Aqueous thickness (nm)",
         min_value=float(aqueous_cfg["min"]),
         max_value=float(aqueous_cfg["max"]),
-        value=float(default_aqueous),
+        value=st.session_state["aqueous_slider"],
         step=float(aqueous_cfg["step"]),
         format="%.0f",
         key="aqueous_slider",
@@ -847,7 +860,7 @@ def main():
         "Mucus roughness (Å)",
         min_value=float(rough_cfg["min"]),
         max_value=float(rough_cfg["max"]),
-        value=float(default_rough),
+        value=st.session_state["rough_slider"],
         step=float(rough_cfg["step"]),
         format="%.0f",
         key="rough_slider",
