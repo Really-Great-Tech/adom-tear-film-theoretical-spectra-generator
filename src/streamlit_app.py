@@ -823,12 +823,29 @@ def main():
         "🔍 Grid Search",
     ])
     
+    # Detrending parameters - read defaults from config
+    detrending_cfg = analysis_cfg.get("detrending", {})
+    peak_detection_cfg = analysis_cfg.get("peak_detection", {})
+    default_cutoff = float(detrending_cfg.get("default_cutoff_frequency", 0.01))
+    default_prominence = float(peak_detection_cfg.get("default_prominence", 0.005))
+    
+    analysis_defaults = {
+        "analysis_cutoff_freq": default_cutoff,
+        "analysis_peak_prominence": default_prominence,
+        "cutoff_freq_slider": default_cutoff,
+        "peak_prominence_slider": default_prominence,
+    }
+
+    # Initialize session state with config defaults if not set
+    for key, value in {**slider_defaults, **analysis_defaults}.items():
+        st.session_state.setdefault(key, value)
+
     # Update sliders if a grid-search selection was applied in the previous run
     pending_update = st.session_state.pop("pending_slider_update", None)
     if pending_update:
         for slider_key, slider_value in pending_update.items():
             st.session_state[slider_key] = slider_value
-    
+
     # Sidebar controls
     st.sidebar.markdown("## Layer Parameters")
 
@@ -879,29 +896,12 @@ def main():
             options=["None"] + measurement_files,
             index=1 if measurement_files else 0
         )
-        
+
         if selected_file != "None":
             selected_measurement = measurements[selected_file]
             st.sidebar.write(f"**{selected_file}**")
             st.sidebar.write(f"Data points: {len(selected_measurement)}")
             st.sidebar.write(f"Wavelength range: {selected_measurement['wavelength'].min():.1f} - {selected_measurement['wavelength'].max():.1f} nm")
-
-    # Detrending parameters - read defaults from config
-    detrending_cfg = analysis_cfg.get("detrending", {})
-    peak_detection_cfg = analysis_cfg.get("peak_detection", {})
-    default_cutoff = float(detrending_cfg.get("default_cutoff_frequency", 0.01))
-    default_prominence = float(peak_detection_cfg.get("default_prominence", 0.005))
-    
-    analysis_defaults = {
-        "analysis_cutoff_freq": default_cutoff,
-        "analysis_peak_prominence": default_prominence,
-        "cutoff_freq_slider": default_cutoff,
-        "peak_prominence_slider": default_prominence,
-    }
-
-    # Initialize session state with config defaults if not set
-    for key, value in {**slider_defaults, **analysis_defaults}.items():
-        st.session_state.setdefault(key, value)
     
     st.sidebar.markdown("## Analysis Parameters")
     
