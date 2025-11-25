@@ -770,6 +770,8 @@ def main():
         st.stop()
 
     analysis_cfg: Dict[str, Any] = config.get("analysis", {})
+    analysis_cfg.setdefault("detrending", {})
+    analysis_cfg.setdefault("peak_detection", {})
     metrics_cfg: Dict[str, Any] = analysis_cfg.get("metrics", {})
     ui_cfg: Dict[str, Any] = config.get("ui", {})
     st.set_page_config(
@@ -802,6 +804,13 @@ def main():
     default_aqueous = defaults.get("aqueous", midpoint(aqueous_cfg))
     default_rough = defaults.get("roughness", midpoint(rough_cfg))
 
+    # Initialize session state defaults for sliders and analysis controls so they can be reset later
+    slider_defaults = {
+        "lipid_slider": float(default_lipid),
+        "aqueous_slider": float(default_aqueous),
+        "rough_slider": float(default_rough),
+    }
+
     # Main content
     st.markdown("# Tear Film Spectra Explorer")
     st.markdown("Adjust layer properties to view theoretical reflectance spectrum and compare with measurements.")
@@ -814,20 +823,44 @@ def main():
         "🔍 Grid Search",
     ])
     
+    # Detrending parameters - read defaults from config
+    detrending_cfg = analysis_cfg.get("detrending", {})
+    peak_detection_cfg = analysis_cfg.get("peak_detection", {})
+    default_cutoff = float(detrending_cfg.get("default_cutoff_frequency", 0.01))
+    default_prominence = float(peak_detection_cfg.get("default_prominence", 0.005))
+    
+    analysis_defaults = {
+        "analysis_cutoff_freq": default_cutoff,
+        "analysis_peak_prominence": default_prominence,
+        "cutoff_freq_slider": default_cutoff,
+        "peak_prominence_slider": default_prominence,
+    }
+
+    # Initialize session state with config defaults if not set
+    for key, value in {**slider_defaults, **analysis_defaults}.items():
+        st.session_state.setdefault(key, value)
+
     # Update sliders if a grid-search selection was applied in the previous run
     pending_update = st.session_state.pop("pending_slider_update", None)
     if pending_update:
         for slider_key, slider_value in pending_update.items():
             st.session_state[slider_key] = slider_value
-    
+
     # Sidebar controls
     st.sidebar.markdown("## Layer Parameters")
-    
+
+    if st.sidebar.button("Reset parameters", type="secondary", use_container_width=True):
+        reset_values = {**slider_defaults, **analysis_defaults}
+        st.session_state.update(reset_values)
+        analysis_cfg["detrending"]["default_cutoff_frequency"] = default_cutoff
+        analysis_cfg["peak_detection"]["default_prominence"] = default_prominence
+        st.rerun()
+
     lipid_val = st.sidebar.slider(
         "Lipid thickness (nm)",
         min_value=float(lipid_cfg["min"]),
         max_value=float(lipid_cfg["max"]),
-        value=float(default_lipid),
+        value=st.session_state["lipid_slider"],
         step=float(lipid_cfg["step"]),
         format="%.0f",
         key="lipid_slider",
@@ -837,7 +870,7 @@ def main():
         "Aqueous thickness (nm)",
         min_value=float(aqueous_cfg["min"]),
         max_value=float(aqueous_cfg["max"]),
-        value=float(default_aqueous),
+        value=st.session_state["aqueous_slider"],
         step=float(aqueous_cfg["step"]),
         format="%.0f",
         key="aqueous_slider",
@@ -847,7 +880,7 @@ def main():
         "Mucus roughness (Å)",
         min_value=float(rough_cfg["min"]),
         max_value=float(rough_cfg["max"]),
-        value=float(default_rough),
+        value=st.session_state["rough_slider"],
         step=float(rough_cfg["step"]),
         format="%.0f",
         key="rough_slider",
@@ -863,24 +896,12 @@ def main():
             options=["None"] + measurement_files,
             index=1 if measurement_files else 0
         )
-        
+
         if selected_file != "None":
             selected_measurement = measurements[selected_file]
             st.sidebar.write(f"**{selected_file}**")
             st.sidebar.write(f"Data points: {len(selected_measurement)}")
             st.sidebar.write(f"Wavelength range: {selected_measurement['wavelength'].min():.1f} - {selected_measurement['wavelength'].max():.1f} nm")
-
-    # Detrending parameters - read defaults from config
-    detrending_cfg = analysis_cfg.get("detrending", {})
-    peak_detection_cfg = analysis_cfg.get("peak_detection", {})
-    default_cutoff = float(detrending_cfg.get("default_cutoff_frequency", 0.01))
-    default_prominence = float(peak_detection_cfg.get("default_prominence", 0.005))
-    
-    # Initialize session state with config defaults if not set
-    if "analysis_cutoff_freq" not in st.session_state:
-        st.session_state["analysis_cutoff_freq"] = default_cutoff
-    if "analysis_peak_prominence" not in st.session_state:
-        st.session_state["analysis_peak_prominence"] = default_prominence
     
     st.sidebar.markdown("## Analysis Parameters")
     
