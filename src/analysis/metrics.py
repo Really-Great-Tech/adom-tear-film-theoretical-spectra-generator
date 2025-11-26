@@ -179,16 +179,32 @@ def residual_score(
     tau_rmse: float,
     max_rmse: Optional[float] = None,
 ) -> MetricResult:
-    fit_metrics = calculate_fit_metrics(measurement.detrended, theoretical.detrended)
+    # Use RAW (non-detrended) spectra for residual calculation - visual quality depends on raw alignment
+    # Detrended spectra remove baseline, which can hide misalignment issues
+    fit_metrics = calculate_fit_metrics(measurement.reflectance, theoretical.aligned_reflectance)
     rmse = float(fit_metrics.get("RMSE", 0.0))
+    r2 = float(fit_metrics.get("R²", 0.0))
     tau = max(float(tau_rmse), 1e-9)
-    score = float(np.exp(-rmse / tau))
+    
+    # Base score from RMSE (lower RMSE = higher score)
+    rmse_score = float(np.exp(-rmse / tau))
     if max_rmse is not None and rmse >= float(max_rmse):
-        score = 0.0
+        rmse_score = 0.0
+    
+    # Incorporate R²: Negative R² doesn't necessarily mean bad visual fit
+    # Solution: Ignore R² when negative (use RMSE only), since R² is misleading for visual quality
+    if r2 < 0:
+        # Negative R² - ignore it, use RMSE score only
+        score = rmse_score
+    else:
+        # Positive R² - combine RMSE and R² scores
+        r2_score = max(0.3, min(1.0, 0.3 + 0.7 * r2))
+        score = 0.6 * rmse_score + 0.4 * (rmse_score * r2_score)
+    
     diagnostics = {
         "rmse": rmse,
         "mae": float(fit_metrics.get("MAE", 0.0)),
-        "r2": float(fit_metrics.get("R²", 0.0)),
+        "r2": r2,
         "mape_pct": float(fit_metrics.get("MAPE (%)", 0.0)),
     }
     return MetricResult(score=score, diagnostics=diagnostics)
