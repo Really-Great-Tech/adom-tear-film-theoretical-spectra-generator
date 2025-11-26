@@ -1,25 +1,26 @@
 # Tear Film Theoretical Spectra Generator Configuration
 # Edit these parameters to customize your measurement ranges
 
-# Parameter Ranges (constrained by Algorithm_eye_test_4.xml)
+# Parameter Ranges (expanded beyond Algorithm_eye_test_4.xml constraints)
+# DLL accepts values outside algorithm ranges, as we've seen with client's values
 parameters:
-  # Lipid layer thickness (nm) - Algorithm range: 120-200nm
+  # Lipid layer thickness (nm)
   lipid:
-    min: 120        # Algorithm minimum
-    max: 200        # Algorithm maximum
-    step: 5         # Algorithm step size
+    min: 0          # Expanded below algorithm range (120nm) to allow exploration
+    max: 500         # Expanded above algorithm range (200nm) to allow exploration
+    step: 5          # Step size
     
-  # Aqueous layer thickness (nm) - Algorithm range: 680-1200nm
+  # Aqueous layer thickness (nm)
   aqueous:
-    min: 680        # Algorithm minimum
-    max: 1200       # Algorithm maximum
-    step: 10        # Algorithm step size
+    min: -20         # Expanded below algorithm range (680nm) to allow negative values
+    max: 12000       # Expanded above algorithm range (1200nm) to allow exploration
+    step: 10         # Step size
     
-  # Mucus layer roughness (Angstroms) - Algorithm range: 600-2600Å
+  # Mucus layer roughness (Angstroms)
   roughness:
-    min: 600        # Algorithm minimum
-    max: 2600       # Algorithm maximum
-    step: 50        # Algorithm step size
+    min: 0           # Expanded below algorithm range (600Å) to allow exploration
+    max: 3000        # Expanded above algorithm range (2600Å) to allow exploration
+    step: 50         # Step size
 
 # Fixed Parameters
 fixed:
