@@ -105,37 +105,44 @@ def load_measurement_files(measurements_dir: pathlib.Path, config: Dict[str, Any
     """Load measurement spectra using the shared loader.
     
     Only loads from:
-    1. data/measurements (configured measurements directory)
-    2. exploration/sample_data/ (Silas's good_fit/bad_fit structure)
+    - exploration/sample_data/good_fit/ (Silas's good fit samples)
+    - exploration/sample_data/bad_fit/ (Silas's bad fit samples)
     
     Explicitly skips:
     - _BestFit.txt files (pre-computed fits, not measurements)
     - readme/documentation files
+    - Files that don't exist (silently skipped, no error)
     """
 
     measurements: Dict[str, pd.DataFrame] = {}
     meas_config = config.get("measurements", {})
     file_pattern = meas_config.get("file_pattern", "*.txt")
     
-    # Only search in these two specific locations
+    # Only search in exploration/sample_data/good_fit and bad_fit directories
+    exploration_dir = PROJECT_ROOT / "exploration" / "sample_data"
     search_dirs = []
     
-    # 1. Primary measurements directory (data/measurements)
-    if measurements_dir.exists():
-        search_dirs.append(measurements_dir)
+    # Only load from good_fit and bad_fit subdirectories
+    for subdir_name in ["good_fit", "bad_fit"]:
+        subdir = exploration_dir / subdir_name
+        if subdir.exists() and subdir.is_dir():
+            search_dirs.append(subdir)
     
-    # 2. Exploration sample data (exploration/sample_data with good_fit/bad_fit)
-    exploration_dir = PROJECT_ROOT / "exploration" / "sample_data"
-    if exploration_dir.exists():
-        search_dirs.append(exploration_dir)
+    if not search_dirs:
+        # Only show warning if exploration directory doesn't exist at all
+        if not exploration_dir.exists():
+            st.warning(f"Exploration sample data directory not found: {exploration_dir}")
+        return measurements
     
     all_file_path_objs = []
     for search_dir in search_dirs:
-        if not search_dir.exists():
-                continue
         # Normalize the base directory path for Windows UNC paths
-        search_dir_normalized = pathlib.Path(os.path.normpath(str(search_dir.resolve())))
-        
+        try:
+            search_dir_normalized = pathlib.Path(os.path.normpath(str(search_dir.resolve())))
+        except (OSError, ValueError):
+            # Skip directories that can't be resolved (e.g., network issues)
+                continue
+
         # Skip non-spectrum files (BestFit, readme, documentation, etc.)
         def should_skip_file(file_path: pathlib.Path) -> bool:
             """Check if file should be skipped (not a measurement spectrum file)."""
@@ -155,14 +162,18 @@ def load_measurement_files(measurements_dir: pathlib.Path, config: Dict[str, Any
             
             return False
         
-        file_path_objs = [
-            p for p in search_dir_normalized.rglob(file_pattern)
-            if p.is_file() and not should_skip_file(p)
-        ]
-        all_file_path_objs.extend(file_path_objs)
+        try:
+            file_path_objs = [
+                p for p in search_dir_normalized.rglob(file_pattern)
+                if p.is_file() and p.exists() and not should_skip_file(p)
+            ]
+            all_file_path_objs.extend(file_path_objs)
+        except (OSError, PermissionError):
+            # Skip directories that can't be accessed
+                continue
 
     if not all_file_path_objs:
-        st.warning(f"No measurement files found matching pattern: {file_pattern}")
+        st.warning(f"No measurement files found in exploration/sample_data/good_fit or bad_fit matching pattern: {file_pattern}")
         return measurements
 
     for file_path_obj in sorted(all_file_path_objs):
@@ -171,9 +182,8 @@ def load_measurement_files(measurements_dir: pathlib.Path, config: Dict[str, Any
             normalized_str = os.path.normpath(str(file_path_obj))
             file_path_obj = pathlib.Path(normalized_str)
             
-            # Ensure path exists
+            # Check file exists before trying to load (silently skip if not)
             if not file_path_obj.exists():
-                st.warning(f"File does not exist: {file_path_obj}")
                 continue
 
             # Skip BestFit and readme files (double-check here too)
@@ -181,23 +191,29 @@ def load_measurement_files(measurements_dir: pathlib.Path, config: Dict[str, Any
             if "_bestfit" in name_lower or "readme" in name_lower:
                 continue
 
-            # Determine which base directory this file is relative to
-            if exploration_dir.exists() and str(file_path_obj).startswith(str(exploration_dir.resolve())):
-                base_dir = exploration_dir
-            else:
-                base_dir = measurements_dir
+            # All files are relative to exploration_dir
+            base_dir_normalized = pathlib.Path(os.path.normpath(str(exploration_dir.resolve())))
+            try:
+                rel_path = file_path_obj.relative_to(base_dir_normalized)
+            except ValueError:
+                # File is not relative to exploration_dir, skip it
+                continue
 
-            # Include subdirectory path in key (e.g., "good_fit/(Run)spectra_09-46-14-250")
-            base_dir_normalized = pathlib.Path(os.path.normpath(str(base_dir.resolve())))
-            rel_path = file_path_obj.relative_to(base_dir_normalized)
             file_name = str(rel_path.with_suffix(""))  # Remove .txt extension
             meas_df = load_measurement_spectrum(file_path_obj, meas_config)
             if not meas_df.empty:
                 measurements[file_name] = meas_df
             # Silently skip files that don't contain spectral data (no error message)
+        except FileNotFoundError:
+            # File doesn't exist - silently skip (no warning)
+            continue
         except Exception as exc:  # pragma: no cover - UI warning path
-            # Only show warning for actual errors, not "no spectral data" which is expected for non-spectrum files
-            if "no spectral data" not in str(exc).lower() and "readme" not in file_path_obj.name.lower():
+            # Only show warning for unexpected errors, not file not found or "no spectral data"
+            error_str = str(exc).lower()
+            if ("no such file" not in error_str and 
+                "file not found" not in error_str and
+                "no spectral data" not in error_str and 
+                "readme" not in file_path_obj.name.lower()):
                 st.warning(f"Error loading {file_path_obj}: {exc}")
 
     return measurements
@@ -794,6 +810,18 @@ def main():
     lipid_cfg = params["lipid"]
     aqueous_cfg = params["aqueous"]
     rough_cfg = params["roughness"]
+    
+    # Get acceptable ranges for sliders (wider than parameter ranges, allows using grid search results)
+    edge_case_cfg = analysis_cfg.get("edge_case_detection", {})
+    acceptable_ranges = edge_case_cfg.get("acceptable_ranges", {})
+    
+    # Use acceptable ranges for slider bounds, but keep step sizes from parameter config
+    slider_lipid_min = float(acceptable_ranges.get("lipid", {}).get("min", lipid_cfg["min"]))
+    slider_lipid_max = float(acceptable_ranges.get("lipid", {}).get("max", lipid_cfg["max"]))
+    slider_aqueous_min = float(acceptable_ranges.get("aqueous", {}).get("min", aqueous_cfg["min"]))
+    slider_aqueous_max = float(acceptable_ranges.get("aqueous", {}).get("max", aqueous_cfg["max"]))
+    slider_rough_min = float(acceptable_ranges.get("roughness", {}).get("min", rough_cfg["min"]))
+    slider_rough_max = float(acceptable_ranges.get("roughness", {}).get("max", rough_cfg["max"]))
 
     # Defaults: use configured defaults if provided, or midpoints snapped to step
     defaults = ui_cfg.get("default_values", {})
@@ -839,13 +867,28 @@ def main():
     # Initialize session state with config defaults if not set
     for key, value in {**slider_defaults, **analysis_defaults}.items():
         st.session_state.setdefault(key, value)
-
+    
     # Update sliders if a grid-search selection was applied in the previous run
     pending_update = st.session_state.pop("pending_slider_update", None)
     if pending_update:
+        # Clamp values to slider ranges (acceptable ranges) to prevent errors
+        if "lipid_slider" in pending_update:
+            pending_update["lipid_slider"] = max(slider_lipid_min, min(slider_lipid_max, pending_update["lipid_slider"]))
+        if "aqueous_slider" in pending_update:
+            pending_update["aqueous_slider"] = max(slider_aqueous_min, min(slider_aqueous_max, pending_update["aqueous_slider"]))
+        if "rough_slider" in pending_update:
+            pending_update["rough_slider"] = max(slider_rough_min, min(slider_rough_max, pending_update["rough_slider"]))
         for slider_key, slider_value in pending_update.items():
             st.session_state[slider_key] = slider_value
-
+    
+    # Clamp any existing session_state values to valid ranges (acceptable ranges)
+    if "lipid_slider" in st.session_state:
+        st.session_state["lipid_slider"] = max(slider_lipid_min, min(slider_lipid_max, st.session_state["lipid_slider"]))
+    if "aqueous_slider" in st.session_state:
+        st.session_state["aqueous_slider"] = max(slider_aqueous_min, min(slider_aqueous_max, st.session_state["aqueous_slider"]))
+    if "rough_slider" in st.session_state:
+        st.session_state["rough_slider"] = max(slider_rough_min, min(slider_rough_max, st.session_state["rough_slider"]))
+    
     # Sidebar controls
     st.sidebar.markdown("## Layer Parameters")
 
@@ -855,11 +898,11 @@ def main():
         analysis_cfg["detrending"]["default_cutoff_frequency"] = default_cutoff
         analysis_cfg["peak_detection"]["default_prominence"] = default_prominence
         st.rerun()
-
+    
     lipid_val = st.sidebar.slider(
         "Lipid thickness (nm)",
-        min_value=float(lipid_cfg["min"]),
-        max_value=float(lipid_cfg["max"]),
+        min_value=slider_lipid_min,
+        max_value=slider_lipid_max,
         value=st.session_state["lipid_slider"],
         step=float(lipid_cfg["step"]),
         format="%.0f",
@@ -868,8 +911,8 @@ def main():
 
     aqueous_val = st.sidebar.slider(
         "Aqueous thickness (nm)",
-        min_value=float(aqueous_cfg["min"]),
-        max_value=float(aqueous_cfg["max"]),
+        min_value=slider_aqueous_min,
+        max_value=slider_aqueous_max,
         value=st.session_state["aqueous_slider"],
         step=float(aqueous_cfg["step"]),
         format="%.0f",
@@ -878,8 +921,8 @@ def main():
 
     rough_val = st.sidebar.slider(
         "Mucus roughness (Å)",
-        min_value=float(rough_cfg["min"]),
-        max_value=float(rough_cfg["max"]),
+        min_value=slider_rough_min,
+        max_value=slider_rough_max,
         value=st.session_state["rough_slider"],
         step=float(rough_cfg["step"]),
         format="%.0f",

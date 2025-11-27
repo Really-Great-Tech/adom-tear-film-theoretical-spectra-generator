@@ -1,25 +1,26 @@
 # Tear Film Theoretical Spectra Generator Configuration
 # Edit these parameters to customize your measurement ranges
 
-# Parameter Ranges (constrained by Algorithm_eye_test_4.xml)
+# Parameter Ranges (expanded beyond Algorithm_eye_test_4.xml constraints)
+# DLL accepts values outside algorithm ranges, as we've seen with client's values
 parameters:
-  # Lipid layer thickness (nm) - Algorithm range: 120-200nm
+  # Lipid layer thickness (nm)
   lipid:
-    min: 120        # Algorithm minimum
-    max: 200        # Algorithm maximum
-    step: 5         # Algorithm step size
+    min: 0          # Expanded below algorithm range (120nm) to allow exploration
+    max: 500         # Expanded above algorithm range (200nm) to allow exploration
+    step: 5          # Step size
     
-  # Aqueous layer thickness (nm) - Algorithm range: 680-1200nm
+  # Aqueous layer thickness (nm)
   aqueous:
-    min: 680        # Algorithm minimum
-    max: 1200       # Algorithm maximum
-    step: 10        # Algorithm step size
+    min: -20         # Expanded below algorithm range (680nm) to allow negative values
+    max: 12000       # Expanded above algorithm range (1200nm) to allow exploration
+    step: 10         # Step size
     
-  # Mucus layer roughness (Angstroms) - Algorithm range: 600-2600Å
+  # Mucus layer roughness (Angstroms)
   roughness:
-    min: 600        # Algorithm minimum
-    max: 2600       # Algorithm maximum
-    step: 50        # Algorithm step size
+    min: 0           # Expanded below algorithm range (600Å) to allow exploration
+    max: 3000        # Expanded above algorithm range (2600Å) to allow exploration
+    step: 50         # Step size
 
 # Fixed Parameters
 fixed:
@@ -81,10 +82,11 @@ analysis:
     confidence_threshold_for_narrow_window: 0.8
     max_total_evals: null
     coarse:
-      top_k: 20
-      lipid: {min: 120, max: 200, step: 20}      # Algorithm range: 120-200nm
-      aqueous: {min: 680, max: 1200, step: 100}  # Algorithm range: 680-1200nm
-      roughness: {min: 600, max: 2600, step: 400}  # Algorithm range: 600-2600Å
+      top_k: 50  # Increased to allow more candidates for refinement
+      # Coarse search - optimized for ~20 min runtime
+      lipid: {min: 0, max: 500, step: 40}        # Expanded range for broader exploration
+      aqueous: {min: -20, max: 12000, step: 200} # Expanded range including negative values
+      roughness: {min: 0, max: 3000, step: 500}  # Expanded range for broader exploration
     refine:
       lipid: {window_nm: 20, step_nm: 5}
       aqueous: {window_nm: 40, step_nm: 10}
@@ -110,10 +112,12 @@ analysis:
       tau_roughness_A: 150.0
     composite:
       weights:
-        residual: 0.5
-        peak_count: 0.4
-        peak_delta: 0.4
-        phase_overlap: 0.2
+        # Prioritize phase_overlap and raw spectrum alignment for visual quality
+        # Based on analysis: visual quality correlates with phase_overlap and RMSE/MAE, NOT peak matching
+        phase_overlap: 0.7      # Primary indicator of visual quality
+        residual: 0.2           # RMSE/MAE matter (overall error), R² ignored when negative
+        peak_count: 0.0         # Removed - not correlated with visual quality
+        peak_delta: 0.0         # Removed - not correlated with visual quality
         quality: 0.1
         temporal_continuity: 0.1
 
