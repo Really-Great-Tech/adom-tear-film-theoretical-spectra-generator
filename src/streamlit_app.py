@@ -246,17 +246,17 @@ def flag_edge_cases(
     # Get acceptable/feasible ranges (wider than search ranges)
     if acceptable_ranges is None:
         acceptable_ranges = {
-            "lipid": {"min": 0, "max": 500},
-            "aqueous": {"min": 0, "max": 2000},  # Note: aqueous CAN be 0
-            "roughness": {"min": 0, "max": 5000},
+            "lipid": {"min": 9, "max": 250},
+            "aqueous": {"min": 800, "max": 12000},
+            "roughness": {"min": 600, "max": 2750},
         }
     
-    accept_lipid_min = float(acceptable_ranges.get("lipid", {}).get("min", 0))
-    accept_lipid_max = float(acceptable_ranges.get("lipid", {}).get("max", 500))
-    accept_aqueous_min = float(acceptable_ranges.get("aqueous", {}).get("min", 0))
-    accept_aqueous_max = float(acceptable_ranges.get("aqueous", {}).get("max", 2000))
-    accept_rough_min = float(acceptable_ranges.get("roughness", {}).get("min", 0))
-    accept_rough_max = float(acceptable_ranges.get("roughness", {}).get("max", 5000))
+    accept_lipid_min = float(acceptable_ranges.get("lipid", {}).get("min", 9))
+    accept_lipid_max = float(acceptable_ranges.get("lipid", {}).get("max", 250))
+    accept_aqueous_min = float(acceptable_ranges.get("aqueous", {}).get("min", 800))
+    accept_aqueous_max = float(acceptable_ranges.get("aqueous", {}).get("max", 12000))
+    accept_rough_min = float(acceptable_ranges.get("roughness", {}).get("min", 600))
+    accept_rough_max = float(acceptable_ranges.get("roughness", {}).get("max", 2750))
     
     # Check for "no good fit" scenario (best score is too low)
     best_score = float(results_df["score_composite"].max()) if "score_composite" in results_df.columns else 0.0
@@ -393,9 +393,9 @@ def run_coarse_fine_grid_search(
     Stage 2: Refine around top-K results from coarse stage
     
     During refinement, the search expands beyond the configured parameter ranges (from config.parameters)
-    up to the acceptable ranges (from config.analysis.edge_case_detection.acceptable_ranges).
+    up to the client accepted ranges (from config.analysis.edge_case_detection.client_accepted_ranges).
     This allows finding optimal values that may be outside the initial search range but still
-    within physically/biologically feasible limits.
+    within the client's business-defined acceptable limits.
     """
     grid_cfg = analysis_cfg.get("grid_search", {})
     coarse_cfg = grid_cfg.get("coarse", {})
@@ -479,18 +479,18 @@ def run_coarse_fine_grid_search(
         rough_window = refine_cfg.get("roughness", {}).get("window_A", 200)
         rough_step = refine_cfg.get("roughness", {}).get("step_A", 25)
         
-        # Get acceptable ranges for clamping (wider than configured search ranges)
+        # Get client accepted ranges for clamping (client's business-defined limits)
         edge_case_cfg = analysis_cfg.get("edge_case_detection", {})
-        acceptable_ranges = edge_case_cfg.get("acceptable_ranges", {})
-        accept_lipid_min = float(acceptable_ranges.get("lipid", {}).get("min", 0))
-        accept_lipid_max = float(acceptable_ranges.get("lipid", {}).get("max", 500))
-        accept_aqueous_min = float(acceptable_ranges.get("aqueous", {}).get("min", 0))
-        accept_aqueous_max = float(acceptable_ranges.get("aqueous", {}).get("max", 2000))
-        accept_rough_min = float(acceptable_ranges.get("roughness", {}).get("min", 0))
-        accept_rough_max = float(acceptable_ranges.get("roughness", {}).get("max", 5000))
+        acceptable_ranges = edge_case_cfg.get("client_accepted_ranges", {})
+        accept_lipid_min = float(acceptable_ranges.get("lipid", {}).get("min", 9))
+        accept_lipid_max = float(acceptable_ranges.get("lipid", {}).get("max", 250))
+        accept_aqueous_min = float(acceptable_ranges.get("aqueous", {}).get("min", 800))
+        accept_aqueous_max = float(acceptable_ranges.get("aqueous", {}).get("max", 12000))
+        accept_rough_min = float(acceptable_ranges.get("roughness", {}).get("min", 600))
+        accept_rough_max = float(acceptable_ranges.get("roughness", {}).get("max", 2750))
         
-        # Expand refinement window beyond configured ranges, but clamp to acceptable ranges
-        # This allows finding optimal values outside the initial search range
+        # Expand refinement window beyond configured ranges, but clamp to client accepted ranges
+        # This allows finding optimal values outside the initial search range while respecting client limits
         lipid_min = max(accept_lipid_min, center_lipid - lipid_window / 2)
         lipid_max = min(accept_lipid_max, center_lipid + lipid_window / 2)
         aqueous_min = max(accept_aqueous_min, center_aqueous - aqueous_window / 2)
@@ -1569,7 +1569,7 @@ def main():
                         threshold_high = float(edge_case_cfg.get("threshold_high_score", 0.9))
                         threshold_low = float(edge_case_cfg.get("threshold_low_score", 0.3))
                         threshold_no_fit = float(edge_case_cfg.get("threshold_no_fit", 0.4))
-                        acceptable_ranges = edge_case_cfg.get("acceptable_ranges", None)
+                        acceptable_ranges = edge_case_cfg.get("client_accepted_ranges", None)
                         results_df = flag_edge_cases(
                             results_df, 
                             config, 
