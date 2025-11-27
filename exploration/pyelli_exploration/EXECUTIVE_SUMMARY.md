@@ -132,60 +132,24 @@ Direct comparison between LTA BestFit and pyElli-generated spectra:
 
 ## Recommendations
 
-### Short-Term (Immediate Value)
+### Short-Term
 
 1. **Material Database Validation**: Use pyElli to validate our material dispersion data
 2. **Theoretical Spectrum Generation**: Generate reference spectra for testing
 3. **Educational Tool**: Help team understand TMM physics interactively
 
-### Medium-Term (3-6 months)
+### Medium-Term
 
 1. **Implement Grid Search**: Wrap pyElli TMM in our existing grid search framework
 2. **Benchmark Performance**: Compare pyElli vs LTA fitting accuracy on full dataset
 3. **Parallel Processing**: Optimize for batch processing of multiple spectra
 
-### Long-Term (6+ months)
+### Long-Term
 
 1. **Replace TMM Backend**: Consider pyElli as core calculation engine
 2. **Advanced Fitting**: Implement gradient-based optimization (scipy.optimize)
 3. **Full Pipeline Integration**: End-to-end processing from raw spectra to thickness values
 
----
-
-## Files and Resources
-
-### Created During Exploration
-
-```
-exploration/pyelli_exploration/
-├── app.py                 # Streamlit exploration application
-├── pyelli_utils.py        # Utility functions for data loading and TMM
-├── requirements.txt       # Python dependencies
-├── README.md              # Quick start guide
-├── EXECUTIVE_SUMMARY.md   # This document
-└── screenshots/           # Screenshots for documentation
-    ├── exec_summary_sample_viewer.png
-    ├── exec_summary_bad_fit.png
-    ├── exec_summary_materials.png
-    ├── exec_summary_structure.png
-    └── exec_summary_fitting.png
-```
-
-### Running the Exploration App
-
-```bash
-# Activate the conda environment
-conda activate adom-tfi
-
-# Install dependencies (if needed)
-pip install streamlit plotly pyElli
-
-# Run the Streamlit app
-cd exploration/pyelli_exploration
-streamlit run app.py
-```
-
----
 
 ## Conclusion
 
@@ -197,8 +161,4 @@ streamlit run app.py
 - ⚠️ Requires optimization layer to match LTA fitting capabilities
 
 **Recommended Next Step**: Implement a simple grid search optimizer using pyElli's TMM as the forward model, benchmark against LTA BestFit results on the full dataset.
-
----
-
-*Document prepared by AI Assistant during pyElli exploration session*
 
