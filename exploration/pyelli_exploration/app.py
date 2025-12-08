@@ -13,6 +13,8 @@ Run with: streamlit run app.py
 import logging
 import sys
 from pathlib import Path
+import time
+from concurrent.futures import ThreadPoolExecutor
 
 import numpy as np
 import pandas as pd
@@ -583,28 +585,48 @@ with tabs[0]:
                 
                 # Run auto-fit if button pressed
                 if run_autofit:
-                    with st.spinner('Running grid search...'):
-                        results = grid_search.run_grid_search(
+                    timer_placeholder = st.empty()
+                    start_time = time.perf_counter()
+
+                    def _run_search():
+                        return grid_search.run_grid_search(
                             wavelengths, measured,
                             lipid_range=(lipid_min, lipid_max, lipid_step),
                             aqueous_range=(aqueous_min, aqueous_max, aqueous_step),
                             mucus_range=(mucus_min, mucus_max, mucus_step),
                             top_k=10
                         )
-                        
-                        if results:
-                            best = results[0]
-                            # Store the update to be applied before widgets are created on next run
-                            st.session_state.pending_update = {
-                                'lipid': best.lipid_nm,
-                                'aqueous': best.aqueous_nm,
-                                'mucus': best.mucus_nm,
-                                'results': results
-                            }
-                            # Rerun to update sliders
-                            st.rerun()
-                        else:
-                            st.warning('⚠️ No valid fits found (all had criss-crossing)')
+
+                    with ThreadPoolExecutor(max_workers=1) as executor:
+                        future = executor.submit(_run_search)
+                        while future.running():
+                            elapsed = time.perf_counter() - start_time
+                            mins, secs = divmod(int(elapsed), 60)
+                            timer_placeholder.info(f'Running grid search... {mins:02d}:{secs:02d} elapsed')
+                            time.sleep(0.25)
+                        try:
+                            results = future.result()
+                        except Exception as exc:
+                            timer_placeholder.error(f'Grid search failed: {exc}')
+                            raise
+
+                    elapsed = time.perf_counter() - start_time
+                    mins, secs = divmod(int(elapsed), 60)
+                    timer_placeholder.success(f'Grid search completed in {mins:02d}:{secs:02d} ({elapsed:.1f}s)')
+
+                    if results:
+                        best = results[0]
+                        # Store the update to be applied before widgets are created on next run
+                        st.session_state.pending_update = {
+                            'lipid': best.lipid_nm,
+                            'aqueous': best.aqueous_nm,
+                            'mucus': best.mucus_nm,
+                            'results': results
+                        }
+                        # Rerun to update sliders
+                        st.rerun()
+                    else:
+                        st.warning('⚠️ No valid fits found (all had criss-crossing)')
                 
                 # Use current slider values for display
                 display_lipid = current_lipid
