@@ -482,10 +482,9 @@ with tabs[0]:
     with col1:
         st.markdown('### 📂 Spectrum Source')
         
-        ADOM_ROOT = PROJECT_ROOT.parent
-        
         spectrum_sources = {
-            'Shlomo Raw Spectra': ADOM_ROOT / 'spectra_from_shlomo',
+            # Shlomo spectra are now in-repo for deployment
+            'Shlomo Raw Spectra': PROJECT_ROOT / 'spectra_from_shlomo',
             'Sample Data (Good Fit)': PROJECT_ROOT / 'exploration' / 'sample_data' / 'good_fit',
             'Sample Data (Bad Fit)': PROJECT_ROOT / 'exploration' / 'sample_data' / 'bad_fit',
             'Exploration Measurements': PROJECT_ROOT / 'exploration' / 'measurements',
