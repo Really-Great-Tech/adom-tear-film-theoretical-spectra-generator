@@ -454,6 +454,9 @@ if 'pending_update' not in st.session_state:
     st.session_state.pending_update = None
 if 'autofit_results' not in st.session_state:
     st.session_state.autofit_results = None
+# Track last grid-search elapsed time (seconds)
+if 'last_run_elapsed_s' not in st.session_state:
+    st.session_state.last_run_elapsed_s = None
 
 # Initialize slider defaults if not set
 if 'param_lipid' not in st.session_state:
@@ -613,6 +616,7 @@ with tabs[0]:
                     elapsed = time.perf_counter() - start_time
                     mins, secs = divmod(int(elapsed), 60)
                     timer_placeholder.success(f'Grid search completed in {mins:02d}:{secs:02d} ({elapsed:.1f}s)')
+                    st.session_state.last_run_elapsed_s = elapsed
 
                     if results:
                         best = results[0]
@@ -649,7 +653,11 @@ with tabs[0]:
                     wl_display, meas_display, theoretical_display
                 )
                 
-                st.markdown(f'### 📈 `{selected_file.name}`')
+                elapsed_note = ''
+                if st.session_state.last_run_elapsed_s is not None:
+                    mins, secs = divmod(int(st.session_state.last_run_elapsed_s), 60)
+                    elapsed_note = f' -- {mins:02d}:{secs:02d} ({st.session_state.last_run_elapsed_s:.1f}s)'
+                st.markdown(f'### 📈 `{selected_file.name}`{elapsed_note}')
                 
                 # Metrics row
                 mcols = st.columns(6)
