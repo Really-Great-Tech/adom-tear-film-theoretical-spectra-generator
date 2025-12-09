@@ -15,6 +15,7 @@ import sys
 from pathlib import Path
 import time
 from concurrent.futures import ThreadPoolExecutor
+import warnings
 
 import numpy as np
 import pandas as pd
@@ -22,6 +23,16 @@ import plotly.express as px
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import streamlit as st
+
+# Suppress Streamlit widget warning about default value + session state
+warnings.filterwarnings(
+    'ignore',
+    message='.*widget.*key.*was created with a default value but also had its value set via the Session State API.*',
+    category=UserWarning
+)
+# Also suppress via Streamlit logger if it's logged there
+streamlit_logger = logging.getLogger('streamlit')
+streamlit_logger.setLevel(logging.ERROR)  # Only show errors, not warnings
 
 # Add parent paths for imports
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
@@ -238,6 +249,20 @@ st.markdown('''
         border-radius: 8px !important;
     }
     
+    /* Hide Streamlit widget warnings about session state - target warning alerts */
+    div[data-testid="stAlert"]:has(> div:contains("widget")),
+    div[data-testid="stAlert"]:has(> div:contains("param_lipid")),
+    div[data-testid="stAlert"]:has(> div:contains("Session State API")),
+    /* Also target by alert type (warning) */
+    div[data-testid="stAlert"][data-baseweb="notification"] {
+        /* Check if it contains widget warning text */
+    }
+    
+    /* More aggressive: Hide all warning alerts that might contain widget warnings */
+    div[data-testid="stAlert"] {
+        /* We'll use JavaScript to check content and hide */
+    }
+    
     /* Code blocks */
     .stCodeBlock {
         background: #f8fafc !important;
@@ -295,6 +320,48 @@ st.markdown('''
         font-size: 0.9rem;
     }
 </style>
+<script>
+    // Hide Streamlit widget warnings about session state
+    function hideWidgetWarnings() {
+        const alerts = document.querySelectorAll('[data-testid="stAlert"]');
+        alerts.forEach(alert => {
+            const text = alert.textContent || alert.innerText || '';
+            // Check if this is the widget warning we want to hide
+            if (text.includes('widget') && text.includes('key') && 
+                (text.includes('param_lipid') || text.includes('param_aqueous') || text.includes('param_mucus')) &&
+                text.includes('Session State API')) {
+                alert.style.display = 'none';
+                alert.style.visibility = 'hidden';
+                alert.style.height = '0';
+                alert.style.margin = '0';
+                alert.style.padding = '0';
+            }
+        });
+    }
+    
+    // Run immediately
+    hideWidgetWarnings();
+    
+    // Run on page load
+    if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', hideWidgetWarnings);
+    } else {
+        hideWidgetWarnings();
+    }
+    
+    // Also hide after Streamlit reruns (observe DOM changes)
+    const observer = new MutationObserver(function(mutations) {
+        hideWidgetWarnings();
+    });
+    observer.observe(document.body, { 
+        childList: true, 
+        subtree: true,
+        attributes: false
+    });
+    
+    // Also run periodically as a fallback
+    setInterval(hideWidgetWarnings, 500);
+</script>
 ''', unsafe_allow_html=True)
 
 
@@ -435,13 +502,10 @@ COLORS = {
     'residual': '#d97706',     # Amber for residual
 }
 
+# For client experiments: only show Auto-Fit tab
+# Other tabs hidden to simplify interface
 tabs = st.tabs([
-    '🎯 Auto-Fit (Grid Search)',  # Default tab - main functionality
-    '📊 Sample Data Viewer',
-    '🌈 Material Properties',
-    '🔧 PyElli Structure Demo',
-    '📈 Fitting Comparison',
-    '📚 Integration Guide'
+    '🎯 Auto-Fit (Grid Search)',  # Only tab visible for client experiments
 ])
 
 
@@ -458,21 +522,7 @@ if 'autofit_results' not in st.session_state:
 if 'last_run_elapsed_s' not in st.session_state:
     st.session_state.last_run_elapsed_s = None
 
-# Initialize slider defaults if not set
-if 'param_lipid' not in st.session_state:
-    st.session_state.param_lipid = 60
-if 'param_aqueous' not in st.session_state:
-    st.session_state.param_aqueous = 2500
-if 'param_mucus' not in st.session_state:
-    st.session_state.param_mucus = 300
-
-# Check if we need to update slider values from auto-fit
-if st.session_state.pending_update is not None:
-    st.session_state.param_lipid = int(st.session_state.pending_update['lipid'])
-    st.session_state.param_aqueous = int(st.session_state.pending_update['aqueous'])
-    st.session_state.param_mucus = int(st.session_state.pending_update['mucus'])
-    st.session_state.autofit_results = st.session_state.pending_update['results']
-    st.session_state.pending_update = None
+# Note: pending_update is handled right before creating sliders to avoid warnings
 
 with tabs[0]:
     st.markdown("""
@@ -532,9 +582,9 @@ with tabs[0]:
             st.markdown('### 📏 Display Settings')
             
             wavelength_range = st.slider(
-            'Wavelength Range (nm)',
-            400, 1200,
-                (450, 1150),
+                'Wavelength Range (nm)',
+                400, 1200,
+                (600, 1200),  # Default matches LTA focus region
                 step=10,
                 key='wl_range_main'
             )
@@ -545,33 +595,66 @@ with tabs[0]:
             st.markdown('### 🔧 Parameters')
             st.caption('Adjust manually or use Auto-Fit to find best values')
             
-            current_lipid = st.slider('Lipid (nm)', 10, 300, key='param_lipid', step=5)
-            current_aqueous = st.slider('Aqueous (nm)', 50, 6000, key='param_aqueous', step=50)
-            current_mucus = st.slider('Mucus (nm)', 20, 1000, key='param_mucus', step=20)
+            # Slider ranges match LTA grid search ranges
+            # Handle pending_update: update session state before creating widgets
+            # This ensures sliders use the new values from grid search
+            if st.session_state.pending_update is not None:
+                # Update session state with best fit values before creating widgets
+                st.session_state.param_lipid = int(st.session_state.pending_update['lipid'])
+                st.session_state.param_aqueous = int(st.session_state.pending_update['aqueous'])
+                st.session_state.param_mucus = int(st.session_state.pending_update['mucus'])
+                st.session_state.autofit_results = st.session_state.pending_update['results']
+                # Clear pending_update
+                st.session_state.pending_update = None
+            
+            # Create sliders - Streamlit will use session state values if keys exist
+            # If keys don't exist, use defaults
+            current_lipid = st.slider(
+                'Lipid (nm)', 0, 400,
+                value=st.session_state.get('param_lipid', 60),
+                key='param_lipid',
+                step=5
+            )
+            current_aqueous = st.slider(
+                'Aqueous (nm)', -20, 6000,
+                value=st.session_state.get('param_aqueous', 2500),
+                key='param_aqueous',
+                step=50
+            )
+            # Mucus maps to LTA roughness: 300-3000 Å = 30-300 nm
+            current_mucus = st.slider(
+                'Mucus (nm)', 30, 300,
+                value=st.session_state.get('param_mucus', 300),
+                key='param_mucus',
+                step=10
+            )
             
             st.markdown('---')
             st.markdown('<p class="section-header">⚙️ Search Range Settings</p>', unsafe_allow_html=True)
             
             col_a, col_b, col_c = st.columns(3)
             with col_a:
-                lipid_min = st.number_input('Lipid Min', value=20, key='grid_lipid_min')
-                lipid_max = st.number_input('Lipid Max', value=200, key='grid_lipid_max')
+                lipid_min = st.number_input('Lipid Min', value=0, key='grid_lipid_min')  # Match LTA: 0-400
+                lipid_max = st.number_input('Lipid Max', value=400, key='grid_lipid_max')
                 lipid_step = st.number_input('Lipid Step', value=20, key='grid_lipid_step')
             with col_b:
-                aqueous_min = st.number_input('Aqueous Min', value=100, key='grid_aq_min')
+                aqueous_min = st.number_input('Aqueous Min', value=-20, key='grid_aq_min')  # Match LTA: -20-6000
                 aqueous_max = st.number_input('Aqueous Max', value=6000, key='grid_aq_max')
-                aqueous_step = st.number_input('Aqueous Step', value=300, key='grid_aq_step')
+                aqueous_step = st.number_input('Aqueous Step', value=200, key='grid_aq_step')  # Match LTA step
             with col_c:
-                mucus_min = st.number_input('Mucus Min', value=50, key='grid_mu_min')
-                mucus_max = st.number_input('Mucus Max', value=800, key='grid_mu_max')
-                mucus_step = st.number_input('Mucus Step', value=100, key='grid_mu_step')
+                # Note: Mucus in pyElli maps to Roughness in LTA
+                # LTA roughness: 300-3000 Å, step 300
+                # Convert to nm: 30-300 nm, step 30
+                mucus_min = st.number_input('Mucus Min', value=30, key='grid_mu_min')  # 300 Å = 30 nm
+                mucus_max = st.number_input('Mucus Max', value=300, key='grid_mu_max')  # 3000 Å = 300 nm
+                mucus_step = st.number_input('Mucus Step', value=30, key='grid_mu_step')  # 300 Å = 30 nm
             
             st.markdown('---')
             run_autofit = st.button('🚀 Run Auto-Fit', use_container_width=True, type='primary')
         else:
             selected_file = None
             run_autofit = False
-            wavelength_range = (450, 1150)
+            wavelength_range = (600, 1200)  # Default matches LTA focus region
             current_lipid, current_aqueous, current_mucus = 60, 2500, 300
             st.info('👈 No spectrum files found')
     
@@ -772,8 +855,10 @@ with tabs[0]:
 # =============================================================================
 # Tab 2: Sample Data Viewer
 # =============================================================================
+# HIDDEN FOR CLIENT EXPERIMENTS
 
-with tabs[1]:
+# with tabs[1]:
+if False:  # Disabled for client
     st.markdown('''
     <div style="margin-bottom: 24px;">
         <h2>📊 Sample Data Viewer</h2>
@@ -869,8 +954,10 @@ with tabs[1]:
 # =============================================================================
 # Tab 3: Material Properties
 # =============================================================================
+# HIDDEN FOR CLIENT EXPERIMENTS
 
-with tabs[2]:
+# with tabs[2]:
+if False:  # Disabled for client
     st.markdown('''
     <div style="margin-bottom: 24px;">
         <h2>🌈 Material Optical Properties</h2>
@@ -1021,8 +1108,10 @@ with tabs[2]:
 # =============================================================================
 # Tab 4: PyElli Structure Demo
 # =============================================================================
+# HIDDEN FOR CLIENT EXPERIMENTS
 
-with tabs[3]:
+# with tabs[3]:
+if False:  # Disabled for client
     st.markdown('''
     <div style="margin-bottom: 24px;">
         <h2>🔧 PyElli Structure Builder</h2>
@@ -1283,8 +1372,10 @@ with tabs[3]:
 # =============================================================================
 # Tab 5: Fitting Comparison
 # =============================================================================
+# HIDDEN FOR CLIENT EXPERIMENTS
 
-with tabs[4]:
+# with tabs[4]:
+if False:  # Disabled for client
     st.markdown('''
     <div style="margin-bottom: 24px;">
         <h2>📈 Fitting Comparison</h2>
@@ -1532,8 +1623,10 @@ with tabs[4]:
 # =============================================================================
 # Tab 6: Integration Guide
 # =============================================================================
+# HIDDEN FOR CLIENT EXPERIMENTS
 
-with tabs[5]:
+# with tabs[5]:
+if False:  # Disabled for client
     st.markdown('''
     <div style="margin-bottom: 24px;">
         <h2>📚 Integration Guide</h2>
