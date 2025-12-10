@@ -634,20 +634,19 @@ with tabs[0]:
             
             col_a, col_b, col_c = st.columns(3)
             with col_a:
-                lipid_min = st.number_input('Lipid Min', value=0, key='grid_lipid_min')  # Match LTA: 0-400
+                lipid_min = st.number_input('Lipid Min', value=0, key='grid_lipid_min')  # Full range, larger step for ~966 combinations
                 lipid_max = st.number_input('Lipid Max', value=400, key='grid_lipid_max')
-                lipid_step = st.number_input('Lipid Step', value=20, key='grid_lipid_step')
+                lipid_step = st.number_input('Lipid Step', value=60, key='grid_lipid_step')  # Larger step for faster runtime
             with col_b:
-                aqueous_min = st.number_input('Aqueous Min', value=-20, key='grid_aq_min')  # Match LTA: -20-6000
+                aqueous_min = st.number_input('Aqueous Min', value=-20, key='grid_aq_min')  # Full range, larger step for ~966 combinations
                 aqueous_max = st.number_input('Aqueous Max', value=6000, key='grid_aq_max')
-                aqueous_step = st.number_input('Aqueous Step', value=200, key='grid_aq_step')  # Match LTA step
+                aqueous_step = st.number_input('Aqueous Step', value=270, key='grid_aq_step')  # Larger step for faster runtime
             with col_c:
                 # Note: Mucus in pyElli maps to Roughness in LTA
-                # LTA roughness: 300-3000 Å, step 300
-                # Convert to nm: 30-300 nm, step 30
-                mucus_min = st.number_input('Mucus Min', value=30, key='grid_mu_min')  # 300 Å = 30 nm
-                mucus_max = st.number_input('Mucus Max', value=300, key='grid_mu_max')  # 3000 Å = 300 nm
-                mucus_step = st.number_input('Mucus Step', value=30, key='grid_mu_step')  # 300 Å = 30 nm
+                # Full range, larger step for ~966 combinations
+                mucus_min = st.number_input('Mucus Min', value=30, key='grid_mu_min')
+                mucus_max = st.number_input('Mucus Max', value=300, key='grid_mu_max')
+                mucus_step = st.number_input('Mucus Step', value=50, key='grid_mu_step')  # Larger step for faster runtime
             
             st.markdown('---')
             run_autofit = st.button('🚀 Run Auto-Fit', use_container_width=True, type='primary')

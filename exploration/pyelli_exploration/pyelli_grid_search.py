@@ -557,9 +557,9 @@ class PyElliGridSearch:
         self,
         wavelengths: np.ndarray,
         measured: np.ndarray,
-        lipid_range: Tuple[float, float, float] = (0, 400, 20),    # Match LTA: (min, max, step) nm
-        aqueous_range: Tuple[float, float, float] = (-20, 6000, 200),  # Match LTA: (min, max, step) nm
-        mucus_range: Tuple[float, float, float] = (30, 300, 30),  # Match LTA roughness: 300-3000 Å = 30-300 nm, step 30
+        lipid_range: Tuple[float, float, float] = (0, 400, 60),    # Full range, larger step for ~966 combinations: (min, max, step) nm
+        aqueous_range: Tuple[float, float, float] = (-20, 6000, 270),  # Full range, larger step for ~966 combinations: (min, max, step) nm
+        mucus_range: Tuple[float, float, float] = (30, 300, 50),  # Full range, larger step for ~966 combinations: (min, max, step) nm
         top_k: int = 10,
     ) -> List[PyElliResult]:
         """
