@@ -583,8 +583,13 @@ class PyElliGridSearch:
         aqueous_values = np.arange(aqueous_range[0], aqueous_range[1] + 1, aqueous_range[2])
         mucus_values = np.arange(mucus_range[0], mucus_range[1] + 1, mucus_range[2])
         
+        # Filter out negative values - pyElli rejects them and falls back to slow custom TMM
+        lipid_values = lipid_values[lipid_values >= 0]
+        aqueous_values = aqueous_values[aqueous_values >= 0]
+        mucus_values = mucus_values[mucus_values >= 0]
+        
         total = len(lipid_values) * len(aqueous_values) * len(mucus_values)
-        logger.info(f"🔍 Running grid search: {total} combinations")
+        logger.info(f"🔍 Running grid search: {total} combinations (filtered out negative thicknesses)")
         
         for lipid in lipid_values:
             for aqueous in aqueous_values:
