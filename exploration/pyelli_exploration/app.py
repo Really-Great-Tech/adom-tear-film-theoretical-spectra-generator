@@ -435,13 +435,9 @@ COLORS = {
     'residual': '#d97706',     # Amber for residual
 }
 
+# Only show Auto-Fit tab for client experiments
 tabs = st.tabs([
-    '🎯 Auto-Fit (Grid Search)',  # Default tab - main functionality
-    '📊 Sample Data Viewer',
-    '🌈 Material Properties',
-    '🔧 PyElli Structure Demo',
-    '📈 Fitting Comparison',
-    '📚 Integration Guide'
+    '🎯 Auto-Fit (Grid Search)',  # Only tab - main functionality
 ])
 
 
@@ -773,7 +769,8 @@ with tabs[0]:
 # Tab 2: Sample Data Viewer
 # =============================================================================
 
-with tabs[1]:
+# Hide other tabs for client experiments - only show Auto-Fit tab
+if False:  # Disable tab 1 (Sample Data Viewer)
     st.markdown('''
     <div style="margin-bottom: 24px;">
         <h2>📊 Sample Data Viewer</h2>
@@ -870,7 +867,7 @@ with tabs[1]:
 # Tab 3: Material Properties
 # =============================================================================
 
-with tabs[2]:
+if False:  # Hide tab 2 (Material Properties) for client experiments
     st.markdown('''
     <div style="margin-bottom: 24px;">
         <h2>🌈 Material Optical Properties</h2>
@@ -1022,7 +1019,7 @@ with tabs[2]:
 # Tab 4: PyElli Structure Demo
 # =============================================================================
 
-with tabs[3]:
+if False:  # Hide tab 3 (PyElli Structure Demo) for client experiments
     st.markdown('''
     <div style="margin-bottom: 24px;">
         <h2>🔧 PyElli Structure Builder</h2>
@@ -1284,7 +1281,7 @@ with tabs[3]:
 # Tab 5: Fitting Comparison
 # =============================================================================
 
-with tabs[4]:
+if False:  # Hide tab 4 (Fitting Comparison) for client experiments
     st.markdown('''
     <div style="margin-bottom: 24px;">
         <h2>📈 Fitting Comparison</h2>
@@ -1533,7 +1530,7 @@ with tabs[4]:
 # Tab 6: Integration Guide
 # =============================================================================
 
-with tabs[5]:
+if False:  # Hide tab 5 (Integration Guide) for client experiments
     st.markdown('''
     <div style="margin-bottom: 24px;">
         <h2>📚 Integration Guide</h2>
