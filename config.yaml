@@ -159,11 +159,11 @@ ui:
   
   # Client reference scoring - compare algorithm results with known client best fits
   client_reference_scoring:
-    enabled: false  # Set to true to enable scoring of client's known best parameters
+    enabled: true # Set to true to enable scoring of client's known best parameters
     # Default parameters (can be overridden in UI)
-    default_lipid: 59.0
+    default_lipid: 62.3
     default_aqueous: -2
-    default_roughness: 1500.0
+    default_roughness: 1200.0
 
 # Plotting Configuration
 plotting:

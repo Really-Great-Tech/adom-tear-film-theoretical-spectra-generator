@@ -343,6 +343,118 @@ def generate_parameter_values(cfg: Dict[str, Any], stride: int) -> np.ndarray:
     return values
 
 
+def generate_dynamic_parameter_values(
+    cfg: Dict[str, Any],
+    promising_regions: Optional[List[Tuple[float, float]]] = None,
+    base_step: Optional[float] = None,
+    min_step: Optional[float] = None,
+    max_evaluations: Optional[int] = None,
+) -> np.ndarray:
+    """
+    Generate parameter values with dynamic step sizes.
+    
+    If promising_regions is provided, uses finer steps in those regions and coarser steps elsewhere.
+    This adapts to the score landscape to preserve runtime while getting good results.
+    
+    Args:
+        cfg: Parameter configuration dict with min, max, step
+        promising_regions: List of (center, score) tuples indicating promising parameter values
+        base_step: Base step size (defaults to cfg["step"])
+        min_step: Minimum step size for refinement (defaults to base_step / 4)
+        max_evaluations: Maximum number of values to generate (for runtime control)
+    
+    Returns:
+        Array of parameter values with adaptive step sizes
+    """
+    min_val = float(cfg["min"])
+    max_val = float(cfg["max"])
+    base_step = base_step if base_step is not None else float(cfg["step"])
+    min_step = min_step if min_step is not None else base_step / 4.0
+    
+    # If no promising regions, use uniform coarse steps
+    if not promising_regions or len(promising_regions) == 0:
+        return generate_parameter_values(cfg, stride=1)
+    
+    # Sort promising regions by score (highest first)
+    promising_regions = sorted(promising_regions, key=lambda x: x[1], reverse=True)
+    
+    # Collect all values with adaptive step sizes
+    all_values = set()
+    
+    # Add boundary values
+    all_values.add(min_val)
+    all_values.add(max_val)
+    
+    # For each promising region, add fine-grained values around it
+    for center, score in promising_regions:
+        # Determine step size based on score (higher score = finer step)
+        # Score 0.8+ → min_step, Score 0.5-0.8 → base_step/2, Score <0.5 → base_step
+        if score >= 0.8:
+            step = min_step
+            window = base_step * 8  # Wider window for high-scoring regions
+        elif score >= 0.5:
+            step = base_step / 2.0
+            window = base_step * 6
+        else:
+            step = base_step
+            window = base_step * 4
+        
+        # Clamp center to valid range
+        center = max(min_val, min(max_val, center))
+        
+        # Generate values in window around center
+        region_min = max(min_val, center - window / 2)
+        region_max = min(max_val, center + window / 2)
+        
+        region_values = np.arange(region_min, region_max + step * 0.5, step, dtype=float)
+        for val in region_values:
+            if min_val <= val <= max_val:
+                all_values.add(val)
+    
+    # Fill gaps between promising regions with coarse steps
+    sorted_centers = sorted([r[0] for r in promising_regions])
+    for i in range(len(sorted_centers) - 1):
+        gap_start = sorted_centers[i]
+        gap_end = sorted_centers[i + 1]
+        gap_size = gap_end - gap_start
+        
+        # Use coarse steps in gaps
+        gap_step = base_step * 2  # Coarser in gaps
+        gap_values = np.arange(gap_start, gap_end, gap_step, dtype=float)
+        for val in gap_values:
+            if min_val <= val <= max_val:
+                all_values.add(val)
+    
+    # Fill before first and after last promising region
+    if sorted_centers:
+        # Before first
+        if sorted_centers[0] > min_val:
+            gap_values = np.arange(min_val, sorted_centers[0], base_step * 2, dtype=float)
+            for val in gap_values:
+                all_values.add(val)
+        
+        # After last
+        if sorted_centers[-1] < max_val:
+            gap_values = np.arange(sorted_centers[-1], max_val + base_step * 2, base_step * 2, dtype=float)
+            for val in gap_values:
+                if val <= max_val:
+                    all_values.add(val)
+    
+    # Convert to sorted array
+    values = np.array(sorted(all_values), dtype=float)
+    
+    # Limit to max_evaluations if specified (for runtime control)
+    if max_evaluations and len(values) > max_evaluations:
+        # Keep boundary values and evenly sample the rest
+        if max_evaluations >= 3:
+            indices = np.linspace(0, len(values) - 1, max_evaluations, dtype=int)
+            values = values[indices]
+        else:
+            values = np.array([min_val, max_val], dtype=float)
+    
+    return values
+
+
 def score_candidate(
     measurement_features,
     theoretical_features,
@@ -937,11 +1049,32 @@ def main():
     if measurements_enabled and measurement_paths:
         st.sidebar.markdown("## Measurement Data")
         measurement_files = sorted(list(measurement_paths.keys()))
+        # Use session state to preserve selection across reruns
+        # Initialize if not set
+        if "selected_measurement_file" not in st.session_state:
+            st.session_state["selected_measurement_file"] = "None"
+        
+        # Get current selection from session state, or default to "None"
+        current_selection = st.session_state.get("selected_measurement_file", "None")
+        # Ensure current selection is valid (in case file list changed)
+        if current_selection not in (["None"] + measurement_files):
+            current_selection = "None"
+            st.session_state["selected_measurement_file"] = "None"
+        
+        # Find index of current selection
+        options = ["None"] + measurement_files
+        try:
+            default_index = options.index(current_selection)
+        except ValueError:
+            default_index = 0
+        
         selected_file = st.sidebar.selectbox(
             "Select measurement file:",
-            options=["None"] + measurement_files,
-            index=0  # Default to "None" for faster startup
+            options=options,
+            index=default_index,
+            key="selected_measurement_file"
         )
+        # selected_file is automatically stored in session_state via the key parameter
         
         if selected_file != "None":
             # Lazy load: only load the selected file's data
@@ -1329,9 +1462,9 @@ def main():
             # Search strategy selector
             search_strategy = st.selectbox(
                 "Search Strategy",
-                ["random", "coarse-fine"],
+                ["random", "coarse-fine", "dynamic"],
                 index=1,  # Default to "coarse-fine" (recommended)
-                help="random: Random sampling across full parameter space. coarse-fine: Two-stage search (coarse then refine around best results)."
+                help="random: Random sampling across full parameter space. coarse-fine: Two-stage search (coarse then refine around best results). dynamic: Adaptive step sizes based on score landscape (preserves runtime, gets good results)."
             )
             
             # Client Reference Scoring - compare with known client best fits
@@ -1508,6 +1641,167 @@ def main():
                         lipid_vals = None
                         aqueous_vals = None
                         rough_vals = None
+                    elif search_strategy == "dynamic":
+                        # Dynamic search: quick coarse pass, then adaptive refinement
+                        st.info("Stage 1: Quick coarse scan to identify promising regions...")
+                        
+                        # Quick coarse pass with larger steps
+                        coarse_lipid_vals = generate_parameter_values(config["parameters"]["lipid"], stride=3)
+                        coarse_aqueous_vals = generate_parameter_values(config["parameters"]["aqueous"], stride=3)
+                        coarse_rough_vals = generate_parameter_values(config["parameters"]["roughness"], stride=3)
+                        
+                        # Limit coarse pass to reasonable size for speed
+                        max_coarse = min(500, len(coarse_lipid_vals) * len(coarse_aqueous_vals) * len(coarse_rough_vals))
+                        coarse_records = []
+                        coarse_count = 0
+                        
+                        for lipid in coarse_lipid_vals:
+                            for aqueous in coarse_aqueous_vals:
+                                for rough in coarse_rough_vals:
+                                    if coarse_count >= max_coarse:
+                                        break
+                                    spectrum = single_spectrum(float(lipid), float(aqueous), float(rough))
+                                    if spectrum is None or len(spectrum) == 0 or np.all(spectrum == 0):
+                                        continue
+                                    spectrum_std = np.std(spectrum)
+                                    if spectrum_std < 1e-6:
+                                        continue
+                                    theoretical = prepare_theoretical_spectrum(
+                                        wavelengths,
+                                        spectrum,
+                                        measurement_features,
+                                        analysis_cfg,
+                                    )
+                                    scores, diagnostics = score_candidate(
+                                        measurement_features,
+                                        theoretical,
+                                        metrics_cfg,
+                                        lipid_nm=float(lipid),
+                                        aqueous_nm=float(aqueous),
+                                        roughness_A=float(rough),
+                                        measurement_quality=measurement_quality_result,
+                                    )
+                                    record = {
+                                        "lipid_nm": float(lipid),
+                                        "aqueous_nm": float(aqueous),
+                                        "roughness_A": float(rough),
+                                        "score_composite": float(scores.get("composite", 0.0)),
+                                    }
+                                    coarse_records.append(record)
+                                    coarse_count += 1
+                                if coarse_count >= max_coarse:
+                                    break
+                            if coarse_count >= max_coarse:
+                                break
+                        
+                        # Identify promising regions from coarse pass
+                        if coarse_records:
+                            coarse_df = pd.DataFrame(coarse_records)
+                            coarse_df = coarse_df.sort_values("score_composite", ascending=False)
+                            
+                            # Get top candidates for each parameter
+                            top_k = min(10, len(coarse_df))
+                            top_coarse = coarse_df.head(top_k)
+                            
+                            lipid_promising = [(row["lipid_nm"], row["score_composite"]) for _, row in top_coarse.iterrows()]
+                            aqueous_promising = [(row["aqueous_nm"], row["score_composite"]) for _, row in top_coarse.iterrows()]
+                            rough_promising = [(row["roughness_A"], row["score_composite"]) for _, row in top_coarse.iterrows()]
+                            
+                            st.success(f"Stage 1 complete: Found {len(coarse_records)} candidates. Top {top_k} selected for adaptive refinement.")
+                            st.info("Stage 2: Adaptive refinement with dynamic step sizes...")
+                            
+                            # Generate dynamic parameter values
+                            # Limit to preserve runtime - use max_results if specified
+                            max_per_param = int(np.sqrt(max_results)) if max_results else 50
+                            lipid_vals = generate_dynamic_parameter_values(
+                                config["parameters"]["lipid"],
+                                promising_regions=lipid_promising,
+                                max_evaluations=max_per_param,
+                            )
+                            aqueous_vals = generate_dynamic_parameter_values(
+                                config["parameters"]["aqueous"],
+                                promising_regions=aqueous_promising,
+                                max_evaluations=max_per_param,
+                            )
+                            rough_vals = generate_dynamic_parameter_values(
+                                config["parameters"]["roughness"],
+                                promising_regions=rough_promising,
+                                max_evaluations=max_per_param,
+                            )
+                            
+                            # Run full grid search with dynamic values
+                            results_df, evaluated = run_inline_grid_search(
+                                single_spectrum,
+                                wavelengths,
+                                measurement_features,
+                                analysis_cfg,
+                                metrics_cfg,
+                                lipid_vals,
+                                aqueous_vals,
+                                rough_vals,
+                                max_results,
+                                measurement_quality=measurement_quality_result,
+                            )
+                            
+                            # Combine coarse and refined results
+                            if not results_df.empty and len(coarse_records) > 0:
+                                coarse_full = []
+                                for record in coarse_records:
+                                    spectrum = single_spectrum(float(record["lipid_nm"]), float(record["aqueous_nm"]), float(record["roughness_A"]))
+                                    if spectrum is None or len(spectrum) == 0 or np.all(spectrum == 0):
+                                        continue
+                                    spectrum_std = np.std(spectrum)
+                                    if spectrum_std < 1e-6:
+                                        continue
+                                    theoretical = prepare_theoretical_spectrum(
+                                        wavelengths,
+                                        spectrum,
+                                        measurement_features,
+                                        analysis_cfg,
+                                    )
+                                    scores, diagnostics = score_candidate(
+                                        measurement_features,
+                                        theoretical,
+                                        metrics_cfg,
+                                        lipid_nm=float(record["lipid_nm"]),
+                                        aqueous_nm=float(record["aqueous_nm"]),
+                                        roughness_A=float(record["roughness_A"]),
+                                        measurement_quality=measurement_quality_result,
+                                    )
+                                    full_record = {
+                                        "lipid_nm": float(record["lipid_nm"]),
+                                        "aqueous_nm": float(record["aqueous_nm"]),
+                                        "roughness_A": float(record["roughness_A"]),
+                                    }
+                                    for key, value in scores.items():
+                                        full_record[f"score_{key}"] = float(value)
+                                    for metric, diag in diagnostics.items():
+                                        for diag_key, diag_val in diag.items():
+                                            full_record[f"{metric}_{diag_key}"] = float(diag_val)
+                                    coarse_full.append(full_record)
+                                
+                                # Combine and deduplicate
+                                all_records_df = pd.DataFrame(coarse_full + results_df.to_dict('records'))
+                                results_df = all_records_df.drop_duplicates(subset=["lipid_nm", "aqueous_nm", "roughness_A"], keep="first")
+                                results_df = results_df.sort_values("score_composite", ascending=False).reset_index(drop=True)
+                                evaluated = len(coarse_full) + evaluated
+                        else:
+                            # Fallback to regular search if coarse pass fails
+                            lipid_vals = generate_parameter_values(config["parameters"]["lipid"], stride)
+                            aqueous_vals = generate_parameter_values(config["parameters"]["aqueous"], stride)
+                            rough_vals = generate_parameter_values(config["parameters"]["roughness"], stride)
+                            results_df, evaluated = run_inline_grid_search(
+                                single_spectrum,
+                                wavelengths,
+                                measurement_features,
+                                analysis_cfg,
+                                metrics_cfg,
+                                lipid_vals,
+                                aqueous_vals,
+                                rough_vals,
+                                max_results,
+                                measurement_quality=measurement_quality_result,
+                            )
                     else:
                         # Use random or systematic grid search
                         lipid_vals = generate_parameter_values(config["parameters"]["lipid"], stride)
@@ -1542,7 +1836,17 @@ def main():
                         "elapsed_time_formatted": str(elapsed_timedelta),
                     }
 
+            # Try to get cache entry - first try the current cache_key, then fallback to last used key
             cache_entry = st.session_state.get(cache_key)
+            if not cache_entry:
+                # Fallback: try to restore from last known cache key (in case selected_file changed)
+                last_cache_key = st.session_state.get("_last_grid_search_cache_key")
+                if last_cache_key and last_cache_key in st.session_state:
+                    cache_entry = st.session_state.get(last_cache_key)
+                    # Update cache_key to match the restored entry
+                    if cache_entry:
+                        cache_key = last_cache_key
+            
             if cache_entry:
                 results_df = cache_entry["results"]
                 evaluated = cache_entry.get("evaluated", len(results_df))
@@ -1598,23 +1902,24 @@ def main():
                                  f"aqueous={aqueous_min:.0f}-{aqueous_max:.0f} ({aqueous_unique} values), "
                                  f"roughness={rough_min:.0f}-{rough_max:.0f} ({rough_unique} values)")
                         
-                        # Warn if search space coverage is low (only for random/systematic search, not coarse-fine)
+                        # Warn if search space coverage is low (only for random/systematic search, not coarse-fine or dynamic)
                         cached_lipid_vals = cache_entry.get("lipid_vals")
                         cached_aqueous_vals = cache_entry.get("aqueous_vals")
                         cached_rough_vals = cache_entry.get("rough_vals")
                         search_strategy_cached = cache_entry.get("search_strategy", "random")
                         if (cached_lipid_vals is not None and cached_aqueous_vals is not None and cached_rough_vals is not None 
-                            and search_strategy_cached != "coarse-fine"):
+                            and search_strategy_cached not in ["coarse-fine", "dynamic"]):
                             total_combinations = len(cached_lipid_vals) * len(cached_aqueous_vals) * len(cached_rough_vals)
                             max_results_cached = cache_entry.get("max_results")
                             coverage = 100 * evaluated / total_combinations if total_combinations > 0 else 0
                             
                             # Only warn if coverage is low (< 10%) AND a limit was set
                             # If max_results is 0 or None, it's a full search (100% coverage is expected and good!)
+                            # Dynamic search intentionally uses adaptive step sizes and doesn't need full coverage
                             if max_results_cached is not None and max_results_cached > 0 and coverage < 10.0:
                                 st.warning(f"⚠️ Only {coverage:.1f}% of parameter space explored ({evaluated}/{total_combinations} combinations). "
                                          f"Grid search may be biased toward lower parameter values. "
-                                         f"Consider increasing 'Max spectra', using a larger 'Stride multiplier', or trying 'coarse-fine' strategy.")
+                                         f"Consider increasing 'Max spectra', using a larger 'Stride multiplier', or trying 'coarse-fine' or 'dynamic' strategy.")
                             elif coverage >= 99.0:
                                 # Full or near-full coverage - show success message
                                 st.success(f"✓ Full parameter space explored: {evaluated:,}/{total_combinations:,} combinations ({coverage:.1f}% coverage)")
@@ -1787,6 +2092,11 @@ def main():
                             "aqueous_slider": float(row["aqueous_nm"]),
                             "rough_slider": float(row["roughness_A"]),
                         }
+                        # Preserve the cache entry and key to prevent loss on rerun
+                        # Store the cache_key in session state so it can be retrieved after rerun
+                        if cache_entry:
+                            st.session_state[cache_key] = cache_entry
+                            st.session_state["_last_grid_search_cache_key"] = cache_key
                         st.rerun()
             else:
                 st.info("Run the grid search to see ranked candidates.")

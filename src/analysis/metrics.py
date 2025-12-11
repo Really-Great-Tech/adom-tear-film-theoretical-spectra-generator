@@ -844,7 +844,29 @@ def monotonic_alignment_score(
     # ANY crossing in the focus region = REJECTED
     sign_changes_focus = int(np.sum(np.abs(np.diff(np.sign(residual_focus))) > 0))
     
-    # HARD RULE: Zero crossings allowed
+    # === CRITERION 3B: PROXIMITY PENALTY - Prevent near-crossings in focus region ===
+    # Check minimum distance between theoretical and measured in the 600-1200nm focus region
+    # Penalize if they get too close (even if no crossing) because it may cross just outside
+    # (e.g., at 1400nm) making the fit look visually off
+    min_distance_focus = float(np.min(np.abs(residual_focus)))  # Minimum absolute residual in focus region
+    meas_range_focus = float(np.max(meas_focus) - np.min(meas_focus)) if len(meas_focus) > 0 else 0.01
+    meas_range_focus = max(meas_range_focus, 0.001)
+    
+    # Normalize minimum distance by measurement range in focus region
+    min_distance_normalized = min_distance_focus / meas_range_focus
+    
+    # Proximity penalty: if theoretical gets too close to measured in focus region (< 3% of range), penalize
+    # This prevents fits that look like they're about to cross (which would look bad visually)
+    # Even if no actual crossing occurs in 600-1200nm, if it's very close, it may cross at 1400nm
+    proximity_threshold = 0.03  # 3% of measurement range in focus region
+    if min_distance_normalized < proximity_threshold:
+        # Heavy penalty if too close (risk of crossing just outside focus region)
+        # Use square root for smooth penalty curve
+        proximity_penalty = float(np.power(min_distance_normalized / proximity_threshold, 0.5))
+    else:
+        proximity_penalty = 1.0  # No penalty if sufficient distance maintained
+    
+    # HARD RULE: Zero crossings allowed in focus region
     if sign_changes_focus == 0:
         crossing_score = 1.0  # Perfect - no crossings, this is what we want
         is_valid_fit = True
@@ -859,6 +881,9 @@ def monotonic_alignment_score(
             0.50 * shape_score +      # Shape is most important
             0.50 * closeness_score    # Must be close to measured
         )
+        
+        # Apply proximity penalty to prevent near-crossings throughout entire range
+        score = score * proximity_penalty
         
         # Bonus: if shape is excellent AND close, boost score
         if shape_score > 0.95 and closeness_score > 0.6:
@@ -886,6 +911,9 @@ def monotonic_alignment_score(
         "zero_crossings_focus": float(sign_changes_focus),
         "crossing_score": float(crossing_score),
         "points_in_focus": float(points_in_focus),
+        "min_distance_focus": float(min_distance_focus),
+        "min_distance_normalized": float(min_distance_normalized),
+        "proximity_penalty": float(proximity_penalty),
         "meas_cycles_emd": float(meas_cycles),
         "theo_cycles_emd": float(theo_cycles),
         "cycle_ratio_emd": float(cycle_ratio),
