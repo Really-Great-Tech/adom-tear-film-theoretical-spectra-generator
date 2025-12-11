@@ -774,9 +774,12 @@ def create_comparison_plot(theoretical_wl: np.ndarray, theoretical_spec: np.ndar
         legend=dict(
             yanchor="top",
             y=0.99,
-            xanchor="left",
-            x=0.01
-        )
+            xanchor="right",
+            x=0.99
+        ),
+        # Default zoom to LTA focus region: 600-1180nm, reflectance up to 0.06
+        xaxis=dict(range=[600, 1180]),
+        yaxis=dict(range=[0, 0.06])
     )
     
     return fig

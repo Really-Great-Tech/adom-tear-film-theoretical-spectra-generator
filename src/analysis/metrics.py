@@ -8,6 +8,12 @@ from typing import Dict, Iterable, List, Optional, Tuple
 import numpy as np
 from scipy import signal
 
+try:
+    import emd
+    EMD_AVAILABLE = True
+except ImportError:
+    EMD_AVAILABLE = False
+
 from .measurement_utils import (
     PreparedMeasurement,
     PreparedTheoreticalSpectrum,
@@ -581,6 +587,83 @@ def measurement_quality_score(
     return MetricResult(score=score, diagnostics=diagnostics), failures
 
 
+def _count_cycles_emd(signal_data: np.ndarray, sample_rate: float = 1.0) -> int:
+    """
+    Count oscillatory cycles in a signal using EMD (Empirical Mode Decomposition).
+    
+    This is more robust than simple peak detection because EMD decomposes the signal
+    into intrinsic mode functions (IMFs) and then detects cycles based on instantaneous phase.
+    
+    Args:
+        signal_data: 1D array of signal values
+        sample_rate: Sampling rate (for frequency transform). Default 1.0 means unit spacing.
+        
+    Returns:
+        Number of good cycles detected, or 0 if EMD is unavailable or fails.
+    """
+    if not EMD_AVAILABLE or len(signal_data) < 20:
+        return 0
+    
+    try:
+        # Detrend the signal first to focus on oscillations
+        signal_detrended = signal.detrend(signal_data)
+        
+        # Decompose signal into IMFs using mask sift
+        # This extracts oscillatory components from the signal
+        # Use fewer IMFs for faster processing and focus on main oscillations
+        imf = emd.sift.mask_sift(signal_detrended, max_imfs=4)
+        
+        if imf.size == 0 or imf.shape[0] < 20:
+            return 0
+        
+        # Find the IMF with the most energy (likely contains the main oscillation)
+        # Sum of squares of each IMF
+        imf_energy = np.sum(imf ** 2, axis=0)
+        if len(imf_energy) == 0:
+            return 0
+        
+        # Use the IMF with highest energy (excluding residual if present)
+        # Check if we have multiple IMFs
+        if imf.shape[1] > 1:
+            # Exclude the last IMF (usually residual/trend)
+            main_imf_idx = np.argmax(imf_energy[:-1])
+        else:
+            main_imf_idx = 0
+        
+        main_imf = imf[:, main_imf_idx]
+        
+        # Skip if IMF is too flat (no oscillations)
+        if np.std(main_imf) < 1e-6:
+            return 0
+        
+        # Compute instantaneous phase using normalized Hilbert transform
+        IP, IF, IA = emd.spectra.frequency_transform(
+            main_imf.reshape(-1, 1), 
+            sample_rate, 
+            'nht'
+        )
+        
+        # Extract cycle locations from instantaneous phase
+        # return_good=True filters out bad cycles (incomplete, distorted, etc.)
+        # Use smaller phase_step (pi instead of 1.5*pi) to catch more cycles
+        good_cycles = emd.cycles.get_cycle_vector(
+            IP, 
+            return_good=True, 
+            phase_step=np.pi  # More sensitive to detect cycles
+        )
+        
+        # Count number of unique cycles (non-zero values in cycle vector)
+        if good_cycles.size > 0:
+            cycle_count = int(np.max(good_cycles))
+            return max(0, cycle_count)
+        else:
+            return 0
+            
+    except Exception as e:
+        # If EMD fails for any reason, return 0 (will fall back to other methods)
+        return 0
+
+
 def monotonic_alignment_score(
     measurement: PreparedMeasurement,
     theoretical: PreparedTheoreticalSpectrum,
@@ -651,6 +734,93 @@ def monotonic_alignment_score(
     # correlation < 0 → inverse pattern → score = 0
     shape_score = max(0.0, correlation)
     
+    # === OSCILLATION MATCHING ANALYSIS ===
+    # Critical: Detect if theoretical lacks oscillations that measured has
+    # Use multiple methods: EMD cycles, variance ratio, and detrended correlation
+    
+    # Detrend both signals to focus on oscillations (not just overall trend)
+    meas_detrended = signal.detrend(meas_focus)
+    theo_detrended = signal.detrend(theo_focus)
+    
+    # Method 1: Variance ratio (oscillation amplitude)
+    meas_var = float(np.var(meas_detrended))
+    theo_var = float(np.var(theo_detrended))
+    var_ratio = 1.0
+    var_penalty = 1.0
+    
+    if meas_var > 1e-12:  # Measured has oscillations
+        var_ratio = theo_var / meas_var
+        if var_ratio < 0.5:  # Theoretical has < 50% of measured variance
+            # Heavy penalty for smooth/flat theoretical
+            var_penalty = float(np.power(max(var_ratio, 0.01), 0.3))  # Very aggressive
+        elif var_ratio < 0.7:
+            var_penalty = 0.5 + 0.3 * (var_ratio - 0.5) / 0.2  # 0.5-0.8
+        elif var_ratio < 0.9:
+            var_penalty = 0.8 + 0.2 * (var_ratio - 0.7) / 0.2  # 0.8-1.0
+        elif var_ratio <= 1.5:
+            # Theoretical has 90-150% of measured variance - ideal range
+            var_penalty = 1.0  # No penalty, this is good
+        else:
+            # Theoretical has > 150% of measured variance - too oscillatory
+            # Slight penalty, but not as severe as too smooth
+            var_penalty = float(np.exp(-(var_ratio - 1.5) * 0.3))  # Decay from 1.0
+    
+    # Method 2: EMD cycle counting
+    meas_cycles = 0
+    theo_cycles = 0
+    cycle_ratio = 1.0
+    cycle_penalty = 1.0
+    
+    if EMD_AVAILABLE and len(meas_focus) >= 20:
+        # Calculate sample rate (wavelength spacing)
+        if points_in_focus >= 10:
+            wl_focus = wavelengths[focus_mask]
+        else:
+            wl_focus = wavelengths
+        
+        if len(wl_focus) > 1:
+            sample_rate = 1.0 / float(np.mean(np.diff(wl_focus)))
+        else:
+            sample_rate = 1.0
+        
+        # Count cycles using EMD on detrended signals
+        meas_cycles = _count_cycles_emd(meas_detrended, sample_rate)
+        theo_cycles = _count_cycles_emd(theo_detrended, sample_rate)
+        
+        # Compare cycle counts
+        if meas_cycles > 0:
+            cycle_ratio = theo_cycles / max(meas_cycles, 1)
+            if cycle_ratio < 0.5:
+                cycle_penalty = float(np.power(max(cycle_ratio, 0.1), 0.5))
+            elif cycle_ratio < 0.7:
+                cycle_penalty = 0.6 + 0.2 * (cycle_ratio - 0.5) / 0.2  # 0.6-0.8
+            elif cycle_ratio < 0.9:
+                cycle_penalty = 0.8 + 0.2 * (cycle_ratio - 0.7) / 0.2  # 0.8-1.0
+    
+    # Method 3: Detrended correlation (oscillation pattern matching)
+    osc_correlation = 0.0
+    osc_corr_penalty = 1.0
+    
+    if np.std(meas_detrended) > 1e-10 and np.std(theo_detrended) > 1e-10:
+        osc_correlation = float(np.corrcoef(meas_detrended, theo_detrended)[0, 1])
+        if np.isnan(osc_correlation):
+            osc_correlation = 0.0
+        # If detrended correlation is low, theoretical lacks oscillation pattern
+        if osc_correlation < 0.5:
+            osc_corr_penalty = max(0.3, osc_correlation)  # Heavy penalty
+        elif osc_correlation < 0.7:
+            osc_corr_penalty = 0.5 + 0.3 * (osc_correlation - 0.5) / 0.2  # 0.5-0.8
+        elif osc_correlation < 0.9:
+            osc_corr_penalty = 0.8 + 0.2 * (osc_correlation - 0.7) / 0.2  # 0.8-1.0
+    
+    # Combine all oscillation penalties (use minimum = most aggressive)
+    # This ensures we catch smooth theoretical spectra
+    oscillation_penalty = min(var_penalty, cycle_penalty, osc_corr_penalty)
+    
+    # Apply oscillation penalty to shape score
+    # This is critical - smooth theoretical should get heavily penalized
+    shape_score = shape_score * oscillation_penalty
+    
     # === CRITERION 2: CLOSENESS (25% weight) ===
     # Theoretical should be close to measured - penalize large gaps in EITHER direction
     # Use mean absolute residual normalized by measurement range
@@ -716,6 +886,16 @@ def monotonic_alignment_score(
         "zero_crossings_focus": float(sign_changes_focus),
         "crossing_score": float(crossing_score),
         "points_in_focus": float(points_in_focus),
+        "meas_cycles_emd": float(meas_cycles),
+        "theo_cycles_emd": float(theo_cycles),
+        "cycle_ratio_emd": float(cycle_ratio),
+        "oscillation_penalty": float(oscillation_penalty),
+        "meas_var": meas_var,
+        "theo_var": theo_var,
+        "var_ratio": float(var_ratio),
+        "var_penalty": float(var_penalty),
+        "osc_correlation": float(osc_correlation),
+        "osc_corr_penalty": float(osc_corr_penalty),
     }
     
     return MetricResult(score=float(np.clip(score, 0.0, 1.0)), diagnostics=diagnostics)

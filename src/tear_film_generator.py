@@ -392,6 +392,26 @@ def make_calc_refl(dll: pathlib.Path, algorithm_xml: pathlib.Path,
     if not CLR_AVAILABLE:
         raise ImportError("pythonnet (clr) module required for DLL functionality. Install with: pip install pythonnet")
     
+    # SpAnalizer.dll depends on log4net.dll - try to load it first
+    # Check in the same directory as SpAnalizer.dll
+    dll_dir = dll.parent
+    log4net_path = dll_dir / "log4net.dll"
+    
+    if log4net_path.exists():
+        try:
+            clr.AddReference(str(log4net_path))
+        except Exception as e:
+            # If loading fails, continue - might be in GAC or another location
+            pass
+    
+    # Also try BatchUtility.dll which might be needed
+    batchutil_path = dll_dir / "BatchUtility.dll"
+    if batchutil_path.exists():
+        try:
+            clr.AddReference(str(batchutil_path))
+        except Exception:
+            pass
+    
     clr.AddReference(str(dll))
     from SpAnalizer import (Serializer, SpAnalizeHelper,
                             PolarizationTypeEnum, AnalizerTypeEnum,

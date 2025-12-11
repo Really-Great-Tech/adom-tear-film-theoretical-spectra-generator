@@ -481,3 +481,5 @@ in LTA's DLL.
 END OF REPORT
 ================================================================================
 
+
+pyelli_grid_search.py, elli.Layer and elli.Structure only accept material and thickness; there’s no roughness parameter. To model the rough mucus-substrate interface, we manually created graded sublayers between the mucus layer and substrate. We split the roughness thickness (e.g., 300 Å = 30 nm) into multiple sublayers (3–54 depending on roughness), each with a linearly mixed effective refractive index transitioning from mucus to substrate using the formula n_eff = sqrt(f × n_mucus² + (1-f) × n_substrate²), where the volume fraction f goes from 1 (mucus) to 0 (substrate). This is our own implementation, not a pyElli feature.
