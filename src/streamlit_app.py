@@ -21,7 +21,19 @@ import itertools
 import random
 import os
 import time
+import warnings
+import logging
 from datetime import timedelta
+
+# Suppress Streamlit widget warnings about default value + session state
+warnings.filterwarnings(
+    'ignore',
+    message='.*widget.*key.*was created with a default value but also had its value set via the Session State API.*',
+    category=UserWarning
+)
+# Also suppress via Streamlit logger if it's logged there
+streamlit_logger = logging.getLogger('streamlit')
+streamlit_logger.setLevel(logging.ERROR)  # Only show errors, not warnings
 
 from analysis import (
     load_measurement_spectrum,
@@ -912,6 +924,56 @@ def main():
         page_title=ui_cfg.get("page_title", "Tear Film Spectra Explorer"), 
         layout="wide"
     )
+    
+    # Hide Streamlit widget warnings via CSS and JavaScript
+    st.markdown('''
+    <style>
+        /* Hide Streamlit widget warnings about session state */
+        div[data-testid="stAlert"]:has(> div:contains("widget")) {
+            display: none !important;
+        }
+        
+        /* Additional CSS to target specific warning text if needed */
+        div[data-testid="stAlert"]:has(> div:contains("lipid_slider")) {
+            display: none !important;
+        }
+        div[data-testid="stAlert"]:has(> div:contains("aqueous_slider")) {
+            display: none !important;
+        }
+        div[data-testid="stAlert"]:has(> div:contains("rough_slider")) {
+            display: none !important;
+        }
+        div[data-testid="stAlert"]:has(> div:contains("Session State API")) {
+            display: none !important;
+        }
+    </style>
+    <script>
+        // Hide Streamlit widget warnings about session state
+        function hideWidgetWarnings() {
+            const alerts = document.querySelectorAll('[data-testid="stAlert"]');
+            alerts.forEach(alert => {
+                const text = alert.textContent || alert.innerText;
+                if (text.includes('widget') && text.includes('key') && text.includes('Session State API')) {
+                    alert.style.display = 'none';
+                }
+            });
+        }
+        
+        // Run on page load and after Streamlit updates
+        if (document.readyState === 'loading') {
+            document.addEventListener('DOMContentLoaded', hideWidgetWarnings);
+        } else {
+            hideWidgetWarnings();
+        }
+        
+        // Also hide after Streamlit reruns (using MutationObserver for continuous monitoring)
+        const observer = new MutationObserver(hideWidgetWarnings);
+        observer.observe(document.body, { childList: true, subtree: true });
+
+        // Fallback for older Streamlit versions or if MutationObserver is not enough
+        setInterval(hideWidgetWarnings, 500); // Check every 500ms
+    </script>
+    ''', unsafe_allow_html=True)
 
     # Load theoretical spectrum calculator
     single_spectrum, wavelengths = make_single_spectrum_calculator(config)
@@ -1017,7 +1079,6 @@ def main():
         "Lipid thickness (nm)",
         min_value=slider_lipid_min,
         max_value=slider_lipid_max,
-        value=st.session_state["lipid_slider"],
         step=float(lipid_cfg["step"]),
         format="%.0f",
         key="lipid_slider",
@@ -1027,7 +1088,6 @@ def main():
         "Aqueous thickness (nm)",
         min_value=slider_aqueous_min,
         max_value=slider_aqueous_max,
-        value=st.session_state["aqueous_slider"],
         step=float(aqueous_cfg["step"]),
         format="%.0f",
         key="aqueous_slider",
@@ -1037,7 +1097,6 @@ def main():
         "Mucus roughness (Å)",
         min_value=slider_rough_min,
         max_value=slider_rough_max,
-        value=st.session_state["rough_slider"],
         step=float(rough_cfg["step"]),
         format="%.0f",
         key="rough_slider",
