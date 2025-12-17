@@ -407,12 +407,51 @@ def prepare_theoretical_spectrum(
 
     cutoff = float(detrend_cfg.get("default_cutoff_frequency", 0.01))
     order = int(detrend_cfg.get("filter_order", 3))
+    # Use lower prominence for theoretical to catch more peaks (theoretical peaks may be less prominent after detrending)
+    theoretical_prominence = float(peak_cfg.get("theoretical_prominence", peak_cfg.get("default_prominence", 0.0001)))
     prominence = float(peak_cfg.get("default_prominence", 0.005))
     height = peak_cfg.get("min_height")
 
     aligned = np.interp(measurement.wavelengths, wavelengths, reflectance)
     detrended = detrend_signal(measurement.wavelengths, aligned, cutoff, order)
-    peaks = detect_peaks(measurement.wavelengths, detrended, prominence=prominence, height=height)
+    
+    # Try detecting peaks on both detrended and raw signals, then combine
+    # Theoretical peaks might be more visible in raw signal or require lower threshold
+    peaks_detrended = detect_peaks(measurement.wavelengths, detrended, prominence=theoretical_prominence, height=height)
+    
+    # Also try raw signal with even lower prominence (catch peaks that detrending might reduce)
+    # Use very low threshold (10% of theoretical prominence) to catch all possible peaks
+    peaks_raw = detect_peaks(measurement.wavelengths, aligned, prominence=theoretical_prominence * 0.1, height=height)
+    
+    # Combine peaks from both sources, removing duplicates (within 2nm tolerance)
+    peak_list = []
+    if len(peaks_detrended) > 0:
+        peak_list.append(peaks_detrended)
+    if len(peaks_raw) > 0:
+        peak_list.append(peaks_raw)
+    
+    if len(peak_list) > 0:
+        all_peaks = pd.concat(peak_list, ignore_index=True)
+        # Remove duplicate peaks (peaks within 2nm of each other)
+        all_peaks = all_peaks.sort_values("wavelength")
+        keep_mask = np.ones(len(all_peaks), dtype=bool)
+        for i in range(len(all_peaks)):
+            if not keep_mask[i]:
+                continue
+            # Mark peaks within 2nm as duplicates (keep the one with higher prominence/amplitude)
+            distances = np.abs(all_peaks["wavelength"].to_numpy() - all_peaks.iloc[i]["wavelength"])
+            duplicates = np.where((distances < 2.0) & (distances > 1e-6))[0]
+            if len(duplicates) > 0:
+                # Keep the peak with highest amplitude among duplicates
+                candidates = [i] + list(duplicates)
+                best_idx = all_peaks.iloc[candidates]["amplitude"].idxmax()
+                keep_mask[candidates] = False
+                keep_mask[best_idx] = True
+        
+        peaks = all_peaks[keep_mask].reset_index(drop=True)
+    else:
+        # No peaks found - return empty dataframe with correct structure
+        peaks = pd.DataFrame(columns=["wavelength", "amplitude", "prominence"])
 
     resampled = np.interp(measurement.resampled_wavelengths, wavelengths, reflectance)
     resampled_detrended = detrend_signal(

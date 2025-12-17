@@ -3,8 +3,6 @@ PyElli Exploration Utilities
 
 This module provides utilities for loading sample data and integrating with pyElli
 for tear film interferometry analysis.
-
-Author: AdOM-TFI Team
 """
 
 import logging

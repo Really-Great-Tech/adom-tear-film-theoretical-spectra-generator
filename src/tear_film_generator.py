@@ -318,6 +318,24 @@ def make_single_spectrum_calculator(config: Dict[str, Any]):
     materials_path = get_project_path(paths['materials'])
     base_stack_path = get_project_path(paths['stack'])
 
+    # Validate that all required files exist
+    required_files = {
+        'DLL': dll_path,
+        'Algorithm XML': algorithm_path,
+        'Configuration XML': config_xml_path,
+        'Materials directory': materials_path,
+        'Stack XML': base_stack_path,
+    }
+    
+    missing_files = []
+    for name, file_path in required_files.items():
+        if not file_path.exists():
+            missing_files.append(f"{name}: {file_path}")
+    
+    if missing_files:
+        error_msg = "Required files not found:\n" + "\n".join(f"  - {f}" for f in missing_files)
+        raise FileNotFoundError(error_msg)
+
     # Prepare wavelength vector
     _, wl = prepare_wavelengths_from_config(config)
 
@@ -381,8 +399,30 @@ def make_calc_refl(dll: pathlib.Path, algorithm_xml: pathlib.Path,
     from System.Collections.Generic import List
 
     ser     = Serializer()
-    alg     = ser.ReadAlgorithmFromFile(AnalizerTypeEnum.Thickness, str(algorithm_xml))
-    cfg     = ser.LoadConfigurationthFromFile(str(config_xml)) if config_xml else None
+    
+    # Validate algorithm XML exists and resolve to absolute path
+    if not algorithm_xml.exists():
+        raise FileNotFoundError(f"Algorithm XML file not found: {algorithm_xml}")
+    algorithm_xml_abs = str(algorithm_xml.resolve())
+    alg = ser.ReadAlgorithmFromFile(AnalizerTypeEnum.Thickness, algorithm_xml_abs)
+    
+    # Validate and load configuration XML if provided
+    # Use absolute resolved path to avoid network path issues
+    if config_xml:
+        if not config_xml.exists():
+            raise FileNotFoundError(f"Configuration XML file not found: {config_xml}")
+        # Convert to absolute path string to avoid network path issues
+        config_xml_abs = str(config_xml.resolve())
+        try:
+            cfg = ser.LoadConfigurationthFromFile(config_xml_abs)
+        except Exception as e:
+            raise FileNotFoundError(
+                f"Failed to load configuration XML from: {config_xml_abs}\n"
+                f"Original error: {e}\n"
+                f"Please verify the file exists and is accessible."
+            ) from e
+    else:
+        cfg = None
     helper  = SpAnalizeHelper()
     empty_p = List[IParameter]()
 

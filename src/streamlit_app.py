@@ -101,122 +101,125 @@ def detect_valleys_df(df: pd.DataFrame, column: str, prominence: float) -> pd.Da
     return result
 
 
-def load_measurement_files(measurements_dir: pathlib.Path, config: Dict[str, Any]) -> Dict[str, pd.DataFrame]:
-    """Load measurement spectra using the shared loader.
+def _should_skip_file(file_path: pathlib.Path) -> bool:
+    """Check if file should be skipped (not a measurement spectrum file)."""
+    name_lower = file_path.name.lower()
     
-    Only loads from:
+    # Always skip BestFit files (these are pre-computed theoretical fits, not measurements)
+    if "_bestfit" in name_lower or name_lower.endswith("_bestfit.txt"):
+        return True
+    
+    # Skip readme files (case-insensitive)
+    if "readme" in name_lower:
+        return True
+    
+    # Skip documentation files
+    if name_lower.endswith((".md", ".pdf")):
+        return True
+    
+    return False
+
+
+def discover_measurement_files(config: Dict[str, Any]) -> Dict[str, pathlib.Path]:
+    """Discover measurement files WITHOUT loading their data (lazy loading).
+    
+    Returns a dict mapping display names to file paths.
+    Files are NOT loaded until explicitly requested via load_single_measurement().
+    
+    Discovers from:
     - exploration/sample_data/good_fit/ (Silas's good fit samples)
     - exploration/sample_data/bad_fit/ (Silas's bad fit samples)
-    
-    Explicitly skips:
-    - _BestFit.txt files (pre-computed fits, not measurements)
-    - readme/documentation files
-    - Files that don't exist (silently skipped, no error)
+    - exploration/measurements/ (Shlomo's raw spectra samples)
     """
-
-    measurements: Dict[str, pd.DataFrame] = {}
+    file_paths: Dict[str, pathlib.Path] = {}
     meas_config = config.get("measurements", {})
     file_pattern = meas_config.get("file_pattern", "*.txt")
     
-    # Only search in exploration/sample_data/good_fit and bad_fit directories
+    # Search in exploration/sample_data/good_fit, bad_fit, AND exploration/measurements
     exploration_dir = PROJECT_ROOT / "exploration" / "sample_data"
+    shlomo_measurements_dir = PROJECT_ROOT / "exploration" / "measurements"
     search_dirs = []
     
-    # Only load from good_fit and bad_fit subdirectories
+    # Discover from good_fit and bad_fit subdirectories (sample_data)
     for subdir_name in ["good_fit", "bad_fit"]:
         subdir = exploration_dir / subdir_name
         if subdir.exists() and subdir.is_dir():
             search_dirs.append(subdir)
     
-    if not search_dirs:
-        # Only show warning if exploration directory doesn't exist at all
-        if not exploration_dir.exists():
-            st.warning(f"Exploration sample data directory not found: {exploration_dir}")
-        return measurements
+    # Also discover from exploration/measurements (Shlomo's raw spectra)
+    if shlomo_measurements_dir.exists() and shlomo_measurements_dir.is_dir():
+        search_dirs.append(shlomo_measurements_dir)
     
-    all_file_path_objs = []
+    if not search_dirs:
+        return file_paths
+    
     for search_dir in search_dirs:
-        # Normalize the base directory path for Windows UNC paths
         try:
             search_dir_normalized = pathlib.Path(os.path.normpath(str(search_dir.resolve())))
         except (OSError, ValueError):
-            # Skip directories that can't be resolved (e.g., network issues)
-                continue
-
-        # Skip non-spectrum files (BestFit, readme, documentation, etc.)
-        def should_skip_file(file_path: pathlib.Path) -> bool:
-            """Check if file should be skipped (not a measurement spectrum file)."""
-            name_lower = file_path.name.lower()
-            
-            # Always skip BestFit files (these are pre-computed theoretical fits, not measurements)
-            if "_bestfit" in name_lower or name_lower.endswith("_bestfit.txt"):
-                return True
-            
-            # Skip readme files (case-insensitive)
-            if "readme" in name_lower:
-                return True
-            
-            # Skip documentation files
-            if name_lower.endswith((".md", ".pdf")):
-                return True
-            
-            return False
-        
-        try:
-            file_path_objs = [
-                p for p in search_dir_normalized.rglob(file_pattern)
-                if p.is_file() and p.exists() and not should_skip_file(p)
-            ]
-            all_file_path_objs.extend(file_path_objs)
-        except (OSError, PermissionError):
-            # Skip directories that can't be accessed
-                continue
-
-    if not all_file_path_objs:
-        st.warning(f"No measurement files found in exploration/sample_data/good_fit or bad_fit matching pattern: {file_pattern}")
-        return measurements
-
-    for file_path_obj in sorted(all_file_path_objs):
-        try:
-            # Normalize path for Windows UNC paths (handle backslash issues)
-            normalized_str = os.path.normpath(str(file_path_obj))
-            file_path_obj = pathlib.Path(normalized_str)
-            
-            # Check file exists before trying to load (silently skip if not)
-            if not file_path_obj.exists():
-                continue
-
-            # Skip BestFit and readme files (double-check here too)
-            name_lower = file_path_obj.name.lower()
-            if "_bestfit" in name_lower or "readme" in name_lower:
-                continue
-
-            # All files are relative to exploration_dir
-            base_dir_normalized = pathlib.Path(os.path.normpath(str(exploration_dir.resolve())))
-            try:
-                rel_path = file_path_obj.relative_to(base_dir_normalized)
-            except ValueError:
-                # File is not relative to exploration_dir, skip it
-                continue
-
-            file_name = str(rel_path.with_suffix(""))  # Remove .txt extension
-            meas_df = load_measurement_spectrum(file_path_obj, meas_config)
-            if not meas_df.empty:
-                measurements[file_name] = meas_df
-            # Silently skip files that don't contain spectral data (no error message)
-        except FileNotFoundError:
-            # File doesn't exist - silently skip (no warning)
             continue
-        except Exception as exc:  # pragma: no cover - UI warning path
-            # Only show warning for unexpected errors, not file not found or "no spectral data"
-            error_str = str(exc).lower()
-            if ("no such file" not in error_str and 
-                "file not found" not in error_str and
-                "no spectral data" not in error_str and 
-                "readme" not in file_path_obj.name.lower()):
-                st.warning(f"Error loading {file_path_obj}: {exc}")
 
-    return measurements
+        try:
+            for file_path_obj in search_dir_normalized.rglob(file_pattern):
+                if not file_path_obj.is_file() or not file_path_obj.exists():
+                    continue
+                if _should_skip_file(file_path_obj):
+                    continue
+                
+                # Normalize path
+                normalized_str = os.path.normpath(str(file_path_obj))
+                file_path_obj = pathlib.Path(normalized_str)
+                
+                # Compute display name (relative path without extension)
+                base_dir_normalized = pathlib.Path(os.path.normpath(str(exploration_dir.resolve())))
+                shlomo_dir_normalized = pathlib.Path(os.path.normpath(str(shlomo_measurements_dir.resolve())))
+                
+                rel_path = None
+                try:
+                    rel_path = file_path_obj.relative_to(base_dir_normalized)
+                except ValueError:
+                    try:
+                        rel_path_from_shlomo = file_path_obj.relative_to(shlomo_dir_normalized)
+                        rel_path = pathlib.Path("shlomo") / rel_path_from_shlomo
+                    except ValueError:
+                        continue
+                
+                if rel_path is None:
+                    continue
+                
+                file_name = str(rel_path.with_suffix(""))  # Remove .txt extension
+                file_paths[file_name] = file_path_obj
+                
+        except (OSError, PermissionError):
+            continue
+
+    return file_paths
+
+
+@st.cache_data(show_spinner=False)
+def load_single_measurement(_file_path: pathlib.Path, meas_config: Dict[str, Any]) -> pd.DataFrame:
+    """Load a single measurement file on demand (cached).
+    
+    This is called only when a file is selected, not at startup.
+    The underscore prefix on _file_path prevents Streamlit from hashing the Path object.
+    """
+    try:
+        meas_df = load_measurement_spectrum(_file_path, meas_config)
+        return meas_df
+    except Exception as exc:
+        st.warning(f"Error loading {_file_path}: {exc}")
+        return pd.DataFrame()
+
+
+def load_measurement_files(measurements_dir: pathlib.Path, config: Dict[str, Any]) -> Dict[str, pd.DataFrame]:
+    """DEPRECATED: Use discover_measurement_files() + load_single_measurement() for lazy loading.
+    
+    This function is kept for backwards compatibility but now only discovers files
+    and loads them lazily when accessed.
+    """
+    # For backwards compatibility, return an empty dict
+    # The actual loading is now done lazily via load_single_measurement()
+    return {}
 
 
 def flag_edge_cases(
@@ -246,17 +249,17 @@ def flag_edge_cases(
     # Get acceptable/feasible ranges (wider than search ranges)
     if acceptable_ranges is None:
         acceptable_ranges = {
-            "lipid": {"min": 0, "max": 500},
-            "aqueous": {"min": 0, "max": 2000},  # Note: aqueous CAN be 0
-            "roughness": {"min": 0, "max": 5000},
+            "lipid": {"min": 9, "max": 250},
+            "aqueous": {"min": 800, "max": 12000},
+            "roughness": {"min": 600, "max": 2750},
         }
     
-    accept_lipid_min = float(acceptable_ranges.get("lipid", {}).get("min", 0))
-    accept_lipid_max = float(acceptable_ranges.get("lipid", {}).get("max", 500))
-    accept_aqueous_min = float(acceptable_ranges.get("aqueous", {}).get("min", 0))
-    accept_aqueous_max = float(acceptable_ranges.get("aqueous", {}).get("max", 2000))
-    accept_rough_min = float(acceptable_ranges.get("roughness", {}).get("min", 0))
-    accept_rough_max = float(acceptable_ranges.get("roughness", {}).get("max", 5000))
+    accept_lipid_min = float(acceptable_ranges.get("lipid", {}).get("min", 9))
+    accept_lipid_max = float(acceptable_ranges.get("lipid", {}).get("max", 250))
+    accept_aqueous_min = float(acceptable_ranges.get("aqueous", {}).get("min", 800))
+    accept_aqueous_max = float(acceptable_ranges.get("aqueous", {}).get("max", 12000))
+    accept_rough_min = float(acceptable_ranges.get("roughness", {}).get("min", 600))
+    accept_rough_max = float(acceptable_ranges.get("roughness", {}).get("max", 2750))
     
     # Check for "no good fit" scenario (best score is too low)
     best_score = float(results_df["score_composite"].max()) if "score_composite" in results_df.columns else 0.0
@@ -393,9 +396,9 @@ def run_coarse_fine_grid_search(
     Stage 2: Refine around top-K results from coarse stage
     
     During refinement, the search expands beyond the configured parameter ranges (from config.parameters)
-    up to the acceptable ranges (from config.analysis.edge_case_detection.acceptable_ranges).
+    up to the client accepted ranges (from config.analysis.edge_case_detection.client_accepted_ranges).
     This allows finding optimal values that may be outside the initial search range but still
-    within physically/biologically feasible limits.
+    within the client's business-defined acceptable limits.
     """
     grid_cfg = analysis_cfg.get("grid_search", {})
     coarse_cfg = grid_cfg.get("coarse", {})
@@ -479,18 +482,18 @@ def run_coarse_fine_grid_search(
         rough_window = refine_cfg.get("roughness", {}).get("window_A", 200)
         rough_step = refine_cfg.get("roughness", {}).get("step_A", 25)
         
-        # Get acceptable ranges for clamping (wider than configured search ranges)
+        # Get client accepted ranges for clamping (client's business-defined limits)
         edge_case_cfg = analysis_cfg.get("edge_case_detection", {})
-        acceptable_ranges = edge_case_cfg.get("acceptable_ranges", {})
-        accept_lipid_min = float(acceptable_ranges.get("lipid", {}).get("min", 0))
-        accept_lipid_max = float(acceptable_ranges.get("lipid", {}).get("max", 500))
-        accept_aqueous_min = float(acceptable_ranges.get("aqueous", {}).get("min", 0))
-        accept_aqueous_max = float(acceptable_ranges.get("aqueous", {}).get("max", 2000))
-        accept_rough_min = float(acceptable_ranges.get("roughness", {}).get("min", 0))
-        accept_rough_max = float(acceptable_ranges.get("roughness", {}).get("max", 5000))
+        acceptable_ranges = edge_case_cfg.get("client_accepted_ranges", {})
+        accept_lipid_min = float(acceptable_ranges.get("lipid", {}).get("min", 9))
+        accept_lipid_max = float(acceptable_ranges.get("lipid", {}).get("max", 250))
+        accept_aqueous_min = float(acceptable_ranges.get("aqueous", {}).get("min", 800))
+        accept_aqueous_max = float(acceptable_ranges.get("aqueous", {}).get("max", 12000))
+        accept_rough_min = float(acceptable_ranges.get("roughness", {}).get("min", 600))
+        accept_rough_max = float(acceptable_ranges.get("roughness", {}).get("max", 2750))
         
-        # Expand refinement window beyond configured ranges, but clamp to acceptable ranges
-        # This allows finding optimal values outside the initial search range
+        # Expand refinement window beyond configured ranges, but clamp to client accepted ranges
+        # This allows finding optimal values outside the initial search range while respecting client limits
         lipid_min = max(accept_lipid_min, center_lipid - lipid_window / 2)
         lipid_max = min(accept_lipid_max, center_lipid + lipid_window / 2)
         aqueous_min = max(accept_aqueous_min, center_aqueous - aqueous_window / 2)
@@ -798,30 +801,26 @@ def main():
     # Load theoretical spectrum calculator
     single_spectrum, wavelengths = make_single_spectrum_calculator(config)
 
-    # Load measurement files
+    # Discover measurement files (lazy loading - only file paths, not data)
     measurements_enabled = config.get('measurements', {}).get('enabled', False)
-    measurements = {}
+    measurement_paths: Dict[str, pathlib.Path] = {}  # Maps display names to file paths
+    meas_config = config.get("measurements", {})
     
     if measurements_enabled:
-        measurements_dir = get_project_path(config['paths']['measurements'])
-        measurements = load_measurement_files(measurements_dir, config)
+        measurement_paths = discover_measurement_files(config)
 
     params = config["parameters"]
     lipid_cfg = params["lipid"]
     aqueous_cfg = params["aqueous"]
     rough_cfg = params["roughness"]
     
-    # Get acceptable ranges for sliders (wider than parameter ranges, allows using grid search results)
-    edge_case_cfg = analysis_cfg.get("edge_case_detection", {})
-    acceptable_ranges = edge_case_cfg.get("acceptable_ranges", {})
-    
-    # Use acceptable ranges for slider bounds, but keep step sizes from parameter config
-    slider_lipid_min = float(acceptable_ranges.get("lipid", {}).get("min", lipid_cfg["min"]))
-    slider_lipid_max = float(acceptable_ranges.get("lipid", {}).get("max", lipid_cfg["max"]))
-    slider_aqueous_min = float(acceptable_ranges.get("aqueous", {}).get("min", aqueous_cfg["min"]))
-    slider_aqueous_max = float(acceptable_ranges.get("aqueous", {}).get("max", aqueous_cfg["max"]))
-    slider_rough_min = float(acceptable_ranges.get("roughness", {}).get("min", rough_cfg["min"]))
-    slider_rough_max = float(acceptable_ranges.get("roughness", {}).get("max", rough_cfg["max"]))
+    # Use parameter ranges directly for slider bounds (expanded ranges from config)
+    slider_lipid_min = float(lipid_cfg["min"])
+    slider_lipid_max = float(lipid_cfg["max"])
+    slider_aqueous_min = float(aqueous_cfg["min"])
+    slider_aqueous_max = float(aqueous_cfg["max"])
+    slider_rough_min = float(rough_cfg["min"])
+    slider_rough_max = float(rough_cfg["max"])
 
     # Defaults: use configured defaults if provided, or midpoints snapped to step
     defaults = ui_cfg.get("default_values", {})
@@ -929,22 +928,28 @@ def main():
         key="rough_slider",
     )
 
-    # Measurement file selection
+    # Measurement file selection (lazy loading - file data loaded only when selected)
     selected_file = None
-    if measurements_enabled and measurements:
+    selected_measurement = None
+    if measurements_enabled and measurement_paths:
         st.sidebar.markdown("## Measurement Data")
-        measurement_files = list(measurements.keys())
+        measurement_files = sorted(list(measurement_paths.keys()))
         selected_file = st.sidebar.selectbox(
             "Select measurement file:",
             options=["None"] + measurement_files,
-            index=1 if measurement_files else 0
+            index=0  # Default to "None" for faster startup
         )
-
+        
         if selected_file != "None":
-            selected_measurement = measurements[selected_file]
-            st.sidebar.write(f"**{selected_file}**")
-            st.sidebar.write(f"Data points: {len(selected_measurement)}")
-            st.sidebar.write(f"Wavelength range: {selected_measurement['wavelength'].min():.1f} - {selected_measurement['wavelength'].max():.1f} nm")
+            # Lazy load: only load the selected file's data
+            file_path = measurement_paths[selected_file]
+            selected_measurement = load_single_measurement(file_path, meas_config)
+            if not selected_measurement.empty:
+                st.sidebar.write(f"**{selected_file}**")
+                st.sidebar.write(f"Data points: {len(selected_measurement)}")
+                st.sidebar.write(f"Wavelength range: {selected_measurement['wavelength'].min():.1f} - {selected_measurement['wavelength'].max():.1f} nm")
+            else:
+                st.sidebar.warning("Failed to load measurement file")
     
     st.sidebar.markdown("## Analysis Parameters")
     
@@ -993,9 +998,7 @@ def main():
 
     # Tab 1: Spectrum Comparison
     with tab1:
-        if measurements_enabled and selected_file and selected_file != "None":
-            selected_measurement = measurements[selected_file]
-            
+        if measurements_enabled and selected_file and selected_file != "None" and selected_measurement is not None and not selected_measurement.empty:
             # Create comparison plot
             fig = create_comparison_plot(
                 wavelengths, spectrum, selected_measurement,
@@ -1064,9 +1067,7 @@ def main():
     with tab2:
         st.markdown("## Detrended Signal Analysis with Peak Detection")
         
-        if measurements_enabled and selected_file and selected_file != "None":
-            selected_measurement = measurements[selected_file]
-            
+        if measurements_enabled and selected_file and selected_file != "None" and selected_measurement is not None and not selected_measurement.empty:
             # Detrend both theoretical and measured signals
             filter_order = config.get("analysis", {}).get("detrending", {}).get("filter_order", 3)
             theoretical_detrended = detrend_dataframe(theoretical_df, cutoff_freq, filter_order)
@@ -1276,12 +1277,14 @@ def main():
                 "selected_measurement": selected_file if selected_file and selected_file != "None" else None
             })
 
-        # Measurement data info
+        # Measurement data info (lazy loading - just show file list)
         if measurements_enabled:
             st.markdown("### Available Measurement Files")
-            if measurements:
-                for filename, df in measurements.items():
-                    st.write(f"**{filename}**: {len(df)} data points, λ = {df['wavelength'].min():.1f}-{df['wavelength'].max():.1f} nm")
+            if measurement_paths:
+                st.write(f"**{len(measurement_paths)} files available** (data loaded on selection)")
+                with st.expander("View file list", expanded=False):
+                    for filename in sorted(measurement_paths.keys()):
+                        st.write(f"- {filename}")
             else:
                 st.info(f"No measurement files found in: {get_project_path(config['paths']['measurements'])}")
         else:
@@ -1289,10 +1292,9 @@ def main():
 
     with tab4:
         st.markdown("## Grid Search Ranking")
-        if not (measurements_enabled and selected_file and selected_file != "None"):
+        if not (measurements_enabled and selected_file and selected_file != "None" and selected_measurement is not None and not selected_measurement.empty):
             st.info("Select a measurement spectrum to run the grid search.")
         else:
-            selected_measurement = measurements[selected_file]
             controls = st.columns(3)
             top_k_display = int(
                 controls[0].number_input("Top results", min_value=5, max_value=100, value=10, step=5)
@@ -1328,6 +1330,50 @@ def main():
                 index=1,  # Default to "coarse-fine" (recommended)
                 help="random: Random sampling across full parameter space. coarse-fine: Two-stage search (coarse then refine around best results)."
             )
+            
+            # Client Reference Scoring - compare with known client best fits
+            client_ref_cfg = config.get("ui", {}).get("client_reference_scoring", {})
+            client_ref_default_enabled = client_ref_cfg.get("enabled", False)
+            
+            with st.expander("⭐ Client Reference Scoring", expanded=client_ref_default_enabled):
+                st.caption("Compare algorithm results with known client best fit parameters")
+                
+                enable_client_ref = st.checkbox(
+                    "Enable client reference scoring",
+                    value=client_ref_default_enabled,
+                    key="enable_client_ref_scoring"
+                )
+                
+                if enable_client_ref:
+                    ref_cols = st.columns(3)
+                    client_lipid = ref_cols[0].number_input(
+                        "Client Lipid (nm)",
+                        min_value=0.0,
+                        max_value=500.0,
+                        value=float(client_ref_cfg.get("default_lipid", 122.9)),
+                        step=0.1,
+                        key="client_ref_lipid"
+                    )
+                    client_aqueous = ref_cols[1].number_input(
+                        "Client Aqueous (nm)",
+                        min_value=-20.0,
+                        max_value=12000.0,
+                        value=float(client_ref_cfg.get("default_aqueous", 3194.7)),
+                        step=0.1,
+                        key="client_ref_aqueous"
+                    )
+                    client_roughness = ref_cols[2].number_input(
+                        "Client Roughness (Å)",
+                        min_value=0.0,
+                        max_value=3000.0,
+                        value=float(client_ref_cfg.get("default_roughness", 1500.0)),
+                        step=1.0,
+                        key="client_ref_roughness"
+                    )
+                else:
+                    client_lipid = None
+                    client_aqueous = None
+                    client_roughness = None
             
             # Full Grid Search button
             col1, col2 = st.columns([1, 1])
@@ -1426,20 +1472,23 @@ def main():
                 run_pressed = True  # Auto-trigger the search
                 st.session_state["confirm_full_search_executed"] = False  # Reset flag
             
+            # Always prepare measurement features (needed for both new search and cached results display)
+            measurement_features = prepare_measurement(selected_measurement, analysis_cfg)
+            
+            # Always calculate measurement quality (needed for client reference scoring)
+            quality_cfg = analysis_cfg.get("quality_gates", {})
+            measurement_quality_result = None
+            if quality_cfg:
+                measurement_quality_result, _ = measurement_quality_score(
+                    measurement_features,
+                    min_peaks=quality_cfg.get("min_peaks"),
+                    min_signal_amplitude=quality_cfg.get("min_signal_amplitude"),
+                    min_wavelength_span_nm=quality_cfg.get("min_wavelength_span_nm"),
+                )
+            
             if run_pressed:
                 start_time = time.time()
                 with st.spinner("Scoring theoretical spectra..."):
-                    measurement_features = prepare_measurement(selected_measurement, analysis_cfg)
-                    quality_cfg = analysis_cfg.get("quality_gates", {})
-                    measurement_quality_result = None
-                    if quality_cfg:
-                        measurement_quality_result, _ = measurement_quality_score(
-                            measurement_features,
-                            min_peaks=quality_cfg.get("min_peaks"),
-                            min_signal_amplitude=quality_cfg.get("min_signal_amplitude"),
-                            min_wavelength_span_nm=quality_cfg.get("min_wavelength_span_nm"),
-                        )
-                    
                     if search_strategy == "coarse-fine":
                         # Use coarse-to-fine workflow
                         results_df, evaluated = run_coarse_fine_grid_search(
@@ -1573,7 +1622,7 @@ def main():
                         threshold_high = float(edge_case_cfg.get("threshold_high_score", 0.9))
                         threshold_low = float(edge_case_cfg.get("threshold_low_score", 0.3))
                         threshold_no_fit = float(edge_case_cfg.get("threshold_no_fit", 0.4))
-                        acceptable_ranges = edge_case_cfg.get("acceptable_ranges", None)
+                        acceptable_ranges = edge_case_cfg.get("client_accepted_ranges", None)
                         results_df = flag_edge_cases(
                             results_df, 
                             config, 
@@ -1600,7 +1649,85 @@ def main():
                         results_df["edge_case_flag"] = False
                         results_df["edge_case_reason"] = ""
                     
+                    # Client Reference Scoring - compare with known client best fits (if enabled)
+                    if enable_client_ref and client_lipid is not None:
+                        # Remove any existing entries with these exact parameters (we'll add our own at top)
+                        results_df = results_df[
+                            ~((results_df["lipid_nm"] == client_lipid) & 
+                              (results_df["aqueous_nm"] == client_aqueous) & 
+                              (results_df["roughness_A"] == client_roughness))
+                        ]
+                        
+                        # Evaluate client's reference parameters
+                        ref_spectrum = single_spectrum(float(client_lipid), float(client_aqueous), float(client_roughness))
+                        if ref_spectrum is not None and len(ref_spectrum) > 0 and not np.all(ref_spectrum == 0):
+                            ref_spectrum_std = np.std(ref_spectrum)
+                            if ref_spectrum_std >= 1e-6:
+                                ref_theoretical = prepare_theoretical_spectrum(
+                                    wavelengths,
+                                    ref_spectrum,
+                                    measurement_features,
+                                    analysis_cfg,
+                                )
+                                ref_scores, ref_diagnostics = score_candidate(
+                                    measurement_features,
+                                    ref_theoretical,
+                                    metrics_cfg,
+                                    lipid_nm=float(client_lipid),
+                                    aqueous_nm=float(client_aqueous),
+                                    roughness_A=float(client_roughness),
+                                    measurement_quality=measurement_quality_result,
+                                )
+                                
+                                # Create reference record
+                                ref_record = {
+                                    "lipid_nm": float(client_lipid),
+                                    "aqueous_nm": float(client_aqueous),
+                                    "roughness_A": float(client_roughness),
+                                }
+                                for key, value in ref_scores.items():
+                                    ref_record[f"score_{key}"] = float(value)
+                                for metric, diag in ref_diagnostics.items():
+                                    for diag_key, diag_val in diag.items():
+                                        ref_record[f"{metric}_{diag_key}"] = float(diag_val)
+                                
+                                # Add edge case flags for reference if column exists
+                                if "edge_case_flag" in results_df.columns:
+                                    ref_record["edge_case_flag"] = False
+                                    ref_record["edge_case_reason"] = ""
+                                
+                                # Create dataframe from reference record with a flag
+                                ref_record["_is_reference"] = True
+                                ref_df = pd.DataFrame([ref_record])
+                                
+                                # Sort results first (without reference)
+                                results_df = results_df.sort_values("score_composite", ascending=False).reset_index(drop=True)
+                                
+                                # Insert reference at the top (always visible for comparison)
+                                results_df = pd.concat([ref_df, results_df], ignore_index=True)
+                                
+                                st.info(f"⭐ **Reference (Client's best fit)**: L={client_lipid}nm, A={client_aqueous}nm, R={client_roughness}Å - Score={ref_scores.get('composite', 0):.4f}")
+                        else:
+                            st.warning(f"⚠️ Could not evaluate reference parameters (L={client_lipid}nm, A={client_aqueous}nm, R={client_roughness}Å) - invalid spectrum generated")
+                    
                     display_df = results_df.head(top_k_display)
+                    
+                    # Add visual indicator for reference row
+                    display_df = display_df.copy()
+                    display_df["⭐"] = ""
+                    
+                    # Mark reference row (either by flag or by parameter match)
+                    if "_is_reference" in display_df.columns:
+                        display_df.loc[display_df["_is_reference"] == True, "⭐"] = "⭐"
+                    elif enable_client_ref and client_lipid is not None:
+                        # Fallback: check by parameters
+                        for idx in display_df.index:
+                            row = display_df.loc[idx]
+                            if (abs(row["lipid_nm"] - client_lipid) < 0.1 and
+                                abs(row["aqueous_nm"] - client_aqueous) < 0.1 and
+                                abs(row["roughness_A"] - client_roughness) < 1.0):
+                                display_df.loc[idx, "⭐"] = "⭐"
+                                break  # Only mark first occurrence
                     
                     # Only show edge case summary if edge cases appear in the displayed results
                     if "edge_case_flag" in display_df.columns:
@@ -1615,30 +1742,37 @@ def main():
                                 reason_text = ", ".join([f"{reason}: {count}" for reason, count in reason_counts.items()])
                                 st.caption(f"Edge case types: {reason_text}")
                     
-                    # Highlight edge cases in display
-                    if "edge_case_flag" in display_df.columns:
-                        # Create styled dataframe with edge case indicators
+                    # Highlight edge cases and reference in display
                         display_df_styled = display_df.copy()
-                        # Add visual indicator column
+                    
+                    # Add edge case indicator if edge case flag exists
+                    if "edge_case_flag" in display_df_styled.columns:
+                        if "⚠️" not in display_df_styled.columns:
+                            display_df_styled["⚠️"] = ""
                         display_df_styled["⚠️"] = display_df_styled["edge_case_flag"].apply(lambda x: "⚠️" if x else "")
-                        # Reorder columns to show flag first, exclude internal columns
-                        cols = ["⚠️"] + [c for c in display_df_styled.columns 
-                                         if c != "⚠️" and c != "edge_case_flag" and c != "edge_case_reason" 
-                                         and not c.startswith("_")]
-                        display_df_styled = display_df_styled[cols]
-                        st.dataframe(display_df_styled, use_container_width=True)
-                        
-                        # Show edge case details in expander
-                        if display_df["edge_case_flag"].any():
-                            with st.expander("🔍 Edge Case Details", expanded=False):
-                                edge_display = display_df[display_df["edge_case_flag"] == True][
-                                    ["lipid_nm", "aqueous_nm", "roughness_A", "score_composite", "edge_case_reason"]
-                                ]
-                                for idx, row in edge_display.iterrows():
-                                    st.write(f"**Rank {idx + 1}**: {row['edge_case_reason']}")
-                                    st.write(f"  Parameters: L={row['lipid_nm']:.0f}nm, A={row['aqueous_nm']:.0f}nm, R={row['roughness_A']:.0f}Å, Score={row['score_composite']:.4f}")
-                    else:
-                        st.dataframe(display_df, use_container_width=True)
+                    
+                    # Reorder columns to show indicators first, exclude internal columns
+                    indicator_cols = []
+                    if "⭐" in display_df_styled.columns:
+                        indicator_cols.append("⭐")
+                    if "⚠️" in display_df_styled.columns:
+                        indicator_cols.append("⚠️")
+                    
+                    cols = indicator_cols + [c for c in display_df_styled.columns 
+                                     if c not in indicator_cols and c != "edge_case_flag" and c != "edge_case_reason" 
+                                     and not c.startswith("_") and c != "_is_reference"]
+                    display_df_styled = display_df_styled[cols]
+                    st.dataframe(display_df_styled, use_container_width=True)
+                    
+                    # Show edge case details in expander
+                    if "edge_case_flag" in display_df.columns and display_df["edge_case_flag"].any():
+                        with st.expander("🔍 Edge Case Details", expanded=False):
+                            edge_display = display_df[display_df["edge_case_flag"] == True][
+                                ["lipid_nm", "aqueous_nm", "roughness_A", "score_composite", "edge_case_reason"]
+                            ]
+                            for idx, row in edge_display.iterrows():
+                                st.write(f"**Rank {idx + 1}**: {row['edge_case_reason']}")
+                                st.write(f"  Parameters: L={row['lipid_nm']:.0f}nm, A={row['aqueous_nm']:.0f}nm, R={row['roughness_A']:.0f}Å, Score={row['score_composite']:.4f}")
                     options = list(display_df.index)
                     selection = st.selectbox(
                         "Select a candidate to apply", options=options, format_func=lambda idx: f"Rank {idx + 1}"
