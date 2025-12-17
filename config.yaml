@@ -140,7 +140,7 @@ paths:
   stack: "configs/Stack_eye_test.xml"
   materials: "data/Materials"
   wavelengths_dir: "data/wavelengths"
-  measurements: "exploration/sample_data"
+  measurements: "exploration/measurements"
 
 # Output Configuration
 output:
