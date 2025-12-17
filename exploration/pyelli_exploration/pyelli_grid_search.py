@@ -5,9 +5,6 @@ This module integrates pyElli's Transfer Matrix Method with the monotonic_alignm
 scoring that we developed for visually correct fits (no criss-crossing).
 
 This demonstrates how to use PyElli for auto-fitting tear film spectra.
-
-Author: RGT Team
-Date: December 2025
 """
 
 import logging
