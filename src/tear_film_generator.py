@@ -392,7 +392,71 @@ def make_calc_refl(dll: pathlib.Path, algorithm_xml: pathlib.Path,
     if not CLR_AVAILABLE:
         raise ImportError("pythonnet (clr) module required for DLL functionality. Install with: pip install pythonnet")
     
-    clr.AddReference(str(dll))
+    # SpAnalizer.dll depends on log4net.dll and BatchUtility.dll - load them first
+    # Use absolute paths to avoid path resolution issues
+    dll_abs = dll.resolve()
+    dll_dir = dll_abs.parent
+    
+    # On Windows, add DLL directory to PATH so .NET can find dependencies
+    import sys
+    import os
+    dll_dir_str = str(dll_dir)
+    if dll_dir_str not in os.environ.get('PATH', ''):
+        os.environ['PATH'] = dll_dir_str + os.pathsep + os.environ.get('PATH', '')
+    
+    # List of potential dependency locations (in order of preference)
+    dependency_locations = [
+        dll_dir,  # Same directory as SpAnalizer.dll (most likely location)
+        dll_dir.parent,  # Parent directory
+        pathlib.Path(__file__).parent.resolve(),  # src/ directory
+        PROJECT_ROOT / "src",  # src/ from project root
+    ]
+    
+    # Try to load log4net.dll from multiple locations
+    log4net_loaded = False
+    for loc in dependency_locations:
+        log4net_path = loc / "log4net.dll"
+        if log4net_path.exists():
+            try:
+                log4net_abs = str(log4net_path.resolve())
+                clr.AddReference(log4net_abs)
+                log4net_loaded = True
+                break
+            except Exception:
+                continue
+    
+    # If not found in file system, try loading from GAC or by name
+    if not log4net_loaded:
+        try:
+            clr.AddReference("log4net")
+            log4net_loaded = True
+        except Exception:
+            pass
+    
+    # Try to load BatchUtility.dll from multiple locations
+    batchutil_loaded = False
+    for loc in dependency_locations:
+        batchutil_path = loc / "BatchUtility.dll"
+        if batchutil_path.exists():
+            try:
+                batchutil_abs = str(batchutil_path.resolve())
+                clr.AddReference(batchutil_abs)
+                batchutil_loaded = True
+                break
+            except Exception:
+                continue
+    
+    # If not found in file system, try loading from GAC or by name
+    if not batchutil_loaded:
+        try:
+            clr.AddReference("BatchUtility")
+            batchutil_loaded = True
+        except Exception:
+            pass
+    
+    # Now load SpAnalizer.dll (dependencies should be loaded first)
+    # Use absolute path to ensure proper resolution
+    clr.AddReference(str(dll_abs))
     from SpAnalizer import (Serializer, SpAnalizeHelper,
                             PolarizationTypeEnum, AnalizerTypeEnum,
                             IParameter)
