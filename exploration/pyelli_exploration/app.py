@@ -678,8 +678,9 @@ with tabs[0]:
                             wavelengths, measured,
                             lipid_range=(lipid_min, lipid_max, lipid_step),
                             aqueous_range=(aqueous_min, aqueous_max, aqueous_step),
-                            mucus_range=(mucus_min, mucus_max, mucus_step),
-                            top_k=10
+                            roughness_range=(mucus_min, mucus_max, mucus_step),
+                            top_k=10,
+                            enable_roughness=True,
                         )
 
                     with ThreadPoolExecutor(max_workers=1) as executor:
