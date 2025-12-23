@@ -264,17 +264,17 @@ def flag_edge_cases(
     # Get acceptable/feasible ranges (wider than search ranges)
     if acceptable_ranges is None:
         acceptable_ranges = {
-            "lipid": {"min": 0, "max": 500},
-            "aqueous": {"min": 0, "max": 2000},  # Note: aqueous CAN be 0
-            "roughness": {"min": 0, "max": 5000},
+            "lipid": {"min": 9, "max": 250},
+            "aqueous": {"min": 800, "max": 12000},
+            "roughness": {"min": 600, "max": 2750},
         }
     
-    accept_lipid_min = float(acceptable_ranges.get("lipid", {}).get("min", 0))
-    accept_lipid_max = float(acceptable_ranges.get("lipid", {}).get("max", 500))
-    accept_aqueous_min = float(acceptable_ranges.get("aqueous", {}).get("min", 0))
-    accept_aqueous_max = float(acceptable_ranges.get("aqueous", {}).get("max", 2000))
-    accept_rough_min = float(acceptable_ranges.get("roughness", {}).get("min", 0))
-    accept_rough_max = float(acceptable_ranges.get("roughness", {}).get("max", 5000))
+    accept_lipid_min = float(acceptable_ranges.get("lipid", {}).get("min", 9))
+    accept_lipid_max = float(acceptable_ranges.get("lipid", {}).get("max", 250))
+    accept_aqueous_min = float(acceptable_ranges.get("aqueous", {}).get("min", 800))
+    accept_aqueous_max = float(acceptable_ranges.get("aqueous", {}).get("max", 12000))
+    accept_rough_min = float(acceptable_ranges.get("roughness", {}).get("min", 600))
+    accept_rough_max = float(acceptable_ranges.get("roughness", {}).get("max", 2750))
     
     # Check for "no good fit" scenario (best score is too low)
     best_score = float(results_df["score_composite"].max()) if "score_composite" in results_df.columns else 0.0
@@ -606,12 +606,12 @@ def run_coarse_fine_grid_search(
         # Get acceptable ranges for clamping (wider than configured search ranges)
         edge_case_cfg = analysis_cfg.get("edge_case_detection", {})
         acceptable_ranges = edge_case_cfg.get("acceptable_ranges", {})
-        accept_lipid_min = float(acceptable_ranges.get("lipid", {}).get("min", 0))
-        accept_lipid_max = float(acceptable_ranges.get("lipid", {}).get("max", 500))
-        accept_aqueous_min = float(acceptable_ranges.get("aqueous", {}).get("min", 0))
-        accept_aqueous_max = float(acceptable_ranges.get("aqueous", {}).get("max", 2000))
-        accept_rough_min = float(acceptable_ranges.get("roughness", {}).get("min", 0))
-        accept_rough_max = float(acceptable_ranges.get("roughness", {}).get("max", 5000))
+        accept_lipid_min = float(acceptable_ranges.get("lipid", {}).get("min", 9))
+        accept_lipid_max = float(acceptable_ranges.get("lipid", {}).get("max", 250))
+        accept_aqueous_min = float(acceptable_ranges.get("aqueous", {}).get("min", 800))
+        accept_aqueous_max = float(acceptable_ranges.get("aqueous", {}).get("max", 12000))
+        accept_rough_min = float(acceptable_ranges.get("roughness", {}).get("min", 600))
+        accept_rough_max = float(acceptable_ranges.get("roughness", {}).get("max", 2750))
         
         # Expand refinement window beyond configured ranges, but clamp to acceptable ranges
         # This allows finding optimal values outside the initial search range
@@ -1476,24 +1476,24 @@ def main():
                     ref_cols = st.columns(3)
                     client_lipid = ref_cols[0].number_input(
                         "Client Lipid (nm)",
-                        min_value=0.0,
-                        max_value=500.0,
+                        min_value=9.0,
+                        max_value=250.0,
                         value=float(client_ref_cfg.get("default_lipid", 62.3)),
                         step=0.1,
                         key="client_ref_lipid"
                     )
                     client_aqueous = ref_cols[1].number_input(
                         "Client Aqueous (nm)",
-                        min_value=-20.0,
+                        min_value=800.0,
                         max_value=12000.0,
-                        value=float(client_ref_cfg.get("default_aqueous", -2.0)),
+                        value=float(client_ref_cfg.get("default_aqueous", 800.0)),
                         step=0.1,
                         key="client_ref_aqueous"
                     )
                     client_roughness = ref_cols[2].number_input(
                         "Client Roughness (Å)",
-                        min_value=0.0,
-                        max_value=3000.0,
+                        min_value=600.0,
+                        max_value=2750.0,
                         value=float(client_ref_cfg.get("default_roughness", 1200.0)),
                         step=1.0,
                         key="client_ref_roughness"
