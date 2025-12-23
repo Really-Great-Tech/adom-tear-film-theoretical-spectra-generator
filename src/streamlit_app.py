@@ -299,13 +299,8 @@ def flag_edge_cases(
             edge_case_reasons.append(f"lipid_outside_acceptable_range({lipid:.0f}nm, acceptable: {accept_lipid_min:.0f}-{accept_lipid_max:.0f}nm)")
             is_edge_case = True
         
-        # Aqueous can be 0, so only flag if > max (not if == 0)
-        if aqueous < accept_aqueous_min:
-            if aqueous != 0:  # 0 is valid for aqueous
-                edge_case_reasons.append(f"aqueous_below_min({aqueous:.0f}nm, min: {accept_aqueous_min:.0f}nm)")
-                is_edge_case = True
-        elif aqueous > accept_aqueous_max:
-            edge_case_reasons.append(f"aqueous_above_max({aqueous:.0f}nm, max: {accept_aqueous_max:.0f}nm)")
+        if aqueous < accept_aqueous_min or aqueous > accept_aqueous_max:
+            edge_case_reasons.append(f"aqueous_outside_acceptable_range({aqueous:.0f}nm, acceptable: {accept_aqueous_min:.0f}-{accept_aqueous_max:.0f}nm)")
             is_edge_case = True
         
         if rough < accept_rough_min or rough > accept_rough_max:
