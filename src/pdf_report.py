@@ -29,7 +29,7 @@ from reportlab.platypus import (
 )
 from reportlab.lib.enums import TA_CENTER, TA_LEFT
 
-from src.analysis.measurement_utils import detrend_signal, detect_peaks, detect_valleys
+from analysis.measurement_utils import detrend_signal, detect_peaks, detect_valleys
 
 logger = logging.getLogger(__name__)
 
