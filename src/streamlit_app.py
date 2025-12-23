@@ -47,7 +47,7 @@ from tear_film_generator import (
     get_project_path,
 )
 
-from pdf_report import generate_pdf_report
+from pdf_report import generate_main_app_pdf_report
 
 
 def clamp_to_step(value: float, min_val: float, step: float) -> float:
@@ -2059,18 +2059,16 @@ def main():
                         if st.button("📄 Export PDF Report", key="export_pdf_report"):
                             with st.spinner(f"Generating PDF report for top {pdf_top_n} fits..."):
                                 try:
-                                    pdf_bytes = generate_pdf_report(
+                                    pdf_bytes = generate_main_app_pdf_report(
                                         results_df=results_df,
                                         measurement_file=selected_file,
                                         measured_df=selected_measurement,
                                         single_spectrum_func=single_spectrum,
                                         wavelengths=wavelengths,
                                         analysis_cfg=analysis_cfg,
-                                        config=config,
                                         detrend_func=detrend_dataframe,
                                         detect_peaks_func=detect_peaks_df,
                                         detect_valleys_func=detect_valleys_df,
-                                        prepare_theoretical_func=prepare_theoretical_spectrum,
                                         top_n=pdf_top_n,
                                     )
                                     
