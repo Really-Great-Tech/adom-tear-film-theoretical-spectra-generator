@@ -18,5 +18,5 @@ pyElli>=0.3.0
 
 # PDF report generation
 reportlab>=4.0.0
-kaleido>=1.0.0
+kaleido==0.2.1  # Must use 0.2.1 for compatibility with Plotly 5.x
 
