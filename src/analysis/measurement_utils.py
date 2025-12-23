@@ -356,14 +356,25 @@ def prepare_measurement(
     peak_cfg = analysis_cfg.get("peak_detection", {})
     metrics_cfg = analysis_cfg.get("metrics", {})
     phase_cfg = metrics_cfg.get("phase_overlap", {})
+    wavelength_range_cfg = analysis_cfg.get("wavelength_range", {})
 
-    cutoff = float(detrend_cfg.get("default_cutoff_frequency", 0.01))
+    cutoff = float(detrend_cfg.get("default_cutoff_frequency", 0.008))
     order = int(detrend_cfg.get("filter_order", 3))
-    prominence = float(peak_cfg.get("default_prominence", 0.005))
+    prominence = float(peak_cfg.get("default_prominence", 0.0001))
     height = peak_cfg.get("min_height")
+    
+    # Filter to wavelength range of interest (default: 600-1120nm)
+    wl_min = float(wavelength_range_cfg.get("min", 600))
+    wl_max = float(wavelength_range_cfg.get("max", 1120))
+    
+    # Apply wavelength range filter
+    df_filtered = measurement_df[
+        (measurement_df["wavelength"] >= wl_min) & 
+        (measurement_df["wavelength"] <= wl_max)
+    ].reset_index(drop=True)
 
-    wavelengths = measurement_df["wavelength"].to_numpy(dtype=float)
-    reflectance = measurement_df["reflectance"].to_numpy(dtype=float)
+    wavelengths = df_filtered["wavelength"].to_numpy(dtype=float)
+    reflectance = df_filtered["reflectance"].to_numpy(dtype=float)
 
     detrended = detrend_signal(wavelengths, reflectance, cutoff, order)
     peaks = detect_peaks(wavelengths, detrended, prominence=prominence, height=height)
@@ -404,13 +415,21 @@ def prepare_theoretical_spectrum(
     peak_cfg = analysis_cfg.get("peak_detection", {})
     metrics_cfg = analysis_cfg.get("metrics", {})
     phase_cfg = metrics_cfg.get("phase_overlap", {})
+    wavelength_range_cfg = analysis_cfg.get("wavelength_range", {})
 
-    cutoff = float(detrend_cfg.get("default_cutoff_frequency", 0.01))
+    cutoff = float(detrend_cfg.get("default_cutoff_frequency", 0.008))
     order = int(detrend_cfg.get("filter_order", 3))
     # Use lower prominence for theoretical to catch more peaks (theoretical peaks may be less prominent after detrending)
     theoretical_prominence = float(peak_cfg.get("theoretical_prominence", peak_cfg.get("default_prominence", 0.0001)))
-    prominence = float(peak_cfg.get("default_prominence", 0.005))
+    prominence = float(peak_cfg.get("default_prominence", 0.0001))
     height = peak_cfg.get("min_height")
+    
+    # Filter theoretical spectrum to wavelength range of interest (default: 600-1120nm)
+    wl_min = float(wavelength_range_cfg.get("min", 600))
+    wl_max = float(wavelength_range_cfg.get("max", 1120))
+    mask = (wavelengths >= wl_min) & (wavelengths <= wl_max)
+    wavelengths = wavelengths[mask]
+    reflectance = reflectance[mask]
 
     aligned = np.interp(measurement.wavelengths, wavelengths, reflectance)
     detrended = detrend_signal(measurement.wavelengths, aligned, cutoff, order)

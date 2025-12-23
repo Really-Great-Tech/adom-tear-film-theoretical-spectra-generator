@@ -101,125 +101,140 @@ def detect_valleys_df(df: pd.DataFrame, column: str, prominence: float) -> pd.Da
     return result
 
 
-def _should_skip_file(file_path: pathlib.Path) -> bool:
-    """Check if file should be skipped (not a measurement spectrum file)."""
-    name_lower = file_path.name.lower()
+def load_measurement_files(measurements_dir: pathlib.Path, config: Dict[str, Any]) -> Dict[str, pd.DataFrame]:
+    """Load measurement spectra using the shared loader.
     
-    # Always skip BestFit files (these are pre-computed theoretical fits, not measurements)
-    if "_bestfit" in name_lower or name_lower.endswith("_bestfit.txt"):
-        return True
-    
-    # Skip readme files (case-insensitive)
-    if "readme" in name_lower:
-        return True
-    
-    # Skip documentation files
-    if name_lower.endswith((".md", ".pdf")):
-        return True
-    
-    return False
-
-
-def discover_measurement_files(config: Dict[str, Any]) -> Dict[str, pathlib.Path]:
-    """Discover measurement files WITHOUT loading their data (lazy loading).
-    
-    Returns a dict mapping display names to file paths.
-    Files are NOT loaded until explicitly requested via load_single_measurement().
-    
-    Discovers from:
+    Loads from:
     - exploration/sample_data/good_fit/ (Silas's good fit samples)
     - exploration/sample_data/bad_fit/ (Silas's bad fit samples)
-    - exploration/measurements/ (Shlomo's raw spectra samples)
+    - spectra_from_shlomo/ (Shlomo's raw spectra samples)
+    
+    Explicitly skips:
+    - _BestFit.txt files (pre-computed fits, not measurements)
+    - readme/documentation files
+    - Files that don't exist (silently skipped, no error)
     """
-    file_paths: Dict[str, pathlib.Path] = {}
+
+    measurements: Dict[str, pd.DataFrame] = {}
     meas_config = config.get("measurements", {})
     file_pattern = meas_config.get("file_pattern", "*.txt")
     
-    # Search in exploration/sample_data/good_fit, bad_fit, AND exploration/measurements
+    # Search directories and their display prefixes
     exploration_dir = PROJECT_ROOT / "exploration" / "sample_data"
-    shlomo_measurements_dir = PROJECT_ROOT / "exploration" / "measurements"
+    shlomo_dir = PROJECT_ROOT / "spectra_from_shlomo"
     search_dirs = []
+    dir_prefixes: Dict[pathlib.Path, str] = {}
     
-    # Discover from good_fit and bad_fit subdirectories (sample_data)
+    # Load from good_fit and bad_fit subdirectories
     for subdir_name in ["good_fit", "bad_fit"]:
         subdir = exploration_dir / subdir_name
         if subdir.exists() and subdir.is_dir():
             search_dirs.append(subdir)
+            dir_prefixes[subdir] = ""  # Use relative path from exploration_dir
     
-    # Also discover from exploration/measurements (Shlomo's raw spectra)
-    if shlomo_measurements_dir.exists() and shlomo_measurements_dir.is_dir():
-        search_dirs.append(shlomo_measurements_dir)
+    # Also load from spectra_from_shlomo/ (Shlomo's raw spectra)
+    if shlomo_dir.exists() and shlomo_dir.is_dir():
+        search_dirs.append(shlomo_dir)
+        dir_prefixes[shlomo_dir] = "shlomo"  # Prefix with "shlomo/" for display
     
     if not search_dirs:
-        return file_paths
+        # Only show warning if neither directory exists
+        if not exploration_dir.exists() and not shlomo_dir.exists():
+            st.warning(f"No measurement directories found")
+        return measurements
     
+    all_file_path_objs = []
     for search_dir in search_dirs:
+        # Normalize the base directory path for Windows UNC paths
         try:
             search_dir_normalized = pathlib.Path(os.path.normpath(str(search_dir.resolve())))
         except (OSError, ValueError):
-            continue
+            # Skip directories that can't be resolved (e.g., network issues)
+                continue
 
+        # Skip non-spectrum files (BestFit, readme, documentation, etc.)
+        def should_skip_file(file_path: pathlib.Path) -> bool:
+            """Check if file should be skipped (not a measurement spectrum file)."""
+            name_lower = file_path.name.lower()
+            
+            # Always skip BestFit files (these are pre-computed theoretical fits, not measurements)
+            if "_bestfit" in name_lower or name_lower.endswith("_bestfit.txt"):
+                return True
+            
+            # Skip readme files (case-insensitive)
+            if "readme" in name_lower:
+                return True
+            
+            # Skip documentation files
+            if name_lower.endswith((".md", ".pdf")):
+                return True
+            
+            return False
+        
         try:
-            for file_path_obj in search_dir_normalized.rglob(file_pattern):
-                if not file_path_obj.is_file() or not file_path_obj.exists():
-                    continue
-                if _should_skip_file(file_path_obj):
-                    continue
-                
-                # Normalize path
-                normalized_str = os.path.normpath(str(file_path_obj))
-                file_path_obj = pathlib.Path(normalized_str)
-                
-                # Compute display name (relative path without extension)
-                base_dir_normalized = pathlib.Path(os.path.normpath(str(exploration_dir.resolve())))
-                shlomo_dir_normalized = pathlib.Path(os.path.normpath(str(shlomo_measurements_dir.resolve())))
-                
-                rel_path = None
-                try:
-                    rel_path = file_path_obj.relative_to(base_dir_normalized)
-                except ValueError:
-                    try:
-                        rel_path_from_shlomo = file_path_obj.relative_to(shlomo_dir_normalized)
-                        rel_path = pathlib.Path("shlomo") / rel_path_from_shlomo
-                    except ValueError:
-                        continue
-                
-                if rel_path is None:
-                    continue
-                
-                file_name = str(rel_path.with_suffix(""))  # Remove .txt extension
-                file_paths[file_name] = file_path_obj
-                
+            file_path_objs = [
+                p for p in search_dir_normalized.rglob(file_pattern)
+                if p.is_file() and p.exists() and not should_skip_file(p)
+            ]
+            all_file_path_objs.extend(file_path_objs)
         except (OSError, PermissionError):
+            # Skip directories that can't be accessed
+                continue
+
+    if not all_file_path_objs:
+        st.warning(f"No measurement files found matching pattern: {file_pattern}")
+        return measurements
+
+    for file_path_obj in sorted(all_file_path_objs):
+        try:
+            # Normalize path for Windows UNC paths (handle backslash issues)
+            normalized_str = os.path.normpath(str(file_path_obj))
+            file_path_obj = pathlib.Path(normalized_str)
+            
+            # Check file exists before trying to load (silently skip if not)
+            if not file_path_obj.exists():
+                continue
+
+            # Skip BestFit and readme files (double-check here too)
+            name_lower = file_path_obj.name.lower()
+            if "_bestfit" in name_lower or "readme" in name_lower:
+                continue
+
+            # Determine display name based on which directory the file is from
+            file_name = None
+            base_dir_normalized = pathlib.Path(os.path.normpath(str(exploration_dir.resolve())))
+            shlomo_dir_normalized = pathlib.Path(os.path.normpath(str(shlomo_dir.resolve())))
+            
+            try:
+                rel_path = file_path_obj.relative_to(base_dir_normalized)
+                file_name = str(rel_path.with_suffix(""))  # Remove .txt extension
+            except ValueError:
+                try:
+                    rel_path = file_path_obj.relative_to(shlomo_dir_normalized)
+                    file_name = "shlomo/" + str(rel_path.with_suffix(""))  # Prefix with shlomo/
+                except ValueError:
+                    continue  # File is not from either directory
+
+            if file_name is None:
+                continue
+
+            meas_df = load_measurement_spectrum(file_path_obj, meas_config)
+            if not meas_df.empty:
+                measurements[file_name] = meas_df
+            # Silently skip files that don't contain spectral data (no error message)
+        except FileNotFoundError:
+            # File doesn't exist - silently skip (no warning)
             continue
+        except Exception as exc:  # pragma: no cover - UI warning path
+            # Only show warning for unexpected errors, not file not found or "no spectral data"
+            error_str = str(exc).lower()
+            if ("no such file" not in error_str and 
+                "file not found" not in error_str and
+                "no spectral data" not in error_str and 
+                "readme" not in file_path_obj.name.lower()):
+                st.warning(f"Error loading {file_path_obj}: {exc}")
 
-    return file_paths
-
-
-@st.cache_data(show_spinner=False)
-def load_single_measurement(_file_path: pathlib.Path, meas_config: Dict[str, Any]) -> pd.DataFrame:
-    """Load a single measurement file on demand (cached).
-    
-    This is called only when a file is selected, not at startup.
-    The underscore prefix on _file_path prevents Streamlit from hashing the Path object.
-    """
-    try:
-        meas_df = load_measurement_spectrum(_file_path, meas_config)
-        return meas_df
-    except Exception as exc:
-        st.warning(f"Error loading {_file_path}: {exc}")
-        return pd.DataFrame()
-
-
-def load_measurement_files(measurements_dir: pathlib.Path, config: Dict[str, Any]) -> Dict[str, pd.DataFrame]:
-    """DEPRECATED: Use discover_measurement_files() + load_single_measurement() for lazy loading.
-    
-    This function is kept for backwards compatibility but now only discovers files
-    and loads them lazily when accessed.
-    """
-    # For backwards compatibility, return an empty dict
-    # The actual loading is now done lazily via load_single_measurement()
-    return {}
+    return measurements
 
 
 def flag_edge_cases(
@@ -249,17 +264,17 @@ def flag_edge_cases(
     # Get acceptable/feasible ranges (wider than search ranges)
     if acceptable_ranges is None:
         acceptable_ranges = {
-            "lipid": {"min": 9, "max": 250},
-            "aqueous": {"min": 800, "max": 12000},
-            "roughness": {"min": 600, "max": 2750},
+            "lipid": {"min": 0, "max": 500},
+            "aqueous": {"min": 0, "max": 2000},  # Note: aqueous CAN be 0
+            "roughness": {"min": 0, "max": 5000},
         }
     
-    accept_lipid_min = float(acceptable_ranges.get("lipid", {}).get("min", 9))
-    accept_lipid_max = float(acceptable_ranges.get("lipid", {}).get("max", 250))
-    accept_aqueous_min = float(acceptable_ranges.get("aqueous", {}).get("min", 800))
-    accept_aqueous_max = float(acceptable_ranges.get("aqueous", {}).get("max", 12000))
-    accept_rough_min = float(acceptable_ranges.get("roughness", {}).get("min", 600))
-    accept_rough_max = float(acceptable_ranges.get("roughness", {}).get("max", 2750))
+    accept_lipid_min = float(acceptable_ranges.get("lipid", {}).get("min", 0))
+    accept_lipid_max = float(acceptable_ranges.get("lipid", {}).get("max", 500))
+    accept_aqueous_min = float(acceptable_ranges.get("aqueous", {}).get("min", 0))
+    accept_aqueous_max = float(acceptable_ranges.get("aqueous", {}).get("max", 2000))
+    accept_rough_min = float(acceptable_ranges.get("roughness", {}).get("min", 0))
+    accept_rough_max = float(acceptable_ranges.get("roughness", {}).get("max", 5000))
     
     # Check for "no good fit" scenario (best score is too low)
     best_score = float(results_df["score_composite"].max()) if "score_composite" in results_df.columns else 0.0
@@ -350,8 +365,7 @@ def generate_dynamic_parameter_values(
     min_step: Optional[float] = None,
     max_evaluations: Optional[int] = None,
 ) -> np.ndarray:
-    """
-    Generate parameter values with dynamic step sizes.
+    """Generate parameter values with dynamic step sizes.
     
     If promising_regions is provided, uses finer steps in those regions and coarser steps elsewhere.
     This adapts to the score landscape to preserve runtime while getting good results.
@@ -388,7 +402,6 @@ def generate_dynamic_parameter_values(
     # For each promising region, add fine-grained values around it
     for center, score in promising_regions:
         # Determine step size based on score (higher score = finer step)
-        # Score 0.8+ → min_step, Score 0.5-0.8 → base_step/2, Score <0.5 → base_step
         if score >= 0.8:
             step = min_step
             window = base_step * 8  # Wider window for high-scoring regions
@@ -416,10 +429,9 @@ def generate_dynamic_parameter_values(
     for i in range(len(sorted_centers) - 1):
         gap_start = sorted_centers[i]
         gap_end = sorted_centers[i + 1]
-        gap_size = gap_end - gap_start
         
         # Use coarse steps in gaps
-        gap_step = base_step * 2  # Coarser in gaps
+        gap_step = base_step * 2
         gap_values = np.arange(gap_start, gap_end, gap_step, dtype=float)
         for val in gap_values:
             if min_val <= val <= max_val:
@@ -427,13 +439,11 @@ def generate_dynamic_parameter_values(
     
     # Fill before first and after last promising region
     if sorted_centers:
-        # Before first
         if sorted_centers[0] > min_val:
             gap_values = np.arange(min_val, sorted_centers[0], base_step * 2, dtype=float)
             for val in gap_values:
                 all_values.add(val)
         
-        # After last
         if sorted_centers[-1] < max_val:
             gap_values = np.arange(sorted_centers[-1], max_val + base_step * 2, base_step * 2, dtype=float)
             for val in gap_values:
@@ -445,7 +455,6 @@ def generate_dynamic_parameter_values(
     
     # Limit to max_evaluations if specified (for runtime control)
     if max_evaluations and len(values) > max_evaluations:
-        # Keep boundary values and evenly sample the rest
         if max_evaluations >= 3:
             indices = np.linspace(0, len(values) - 1, max_evaluations, dtype=int)
             values = values[indices]
@@ -508,9 +517,9 @@ def run_coarse_fine_grid_search(
     Stage 2: Refine around top-K results from coarse stage
     
     During refinement, the search expands beyond the configured parameter ranges (from config.parameters)
-    up to the client accepted ranges (from config.analysis.edge_case_detection.client_accepted_ranges).
+    up to the acceptable ranges (from config.analysis.edge_case_detection.acceptable_ranges).
     This allows finding optimal values that may be outside the initial search range but still
-    within the client's business-defined acceptable limits.
+    within physically/biologically feasible limits.
     """
     grid_cfg = analysis_cfg.get("grid_search", {})
     coarse_cfg = grid_cfg.get("coarse", {})
@@ -594,18 +603,18 @@ def run_coarse_fine_grid_search(
         rough_window = refine_cfg.get("roughness", {}).get("window_A", 200)
         rough_step = refine_cfg.get("roughness", {}).get("step_A", 25)
         
-        # Get client accepted ranges for clamping (client's business-defined limits)
+        # Get acceptable ranges for clamping (wider than configured search ranges)
         edge_case_cfg = analysis_cfg.get("edge_case_detection", {})
-        acceptable_ranges = edge_case_cfg.get("client_accepted_ranges", {})
-        accept_lipid_min = float(acceptable_ranges.get("lipid", {}).get("min", 9))
-        accept_lipid_max = float(acceptable_ranges.get("lipid", {}).get("max", 250))
-        accept_aqueous_min = float(acceptable_ranges.get("aqueous", {}).get("min", 800))
-        accept_aqueous_max = float(acceptable_ranges.get("aqueous", {}).get("max", 12000))
-        accept_rough_min = float(acceptable_ranges.get("roughness", {}).get("min", 600))
-        accept_rough_max = float(acceptable_ranges.get("roughness", {}).get("max", 2750))
+        acceptable_ranges = edge_case_cfg.get("acceptable_ranges", {})
+        accept_lipid_min = float(acceptable_ranges.get("lipid", {}).get("min", 0))
+        accept_lipid_max = float(acceptable_ranges.get("lipid", {}).get("max", 500))
+        accept_aqueous_min = float(acceptable_ranges.get("aqueous", {}).get("min", 0))
+        accept_aqueous_max = float(acceptable_ranges.get("aqueous", {}).get("max", 2000))
+        accept_rough_min = float(acceptable_ranges.get("roughness", {}).get("min", 0))
+        accept_rough_max = float(acceptable_ranges.get("roughness", {}).get("max", 5000))
         
-        # Expand refinement window beyond configured ranges, but clamp to client accepted ranges
-        # This allows finding optimal values outside the initial search range while respecting client limits
+        # Expand refinement window beyond configured ranges, but clamp to acceptable ranges
+        # This allows finding optimal values outside the initial search range
         lipid_min = max(accept_lipid_min, center_lipid - lipid_window / 2)
         lipid_max = min(accept_lipid_max, center_lipid + lipid_window / 2)
         aqueous_min = max(accept_aqueous_min, center_aqueous - aqueous_window / 2)
@@ -846,6 +855,11 @@ def create_comparison_plot(theoretical_wl: np.ndarray, theoretical_spec: np.ndar
     plot_config = config.get('plotting', {})
     style = plot_config.get('plot_style', {})
     
+    # Get wavelength range of interest from config
+    wavelength_range_cfg = config.get("analysis", {}).get("wavelength_range", {})
+    wl_min = float(wavelength_range_cfg.get("min", 600))
+    wl_max = float(wavelength_range_cfg.get("max", 1120))
+    
     fig = go.Figure()
     
     # Add measured spectrum
@@ -875,9 +889,10 @@ def create_comparison_plot(theoretical_wl: np.ndarray, theoretical_spec: np.ndar
     ))
     
     fig.update_layout(
-        title="Measured vs Theoretical Reflectance Spectra",
+        title=f"Measured vs Theoretical Reflectance Spectra ({wl_min:.0f}-{wl_max:.0f}nm)",
         xaxis_title="Wavelength (nm)",
         yaxis_title="Reflectance",
+        xaxis_range=[wl_min, wl_max],  # Zoom to wavelength range of interest
         hovermode="x unified",
         template="plotly_white",
         width=style.get('width', 1000),
@@ -886,12 +901,9 @@ def create_comparison_plot(theoretical_wl: np.ndarray, theoretical_spec: np.ndar
         legend=dict(
             yanchor="top",
             y=0.99,
-            xanchor="right",
-            x=0.99
-        ),
-        # Default zoom to LTA focus region: 600-1180nm, reflectance up to 0.06
-        xaxis=dict(range=[600, 1180]),
-        yaxis=dict(range=[0, 0.06])
+            xanchor="left",
+            x=0.01
+        )
     )
     
     return fig
@@ -916,26 +928,30 @@ def main():
     # Load theoretical spectrum calculator
     single_spectrum, wavelengths = make_single_spectrum_calculator(config)
 
-    # Discover measurement files (lazy loading - only file paths, not data)
+    # Load measurement files
     measurements_enabled = config.get('measurements', {}).get('enabled', False)
-    measurement_paths: Dict[str, pathlib.Path] = {}  # Maps display names to file paths
-    meas_config = config.get("measurements", {})
+    measurements = {}
     
     if measurements_enabled:
-        measurement_paths = discover_measurement_files(config)
+        measurements_dir = get_project_path(config['paths']['measurements'])
+        measurements = load_measurement_files(measurements_dir, config)
 
     params = config["parameters"]
     lipid_cfg = params["lipid"]
     aqueous_cfg = params["aqueous"]
     rough_cfg = params["roughness"]
     
-    # Use parameter ranges directly for slider bounds (expanded ranges from config)
-    slider_lipid_min = float(lipid_cfg["min"])
-    slider_lipid_max = float(lipid_cfg["max"])
-    slider_aqueous_min = float(aqueous_cfg["min"])
-    slider_aqueous_max = float(aqueous_cfg["max"])
-    slider_rough_min = float(rough_cfg["min"])
-    slider_rough_max = float(rough_cfg["max"])
+    # Get acceptable ranges for sliders (wider than parameter ranges, allows using grid search results)
+    edge_case_cfg = analysis_cfg.get("edge_case_detection", {})
+    acceptable_ranges = edge_case_cfg.get("acceptable_ranges", {})
+    
+    # Use acceptable ranges for slider bounds, but keep step sizes from parameter config
+    slider_lipid_min = float(acceptable_ranges.get("lipid", {}).get("min", lipid_cfg["min"]))
+    slider_lipid_max = float(acceptable_ranges.get("lipid", {}).get("max", lipid_cfg["max"]))
+    slider_aqueous_min = float(acceptable_ranges.get("aqueous", {}).get("min", aqueous_cfg["min"]))
+    slider_aqueous_max = float(acceptable_ranges.get("aqueous", {}).get("max", aqueous_cfg["max"]))
+    slider_rough_min = float(acceptable_ranges.get("roughness", {}).get("min", rough_cfg["min"]))
+    slider_rough_max = float(acceptable_ranges.get("roughness", {}).get("max", rough_cfg["max"]))
 
     # Defaults: use configured defaults if provided, or midpoints snapped to step
     defaults = ui_cfg.get("default_values", {})
@@ -960,7 +976,7 @@ def main():
     # Create tabs
     tab1, tab2, tab3, tab4 = st.tabs([
         "📊 Spectrum Comparison",
-        "📈 Detrended Analysis",
+        "📈 Spectrum Analysis",
         "⚙️ Parameters",
         "🔍 Grid Search",
     ])
@@ -1043,49 +1059,22 @@ def main():
         key="rough_slider",
     )
 
-    # Measurement file selection (lazy loading - file data loaded only when selected)
+    # Measurement file selection
     selected_file = None
-    selected_measurement = None
-    if measurements_enabled and measurement_paths:
+    if measurements_enabled and measurements:
         st.sidebar.markdown("## Measurement Data")
-        measurement_files = sorted(list(measurement_paths.keys()))
-        # Use session state to preserve selection across reruns
-        # Initialize if not set
-        if "selected_measurement_file" not in st.session_state:
-            st.session_state["selected_measurement_file"] = "None"
-        
-        # Get current selection from session state, or default to "None"
-        current_selection = st.session_state.get("selected_measurement_file", "None")
-        # Ensure current selection is valid (in case file list changed)
-        if current_selection not in (["None"] + measurement_files):
-            current_selection = "None"
-            st.session_state["selected_measurement_file"] = "None"
-        
-        # Find index of current selection
-        options = ["None"] + measurement_files
-        try:
-            default_index = options.index(current_selection)
-        except ValueError:
-            default_index = 0
-        
+        measurement_files = list(measurements.keys())
         selected_file = st.sidebar.selectbox(
             "Select measurement file:",
-            options=options,
-            index=default_index,
-            key="selected_measurement_file"
+            options=["None"] + measurement_files,
+            index=1 if measurement_files else 0
         )
-        # selected_file is automatically stored in session_state via the key parameter
-        
+
         if selected_file != "None":
-            # Lazy load: only load the selected file's data
-            file_path = measurement_paths[selected_file]
-            selected_measurement = load_single_measurement(file_path, meas_config)
-            if not selected_measurement.empty:
-                st.sidebar.write(f"**{selected_file}**")
-                st.sidebar.write(f"Data points: {len(selected_measurement)}")
-                st.sidebar.write(f"Wavelength range: {selected_measurement['wavelength'].min():.1f} - {selected_measurement['wavelength'].max():.1f} nm")
-            else:
-                st.sidebar.warning("Failed to load measurement file")
+            selected_measurement = measurements[selected_file]
+            st.sidebar.write(f"**{selected_file}**")
+            st.sidebar.write(f"Data points: {len(selected_measurement)}")
+            st.sidebar.write(f"Wavelength range: {selected_measurement['wavelength'].min():.1f} - {selected_measurement['wavelength'].max():.1f} nm")
     
     st.sidebar.markdown("## Analysis Parameters")
     
@@ -1134,7 +1123,9 @@ def main():
 
     # Tab 1: Spectrum Comparison
     with tab1:
-        if measurements_enabled and selected_file and selected_file != "None" and selected_measurement is not None and not selected_measurement.empty:
+        if measurements_enabled and selected_file and selected_file != "None":
+            selected_measurement = measurements[selected_file]
+            
             # Create comparison plot
             fig = create_comparison_plot(
                 wavelengths, spectrum, selected_measurement,
@@ -1199,159 +1190,160 @@ def main():
             )
             st.plotly_chart(fig, use_container_width=True)
 
-    # Tab 2: Detrended Analysis
+    # Tab 2: Spectrum Analysis (zoomed view 600-1120nm with detrended signals)
     with tab2:
-        st.markdown("## Detrended Signal Analysis with Peak Detection")
+        # Get wavelength range from config
+        wavelength_range_cfg = config.get("analysis", {}).get("wavelength_range", {})
+        wl_min = float(wavelength_range_cfg.get("min", 600))
+        wl_max = float(wavelength_range_cfg.get("max", 1120))
         
-        if measurements_enabled and selected_file and selected_file != "None" and selected_measurement is not None and not selected_measurement.empty:
-            # Detrend both theoretical and measured signals
-            filter_order = config.get("analysis", {}).get("detrending", {}).get("filter_order", 3)
-            theoretical_detrended = detrend_dataframe(theoretical_df, cutoff_freq, filter_order)
-            measured_detrended = detrend_dataframe(selected_measurement, cutoff_freq, filter_order)
+        st.markdown(f"## Spectrum Analysis ({wl_min:.0f}-{wl_max:.0f}nm)")
+        st.caption("Detrended signals with peak and valley detection in the wavelength range of interest")
+        
+        if measurements_enabled and selected_file and selected_file != "None":
+            selected_measurement = measurements[selected_file]
             
-            # Detect peaks in detrended signals
+            # Filter to wavelength range of interest
+            filter_order = config.get("analysis", {}).get("detrending", {}).get("filter_order", 3)
+            
+            # Filter theoretical spectrum to wavelength range
+            theoretical_filtered = theoretical_df[
+                (theoretical_df['wavelength'] >= wl_min) & 
+                (theoretical_df['wavelength'] <= wl_max)
+            ].reset_index(drop=True)
+            
+            # Filter measured spectrum to wavelength range
+            measured_filtered = selected_measurement[
+                (selected_measurement['wavelength'] >= wl_min) & 
+                (selected_measurement['wavelength'] <= wl_max)
+            ].reset_index(drop=True)
+            
+            # Detrend both signals
+            theoretical_detrended = detrend_dataframe(theoretical_filtered, cutoff_freq, filter_order)
+            measured_detrended = detrend_dataframe(measured_filtered, cutoff_freq, filter_order)
+            
+            # Detect peaks and valleys in detrended signals
             theo_peaks = detect_peaks_df(theoretical_detrended, 'detrended', peak_prominence)
             meas_peaks = detect_peaks_df(measured_detrended, 'detrended', peak_prominence)
-            
-            # Detect valleys in detrended signals
             theo_valleys = detect_valleys_df(theoretical_detrended, 'detrended', peak_prominence)
             meas_valleys = detect_valleys_df(measured_detrended, 'detrended', peak_prominence)
             
-            # Create subplot figure
-            fig = make_subplots(
-                rows=2, cols=1,
-                subplot_titles=("Original vs Detrended Signals", "Peak and Valley Detection"),
-                vertical_spacing=0.1
-            )
+            # Create single zoomed plot showing detrended signals with peaks/valleys
+            fig = go.Figure()
             
-            # Top plot: Original vs Detrended
+            # Measured detrended signal (solid line)
             fig.add_trace(go.Scatter(
-                x=theoretical_detrended['wavelength'], 
-                y=theoretical_detrended['reflectance'],
-                mode='lines', name='Theoretical Original',
+                x=measured_detrended['wavelength'],
+                y=measured_detrended['detrended'],
+                mode='lines', name='Measured (Spectra)',
                 line=dict(color='blue', width=2)
-            ), row=1, col=1)
+            ))
             
+            # Theoretical detrended signal (dotted line)
             fig.add_trace(go.Scatter(
-                x=measured_detrended['wavelength'], 
-                y=measured_detrended['reflectance'],
-                mode='lines', name='Measured Original',
-                line=dict(color='red', width=2)
-            ), row=1, col=1)
-            
-            fig.add_trace(go.Scatter(
-                x=theoretical_detrended['wavelength'], 
+                x=theoretical_detrended['wavelength'],
                 y=theoretical_detrended['detrended'],
-                mode='lines', name='Theoretical Detrended',
-                line=dict(color='lightblue', width=2, dash='dash')
-            ), row=1, col=1)
+                mode='lines', name='Best Fit (Theoretical)',
+                line=dict(color='red', width=2, dash='dot')
+            ))
             
-            fig.add_trace(go.Scatter(
-                x=measured_detrended['wavelength'], 
-                y=measured_detrended['detrended'],
-                mode='lines', name='Measured Detrended',
-                line=dict(color='lightcoral', width=2, dash='dash')
-            ), row=1, col=1)
-            
-            # Bottom plot: Detrended with peaks and valleys
-            fig.add_trace(go.Scatter(
-                x=theoretical_detrended['wavelength'], 
-                y=theoretical_detrended['detrended'],
-                mode='lines', name='Theoretical Detrended',
-                line=dict(color='blue', width=2), showlegend=False
-            ), row=2, col=1)
-            
-            fig.add_trace(go.Scatter(
-                x=measured_detrended['wavelength'], 
-                y=measured_detrended['detrended'],
-                mode='lines', name='Measured Detrended',
-                line=dict(color='red', width=2), showlegend=False
-            ), row=2, col=1)
-            
-            # Add peaks
-            if len(theo_peaks) > 0:
-                fig.add_trace(go.Scatter(
-                    x=theo_peaks['wavelength'], 
-                    y=theo_peaks['detrended'],
-                    mode='markers', name='Theoretical Peaks',
-                    marker=dict(color='blue', size=8, symbol='triangle-up')
-                ), row=2, col=1)
-            
+            # Measured peaks
             if len(meas_peaks) > 0:
                 fig.add_trace(go.Scatter(
-                    x=meas_peaks['wavelength'], 
+                    x=meas_peaks['wavelength'],
                     y=meas_peaks['detrended'],
-                    mode='markers', name='Measured Peaks',
-                    marker=dict(color='red', size=8, symbol='triangle-up')
-                ), row=2, col=1)
+                    mode='markers', name='Spectra Peaks',
+                    marker=dict(color='blue', size=8, symbol='circle')
+                ))
             
-            # Add valleys
-            if len(theo_valleys) > 0:
+            # Theoretical peaks
+            if len(theo_peaks) > 0:
                 fig.add_trace(go.Scatter(
-                    x=theo_valleys['wavelength'], 
-                    y=theo_valleys['detrended'],
-                    mode='markers', name='Theoretical Valleys',
-                    marker=dict(color='blue', size=8, symbol='triangle-down')
-                ), row=2, col=1)
+                    x=theo_peaks['wavelength'],
+                    y=theo_peaks['detrended'],
+                    mode='markers', name='Best Fit Peaks',
+                    marker=dict(color='red', size=8, symbol='circle')
+                ))
             
+            # Measured valleys
             if len(meas_valleys) > 0:
                 fig.add_trace(go.Scatter(
-                    x=meas_valleys['wavelength'], 
+                    x=meas_valleys['wavelength'],
                     y=meas_valleys['detrended'],
-                    mode='markers', name='Measured Valleys',
-                    marker=dict(color='red', size=8, symbol='triangle-down')
-                ), row=2, col=1)
+                    mode='markers', name='Spectra Valleys',
+                    marker=dict(color='cyan', size=8, symbol='circle')
+                ))
             
-            fig.update_xaxes(title_text="Wavelength (nm)")
-            fig.update_yaxes(title_text="Reflectance", row=1, col=1)
-            fig.update_yaxes(title_text="Detrended Reflectance", row=2, col=1)
-            fig.update_layout(height=800, template="plotly_white")
+            # Theoretical valleys
+            if len(theo_valleys) > 0:
+                fig.add_trace(go.Scatter(
+                    x=theo_valleys['wavelength'],
+                    y=theo_valleys['detrended'],
+                    mode='markers', name='Best Fit Valleys',
+                    marker=dict(color='pink', size=8, symbol='circle')
+                ))
+            
+            fig.update_layout(
+                title=f"Peak and Valley Detection for {selected_file}",
+                xaxis_title="Wavelength (nm)",
+                yaxis_title="Intensity (Detrended)",
+                xaxis_range=[wl_min, wl_max],
+                hovermode="x unified",
+                template="plotly_white",
+                height=600,
+                legend=dict(
+                    yanchor="top", y=0.99,
+                    xanchor="right", x=0.99
+                )
+            )
             
             st.plotly_chart(fig, use_container_width=True)
             
-            # Peak analysis summary
+            # Peak analysis summary in two columns
             col1, col2 = st.columns(2)
             with col1:
-                st.markdown("### Theoretical Signal Analysis")
-                st.write(f"**Peaks detected:** {len(theo_peaks)}")
-                if len(theo_peaks) > 0:
-                    st.write("Peak wavelengths:", [f"{w:.1f}nm" for w in theo_peaks['wavelength'].head(5)])
-                st.write(f"**Valleys detected:** {len(theo_valleys)}")
-                if len(theo_valleys) > 0:
-                    st.write("Valley wavelengths:", [f"{w:.1f}nm" for w in theo_valleys['wavelength'].head(5)])
-            
-            with col2:
-                st.markdown("### Measured Signal Analysis")
+                st.markdown("### Measured Spectrum Analysis")
                 st.write(f"**Peaks detected:** {len(meas_peaks)}")
                 if len(meas_peaks) > 0:
-                    st.write("Peak wavelengths:", [f"{w:.1f}nm" for w in meas_peaks['wavelength'].head(5)])
+                    peak_wls = [f"{w:.1f}nm" for w in meas_peaks['wavelength']]
+                    st.write("Peak wavelengths:", peak_wls)
                 st.write(f"**Valleys detected:** {len(meas_valleys)}")
                 if len(meas_valleys) > 0:
-                    st.write("Valley wavelengths:", [f"{w:.1f}nm" for w in meas_valleys['wavelength'].head(5)])
+                    valley_wls = [f"{w:.1f}nm" for w in meas_valleys['wavelength']]
+                    st.write("Valley wavelengths:", valley_wls)
+            
+            with col2:
+                st.markdown("### Theoretical Spectrum Analysis")
+                st.write(f"**Peaks detected:** {len(theo_peaks)}")
+                if len(theo_peaks) > 0:
+                    peak_wls = [f"{w:.1f}nm" for w in theo_peaks['wavelength']]
+                    st.write("Peak wavelengths:", peak_wls)
+                st.write(f"**Valleys detected:** {len(theo_valleys)}")
+                if len(theo_valleys) > 0:
+                    valley_wls = [f"{w:.1f}nm" for w in theo_valleys['wavelength']]
+                    st.write("Valley wavelengths:", valley_wls)
             
         else:
-            # Show only theoretical detrended
+            # Show only theoretical detrended (filtered to wavelength range)
             filter_order = config.get("analysis", {}).get("detrending", {}).get("filter_order", 3)
-            theoretical_detrended = detrend_dataframe(theoretical_df, cutoff_freq, filter_order)
+            
+            theoretical_filtered = theoretical_df[
+                (theoretical_df['wavelength'] >= wl_min) & 
+                (theoretical_df['wavelength'] <= wl_max)
+            ].reset_index(drop=True)
+            
+            theoretical_detrended = detrend_dataframe(theoretical_filtered, cutoff_freq, filter_order)
             theo_peaks = detect_peaks_df(theoretical_detrended, 'detrended', peak_prominence)
             theo_valleys = detect_valleys_df(theoretical_detrended, 'detrended', peak_prominence)
             
             fig = go.Figure()
             
-            # Original signal
-            fig.add_trace(go.Scatter(
-                x=theoretical_detrended['wavelength'],
-                y=theoretical_detrended['reflectance'],
-                mode='lines', name='Original',
-                line=dict(color='blue', width=2)
-            ))
-            
             # Detrended signal
             fig.add_trace(go.Scatter(
                 x=theoretical_detrended['wavelength'],
                 y=theoretical_detrended['detrended'],
-                mode='lines', name='Detrended',
-                line=dict(color='lightblue', width=2, dash='dash')
+                mode='lines', name='Theoretical (Detrended)',
+                line=dict(color='blue', width=2)
             ))
             
             # Peaks
@@ -1360,7 +1352,7 @@ def main():
                     x=theo_peaks['wavelength'],
                     y=theo_peaks['detrended'],
                     mode='markers', name='Peaks',
-                    marker=dict(color='green', size=8, symbol='triangle-up')
+                    marker=dict(color='blue', size=8, symbol='circle')
                 ))
             
             # Valleys
@@ -1369,15 +1361,20 @@ def main():
                     x=theo_valleys['wavelength'],
                     y=theo_valleys['detrended'],
                     mode='markers', name='Valleys',
-                    marker=dict(color='orange', size=8, symbol='triangle-down')
+                    marker=dict(color='cyan', size=8, symbol='circle')
                 ))
             
             fig.update_layout(
-                title="Theoretical Signal: Original vs Detrended with Peak/Valley Detection",
+                title=f"Theoretical Detrended Signal ({wl_min:.0f}-{wl_max:.0f}nm)",
                 xaxis_title="Wavelength (nm)",
-                yaxis_title="Reflectance",
+                yaxis_title="Intensity (Detrended)",
+                xaxis_range=[wl_min, wl_max],
                 template="plotly_white",
-                height=600
+                height=600,
+                legend=dict(
+                    yanchor="top", y=0.99,
+                    xanchor="right", x=0.99
+                )
             )
             
             st.plotly_chart(fig, use_container_width=True)
@@ -1413,14 +1410,12 @@ def main():
                 "selected_measurement": selected_file if selected_file and selected_file != "None" else None
             })
 
-        # Measurement data info (lazy loading - just show file list)
+        # Measurement data info
         if measurements_enabled:
             st.markdown("### Available Measurement Files")
-            if measurement_paths:
-                st.write(f"**{len(measurement_paths)} files available** (data loaded on selection)")
-                with st.expander("View file list", expanded=False):
-                    for filename in sorted(measurement_paths.keys()):
-                        st.write(f"- {filename}")
+            if measurements:
+                for filename, df in measurements.items():
+                    st.write(f"**{filename}**: {len(df)} data points, λ = {df['wavelength'].min():.1f}-{df['wavelength'].max():.1f} nm")
             else:
                 st.info(f"No measurement files found in: {get_project_path(config['paths']['measurements'])}")
         else:
@@ -1428,9 +1423,10 @@ def main():
 
     with tab4:
         st.markdown("## Grid Search Ranking")
-        if not (measurements_enabled and selected_file and selected_file != "None" and selected_measurement is not None and not selected_measurement.empty):
+        if not (measurements_enabled and selected_file and selected_file != "None"):
             st.info("Select a measurement spectrum to run the grid search.")
         else:
+            selected_measurement = measurements[selected_file]
             controls = st.columns(3)
             top_k_display = int(
                 controls[0].number_input("Top results", min_value=5, max_value=100, value=10, step=5)
@@ -1486,7 +1482,7 @@ def main():
                         "Client Lipid (nm)",
                         min_value=0.0,
                         max_value=500.0,
-                        value=float(client_ref_cfg.get("default_lipid", 122.9)),
+                        value=float(client_ref_cfg.get("default_lipid", 62.3)),
                         step=0.1,
                         key="client_ref_lipid"
                     )
@@ -1494,7 +1490,7 @@ def main():
                         "Client Aqueous (nm)",
                         min_value=-20.0,
                         max_value=12000.0,
-                        value=float(client_ref_cfg.get("default_aqueous", 3194.7)),
+                        value=float(client_ref_cfg.get("default_aqueous", -2.0)),
                         step=0.1,
                         key="client_ref_aqueous"
                     )
@@ -1502,7 +1498,7 @@ def main():
                         "Client Roughness (Å)",
                         min_value=0.0,
                         max_value=3000.0,
-                        value=float(client_ref_cfg.get("default_roughness", 1500.0)),
+                        value=float(client_ref_cfg.get("default_roughness", 1200.0)),
                         step=1.0,
                         key="client_ref_roughness"
                     )
@@ -1608,23 +1604,20 @@ def main():
                 run_pressed = True  # Auto-trigger the search
                 st.session_state["confirm_full_search_executed"] = False  # Reset flag
             
-            # Always prepare measurement features (needed for both new search and cached results display)
-            measurement_features = prepare_measurement(selected_measurement, analysis_cfg)
-            
-            # Always calculate measurement quality (needed for client reference scoring)
-            quality_cfg = analysis_cfg.get("quality_gates", {})
-            measurement_quality_result = None
-            if quality_cfg:
-                measurement_quality_result, _ = measurement_quality_score(
-                    measurement_features,
-                    min_peaks=quality_cfg.get("min_peaks"),
-                    min_signal_amplitude=quality_cfg.get("min_signal_amplitude"),
-                    min_wavelength_span_nm=quality_cfg.get("min_wavelength_span_nm"),
-                )
-            
             if run_pressed:
                 start_time = time.time()
                 with st.spinner("Scoring theoretical spectra..."):
+                    measurement_features = prepare_measurement(selected_measurement, analysis_cfg)
+                    quality_cfg = analysis_cfg.get("quality_gates", {})
+                    measurement_quality_result = None
+                    if quality_cfg:
+                        measurement_quality_result, _ = measurement_quality_score(
+                            measurement_features,
+                            min_peaks=quality_cfg.get("min_peaks"),
+                            min_signal_amplitude=quality_cfg.get("min_signal_amplitude"),
+                            min_wavelength_span_nm=quality_cfg.get("min_wavelength_span_nm"),
+                        )
+                    
                     if search_strategy == "coarse-fine":
                         # Use coarse-to-fine workflow
                         results_df, evaluated = run_coarse_fine_grid_search(
@@ -1672,7 +1665,7 @@ def main():
                                         measurement_features,
                                         analysis_cfg,
                                     )
-                                    scores, diagnostics = score_candidate(
+                                    scores, _ = score_candidate(
                                         measurement_features,
                                         theoretical,
                                         metrics_cfg,
@@ -1681,28 +1674,32 @@ def main():
                                         roughness_A=float(rough),
                                         measurement_quality=measurement_quality_result,
                                     )
-                                    record = {
+                                    coarse_records.append({
                                         "lipid_nm": float(lipid),
                                         "aqueous_nm": float(aqueous),
                                         "roughness_A": float(rough),
-                                        "score_composite": float(scores.get("composite", 0.0)),
-                                    }
-                                    coarse_records.append(record)
+                                        "score_composite": scores.get("composite", 0.0),
+                                    })
                                     coarse_count += 1
-                                if coarse_count >= max_coarse:
-                                    break
-                            if coarse_count >= max_coarse:
-                                break
                         
-                        # Identify promising regions from coarse pass
-                        if coarse_records:
+                        if len(coarse_records) == 0:
+                            st.warning("No valid spectra in coarse pass. Falling back to random search.")
+                            lipid_vals = generate_parameter_values(config["parameters"]["lipid"], stride)
+                            aqueous_vals = generate_parameter_values(config["parameters"]["aqueous"], stride)
+                            rough_vals = generate_parameter_values(config["parameters"]["roughness"], stride)
+                            results_df, evaluated = run_inline_grid_search(
+                                single_spectrum, wavelengths, measurement_features,
+                                analysis_cfg, metrics_cfg,
+                                lipid_vals, aqueous_vals, rough_vals,
+                                max_results, measurement_quality=measurement_quality_result,
+                            )
+                        else:
+                            # Get top promising results
                             coarse_df = pd.DataFrame(coarse_records)
-                            coarse_df = coarse_df.sort_values("score_composite", ascending=False)
-                            
-                            # Get top candidates for each parameter
                             top_k = min(10, len(coarse_df))
-                            top_coarse = coarse_df.head(top_k)
+                            top_coarse = coarse_df.nlargest(top_k, "score_composite")
                             
+                            # Extract promising regions for each parameter
                             lipid_promising = [(row["lipid_nm"], row["score_composite"]) for _, row in top_coarse.iterrows()]
                             aqueous_promising = [(row["aqueous_nm"], row["score_composite"]) for _, row in top_coarse.iterrows()]
                             rough_promising = [(row["roughness_A"], row["score_composite"]) for _, row in top_coarse.iterrows()]
@@ -1711,7 +1708,6 @@ def main():
                             st.info("Stage 2: Adaptive refinement with dynamic step sizes...")
                             
                             # Generate dynamic parameter values
-                            # Limit to preserve runtime - use max_results if specified
                             max_per_param = int(np.sqrt(max_results)) if max_results else 50
                             lipid_vals = generate_dynamic_parameter_values(
                                 config["parameters"]["lipid"],
@@ -1743,9 +1739,9 @@ def main():
                                 measurement_quality=measurement_quality_result,
                             )
                             
-                            # Combine coarse and refined results
+                            # Combine coarse and refined results for completeness
                             if not results_df.empty and len(coarse_records) > 0:
-                                coarse_full = []
+                                coarse_full_records = []
                                 for record in coarse_records:
                                     spectrum = single_spectrum(float(record["lipid_nm"]), float(record["aqueous_nm"]), float(record["roughness_A"]))
                                     if spectrum is None or len(spectrum) == 0 or np.all(spectrum == 0):
@@ -1754,54 +1750,32 @@ def main():
                                     if spectrum_std < 1e-6:
                                         continue
                                     theoretical = prepare_theoretical_spectrum(
-                                        wavelengths,
-                                        spectrum,
-                                        measurement_features,
-                                        analysis_cfg,
+                                        wavelengths, spectrum, measurement_features, analysis_cfg,
                                     )
                                     scores, diagnostics = score_candidate(
-                                        measurement_features,
-                                        theoretical,
-                                        metrics_cfg,
+                                        measurement_features, theoretical, metrics_cfg,
                                         lipid_nm=float(record["lipid_nm"]),
                                         aqueous_nm=float(record["aqueous_nm"]),
                                         roughness_A=float(record["roughness_A"]),
                                         measurement_quality=measurement_quality_result,
                                     )
                                     full_record = {
-                                        "lipid_nm": float(record["lipid_nm"]),
-                                        "aqueous_nm": float(record["aqueous_nm"]),
-                                        "roughness_A": float(record["roughness_A"]),
+                                        "lipid_nm": record["lipid_nm"],
+                                        "aqueous_nm": record["aqueous_nm"],
+                                        "roughness_A": record["roughness_A"],
+                                        **{f"score_{k}": v for k, v in scores.items()},
                                     }
-                                    for key, value in scores.items():
-                                        full_record[f"score_{key}"] = float(value)
-                                    for metric, diag in diagnostics.items():
-                                        for diag_key, diag_val in diag.items():
-                                            full_record[f"{metric}_{diag_key}"] = float(diag_val)
-                                    coarse_full.append(full_record)
+                                    coarse_full_records.append(full_record)
                                 
-                                # Combine and deduplicate
-                                all_records_df = pd.DataFrame(coarse_full + results_df.to_dict('records'))
-                                results_df = all_records_df.drop_duplicates(subset=["lipid_nm", "aqueous_nm", "roughness_A"], keep="first")
-                                results_df = results_df.sort_values("score_composite", ascending=False).reset_index(drop=True)
-                                evaluated = len(coarse_full) + evaluated
-                        else:
-                            # Fallback to regular search if coarse pass fails
-                            lipid_vals = generate_parameter_values(config["parameters"]["lipid"], stride)
-                            aqueous_vals = generate_parameter_values(config["parameters"]["aqueous"], stride)
-                            rough_vals = generate_parameter_values(config["parameters"]["roughness"], stride)
-                            results_df, evaluated = run_inline_grid_search(
-                                single_spectrum,
-                                wavelengths,
-                                measurement_features,
-                                analysis_cfg,
-                                metrics_cfg,
-                                lipid_vals,
-                                aqueous_vals,
-                                rough_vals,
-                                max_results,
-                                measurement_quality=measurement_quality_result,
-                            )
+                                if coarse_full_records:
+                                    coarse_full_df = pd.DataFrame(coarse_full_records)
+                                    results_df = pd.concat([results_df, coarse_full_df], ignore_index=True)
+                                    results_df = results_df.drop_duplicates(
+                                        subset=["lipid_nm", "aqueous_nm", "roughness_A"], keep="first"
+                                    )
+                                    results_df = results_df.sort_values("score_composite", ascending=False).reset_index(drop=True)
+                            
+                            evaluated = len(results_df)
                     else:
                         # Use random or systematic grid search
                         lipid_vals = generate_parameter_values(config["parameters"]["lipid"], stride)
@@ -1836,17 +1810,7 @@ def main():
                         "elapsed_time_formatted": str(elapsed_timedelta),
                     }
 
-            # Try to get cache entry - first try the current cache_key, then fallback to last used key
             cache_entry = st.session_state.get(cache_key)
-            if not cache_entry:
-                # Fallback: try to restore from last known cache key (in case selected_file changed)
-                last_cache_key = st.session_state.get("_last_grid_search_cache_key")
-                if last_cache_key and last_cache_key in st.session_state:
-                    cache_entry = st.session_state.get(last_cache_key)
-                    # Update cache_key to match the restored entry
-                    if cache_entry:
-                        cache_key = last_cache_key
-            
             if cache_entry:
                 results_df = cache_entry["results"]
                 evaluated = cache_entry.get("evaluated", len(results_df))
@@ -1930,7 +1894,7 @@ def main():
                         threshold_high = float(edge_case_cfg.get("threshold_high_score", 0.9))
                         threshold_low = float(edge_case_cfg.get("threshold_low_score", 0.3))
                         threshold_no_fit = float(edge_case_cfg.get("threshold_no_fit", 0.4))
-                        acceptable_ranges = edge_case_cfg.get("client_accepted_ranges", None)
+                        acceptable_ranges = edge_case_cfg.get("acceptable_ranges", None)
                         results_df = flag_edge_cases(
                             results_df, 
                             config, 
@@ -1959,6 +1923,18 @@ def main():
                     
                     # Client Reference Scoring - compare with known client best fits (if enabled)
                     if enable_client_ref and client_lipid is not None:
+                        # Compute measurement_features if not already computed (e.g., when viewing cached results)
+                        if 'measurement_features' not in dir() or measurement_features is None:
+                            measurement_features = prepare_measurement(selected_measurement, analysis_cfg)
+                        if 'measurement_quality_result' not in dir():
+                            quality_cfg = analysis_cfg.get("quality_gates", {})
+                            measurement_quality_result, _ = measurement_quality_score(
+                                measurement_features,
+                                min_peaks=quality_cfg.get("min_peaks"),
+                                min_signal_amplitude=quality_cfg.get("min_signal_amplitude"),
+                                min_wavelength_span_nm=quality_cfg.get("min_wavelength_span_nm"),
+                            )
+                        
                         # Remove any existing entries with these exact parameters (we'll add our own at top)
                         results_df = results_df[
                             ~((results_df["lipid_nm"] == client_lipid) & 
@@ -2020,23 +1996,6 @@ def main():
                     
                     display_df = results_df.head(top_k_display)
                     
-                    # Add visual indicator for reference row
-                    display_df = display_df.copy()
-                    display_df["⭐"] = ""
-                    
-                    # Mark reference row (either by flag or by parameter match)
-                    if "_is_reference" in display_df.columns:
-                        display_df.loc[display_df["_is_reference"] == True, "⭐"] = "⭐"
-                    elif enable_client_ref and client_lipid is not None:
-                        # Fallback: check by parameters
-                        for idx in display_df.index:
-                            row = display_df.loc[idx]
-                            if (abs(row["lipid_nm"] - client_lipid) < 0.1 and
-                                abs(row["aqueous_nm"] - client_aqueous) < 0.1 and
-                                abs(row["roughness_A"] - client_roughness) < 1.0):
-                                display_df.loc[idx, "⭐"] = "⭐"
-                                break  # Only mark first occurrence
-                    
                     # Only show edge case summary if edge cases appear in the displayed results
                     if "edge_case_flag" in display_df.columns:
                         edge_cases_in_display = display_df[display_df["edge_case_flag"] == True]
@@ -2050,37 +2009,30 @@ def main():
                                 reason_text = ", ".join([f"{reason}: {count}" for reason, count in reason_counts.items()])
                                 st.caption(f"Edge case types: {reason_text}")
                     
-                    # Highlight edge cases and reference in display
+                    # Highlight edge cases in display
+                    if "edge_case_flag" in display_df.columns:
+                        # Create styled dataframe with edge case indicators
                         display_df_styled = display_df.copy()
-                    
-                    # Add edge case indicator if edge case flag exists
-                    if "edge_case_flag" in display_df_styled.columns:
-                        if "⚠️" not in display_df_styled.columns:
-                            display_df_styled["⚠️"] = ""
+                        # Add visual indicator column
                         display_df_styled["⚠️"] = display_df_styled["edge_case_flag"].apply(lambda x: "⚠️" if x else "")
-                    
-                    # Reorder columns to show indicators first, exclude internal columns
-                    indicator_cols = []
-                    if "⭐" in display_df_styled.columns:
-                        indicator_cols.append("⭐")
-                    if "⚠️" in display_df_styled.columns:
-                        indicator_cols.append("⚠️")
-                    
-                    cols = indicator_cols + [c for c in display_df_styled.columns 
-                                     if c not in indicator_cols and c != "edge_case_flag" and c != "edge_case_reason" 
-                                     and not c.startswith("_") and c != "_is_reference"]
-                    display_df_styled = display_df_styled[cols]
-                    st.dataframe(display_df_styled, use_container_width=True)
-                    
-                    # Show edge case details in expander
-                    if "edge_case_flag" in display_df.columns and display_df["edge_case_flag"].any():
-                        with st.expander("🔍 Edge Case Details", expanded=False):
-                            edge_display = display_df[display_df["edge_case_flag"] == True][
-                                ["lipid_nm", "aqueous_nm", "roughness_A", "score_composite", "edge_case_reason"]
-                            ]
-                            for idx, row in edge_display.iterrows():
-                                st.write(f"**Rank {idx + 1}**: {row['edge_case_reason']}")
-                                st.write(f"  Parameters: L={row['lipid_nm']:.0f}nm, A={row['aqueous_nm']:.0f}nm, R={row['roughness_A']:.0f}Å, Score={row['score_composite']:.4f}")
+                        # Reorder columns to show flag first, exclude internal columns
+                        cols = ["⚠️"] + [c for c in display_df_styled.columns 
+                                         if c != "⚠️" and c != "edge_case_flag" and c != "edge_case_reason" 
+                                         and not c.startswith("_")]
+                        display_df_styled = display_df_styled[cols]
+                        st.dataframe(display_df_styled, use_container_width=True)
+                        
+                        # Show edge case details in expander
+                        if display_df["edge_case_flag"].any():
+                            with st.expander("🔍 Edge Case Details", expanded=False):
+                                edge_display = display_df[display_df["edge_case_flag"] == True][
+                                    ["lipid_nm", "aqueous_nm", "roughness_A", "score_composite", "edge_case_reason"]
+                                ]
+                                for idx, row in edge_display.iterrows():
+                                    st.write(f"**Rank {idx + 1}**: {row['edge_case_reason']}")
+                                    st.write(f"  Parameters: L={row['lipid_nm']:.0f}nm, A={row['aqueous_nm']:.0f}nm, R={row['roughness_A']:.0f}Å, Score={row['score_composite']:.4f}")
+                    else:
+                        st.dataframe(display_df, use_container_width=True)
                     options = list(display_df.index)
                     selection = st.selectbox(
                         "Select a candidate to apply", options=options, format_func=lambda idx: f"Rank {idx + 1}"
@@ -2092,11 +2044,6 @@ def main():
                             "aqueous_slider": float(row["aqueous_nm"]),
                             "rough_slider": float(row["roughness_A"]),
                         }
-                        # Preserve the cache entry and key to prevent loss on rerun
-                        # Store the cache_key in session state so it can be retrieved after rerun
-                        if cache_entry:
-                            st.session_state[cache_key] = cache_entry
-                            st.session_state["_last_grid_search_cache_key"] = cache_key
                         st.rerun()
             else:
                 st.info("Run the grid search to see ranked candidates.")
