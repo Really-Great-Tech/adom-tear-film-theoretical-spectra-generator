@@ -6,18 +6,20 @@ scoring that we developed for visually correct fits (no criss-crossing).
 
 This demonstrates how to use PyElli for auto-fitting tear film spectra.
 
-Author: RGT Team
-Date: December 2025
+Roughness Modeling:
+    Uses pyElli's BruggemanEMA + VaryingMixtureLayer for proper interface roughness
+    modeling between the mucus layer and corneal epithelium substrate.
 """
 
 import logging
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple, Any
+from typing import Dict, List, Optional, Tuple, Any, Callable
 import sys
 
 import numpy as np
 import pandas as pd
 from dataclasses import dataclass
+from scipy.special import erf
 
 # Add project root for imports
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
@@ -54,6 +56,88 @@ class PyElliResult:
 # PyElli Library Integration
 # =============================================================================
 
+def create_bruggeman_roughness_layer(
+    wavelengths_nm: np.ndarray,
+    mucus_n: np.ndarray,
+    mucus_k: np.ndarray,
+    substrate_n: np.ndarray,
+    substrate_k: np.ndarray,
+    roughness_angstrom: float,
+    num_divisions: int = 20,
+    use_error_function: bool = True,
+):
+    """
+    Create interface roughness layer using pyElli's BruggemanEMA + VaryingMixtureLayer.
+    
+    This is the proper way to model interface roughness between mucus and substrate.
+    Uses Bruggeman Effective Medium Approximation which is the gold standard for
+    rough interface modeling in ellipsometry.
+    
+    Args:
+        wavelengths_nm: Wavelength array in nm
+        mucus_n, mucus_k: Mucus layer optical constants
+        substrate_n, substrate_k: Substrate optical constants
+        roughness_angstrom: Interface roughness in Angstroms (LTA range: 300-3000 Å)
+        num_divisions: Number of slices for the graded layer (default: 20)
+        use_error_function: If True, use error function profile (more physical).
+                           If False, use linear profile.
+    
+    Returns:
+        VaryingMixtureLayer configured with BruggemanEMA
+    """
+    from elli.dispersions.table_index import Table
+    from elli.materials import IsotropicMaterial, BruggemanEMA
+    from elli.structure import VaryingMixtureLayer
+    
+    roughness_nm = roughness_angstrom / 10.0
+    
+    # Create dispersions from n,k data
+    mucus_disp = Table(wavelengths_nm, mucus_n + 1j * mucus_k)
+    substrate_disp = Table(wavelengths_nm, substrate_n + 1j * substrate_k)
+    
+    # Create isotropic materials
+    mucus_mat = IsotropicMaterial(mucus_disp)
+    substrate_mat = IsotropicMaterial(substrate_disp)
+    
+    # Create Bruggeman EMA mixture
+    # host = mucus (fraction=0 means 100% mucus/host)
+    # guest = substrate (fraction=1 means 100% substrate/guest)
+    bruggeman_mixture = BruggemanEMA(mucus_mat, substrate_mat, fraction=0.5)
+    
+    # Define fraction modulation profile
+    if use_error_function:
+        def fraction_profile(z_normalized: float) -> float:
+            """
+            Error function profile for smooth physical transition.
+            z_normalized: 0 (top/mucus side) to 1 (bottom/substrate side)
+            Returns: fraction of guest (substrate), 0 → 1
+            """
+            # Scale to ±3σ range for proper error function coverage
+            z_centered = (z_normalized - 0.5) * 6
+            return float(0.5 * (1 + erf(z_centered / np.sqrt(2))))
+    else:
+        def fraction_profile(z_normalized: float) -> float:
+            """Linear profile: z=0 → f=0 (mucus), z=1 → f=1 (substrate)."""
+            return float(z_normalized)
+    
+    # Create VaryingMixtureLayer with Bruggeman EMA
+    # pyElli handles the internal subdivision and EMA calculations
+    roughness_layer = VaryingMixtureLayer(
+        material=bruggeman_mixture,
+        thickness=roughness_nm,
+        div=num_divisions,
+        fraction_modulation=fraction_profile,
+    )
+    
+    logger.debug(
+        f'🔬 Created Bruggeman roughness layer: {roughness_angstrom:.0f} Å '
+        f'({roughness_nm:.1f} nm), {num_divisions} divisions, '
+        f'profile={"error_function" if use_error_function else "linear"}'
+    )
+    
+    return roughness_layer
+
+
 def calculate_reflectance_pyelli(
     wavelengths_nm: np.ndarray,
     lipid_n: np.ndarray,
@@ -67,30 +151,37 @@ def calculate_reflectance_pyelli(
     mucus_thickness_nm: float,
     substratum_n: np.ndarray,
     substratum_k: np.ndarray,
-    roughness_angstrom: float = 0.0,  # Roughness in Angstroms (LTA uses 300-3000 Å)
-    enable_roughness: bool = False,  # Disable roughness by default - adds complexity without clear benefit
+    roughness_angstrom: float = 0.0,
+    enable_roughness: bool = True,
+    num_roughness_divisions: int = 20,
+    use_error_function_profile: bool = True,
 ) -> np.ndarray:
     """
-    Calculate theoretical reflectance using the actual pyElli library.
+    Calculate theoretical reflectance using pyElli with Bruggeman EMA roughness.
     
-    This uses the proper pyElli TMM implementation with optional roughness modeling via EMA.
+    This uses pyElli's Transfer Matrix Method with proper interface roughness
+    modeling via BruggemanEMA + VaryingMixtureLayer.
     
-    NOTE: Roughness modeling is disabled by default because:
-    1. It significantly increases computation time (adds multiple sublayers)
-    2. It doesn't appear to improve fit quality in practice
-    3. pyElli's simplified EMA may not match LTA's proprietary roughness model
+    Structure: Air → Lipid → Aqueous → Mucus → [Roughness Layer] → Substrate
+    
+    The roughness layer models the graded interface between the mucus (glycocalyx)
+    and the corneal epithelium substrate using Bruggeman Effective Medium
+    Approximation - the gold standard for interface roughness in ellipsometry.
     
     Args:
         wavelengths_nm: Wavelength array in nanometers
-        lipid_n, lipid_k: Lipid layer refractive index and extinction coefficient arrays
+        lipid_n, lipid_k: Lipid layer optical constants
         lipid_thickness_nm: Lipid layer thickness in nm
-        aqueous_n, aqueous_k: Aqueous layer n,k arrays
+        aqueous_n, aqueous_k: Aqueous layer optical constants
         aqueous_thickness_nm: Aqueous layer thickness in nm
-        mucus_n, mucus_k: Mucus layer n,k arrays
+        mucus_n, mucus_k: Mucus layer optical constants
         mucus_thickness_nm: Mucus layer thickness in nm (LTA uses fixed 500nm)
-        substratum_n, substratum_k: Substrate (struma) n,k arrays
-        roughness_angstrom: Surface roughness in Angstroms (LTA range: 300-3000 Å)
-        enable_roughness: If False, roughness is ignored (faster, default)
+        substratum_n, substratum_k: Substrate (struma) optical constants
+        roughness_angstrom: Interface roughness in Angstroms (LTA range: 300-3000 Å)
+        enable_roughness: If True, model interface roughness with Bruggeman EMA
+        num_roughness_divisions: Number of slices for roughness gradient (default: 20)
+        use_error_function_profile: If True, use error function (more physical).
+                                    If False, use linear transition.
         
     Returns:
         Theoretical reflectance array
@@ -101,7 +192,6 @@ def calculate_reflectance_pyelli(
         from elli.materials import IsotropicMaterial
         
         # Create material dispersions from n,k data
-        # pyElli expects complex refractive index: n + i*k
         lipid_nk = lipid_n + 1j * lipid_k
         aqueous_nk = aqueous_n + 1j * aqueous_k
         mucus_nk = mucus_n + 1j * mucus_k
@@ -113,83 +203,51 @@ def calculate_reflectance_pyelli(
         mucus_disp = Table(wavelengths_nm, mucus_nk)
         substratum_disp = Table(wavelengths_nm, substratum_nk)
         
-        # Wrap in IsotropicMaterial (required by pyElli)
+        # Wrap in IsotropicMaterial
         lipid_mat = IsotropicMaterial(lipid_disp)
         aqueous_mat = IsotropicMaterial(aqueous_disp)
         mucus_mat = IsotropicMaterial(mucus_disp)
         substrate_mat = IsotropicMaterial(substratum_disp)
         
-        # Build layers
-        # Note: elli.Layer takes (material, thickness) as positional args, not d= keyword
+        # Build layer stack: Air → Lipid → Aqueous → Mucus → [Roughness] → Substrate
         layers = [
             elli.Layer(lipid_mat, lipid_thickness_nm),
             elli.Layer(aqueous_mat, aqueous_thickness_nm),
+            elli.Layer(mucus_mat, mucus_thickness_nm),
         ]
         
-        # Add main mucus layer first (LTA uses fixed 500nm)
-        layers.append(elli.Layer(mucus_mat, mucus_thickness_nm))
-        
-        # Add roughness modeling if specified (EMA - Effective Medium Approximation)
-        # Roughness is modeled as a graded interface layer between mucus and substrate
-        # DISABLED BY DEFAULT: Adds complexity and runtime without clear benefit
+        # Add Bruggeman roughness layer if enabled
         if enable_roughness and roughness_angstrom > 0:
-            # Convert roughness from Angstroms to nm
-            roughness_nm = roughness_angstrom / 10.0
-            
-            logger.debug(f"🔬 Applying roughness modeling: {roughness_angstrom:.1f} Å ({roughness_nm:.1f} nm)")
-            
-            # EMA: Create a graded layer representing the rough interface
-            # The effective refractive index is a mixture of mucus and substrate
-            # Using simplified linear mixing for effective refractive index
-            # More accurate would be Bruggeman EMA, but this approximation works for thin layers
-            
-            # Create EMA layer: split roughness into sub-layers for graded interface
-            num_sublayers = max(3, int(roughness_nm / 5.0))  # At least 3 sublayers, ~5nm per sublayer
-            sublayer_thickness = roughness_nm / num_sublayers
-            
-            logger.debug(f"   Creating {num_sublayers} EMA sublayers, {sublayer_thickness:.2f} nm each")
-            
-            for i in range(num_sublayers):
-                # Volume fraction: transitions from mucus (f=1) to substrate (f=0)
-                f = 1.0 - (i + 0.5) / num_sublayers  # Linear transition
-                
-                # Effective refractive index using linear mixing (simplified EMA)
-                # For each wavelength, compute effective n and k
-                n_eff = np.sqrt(f * mucus_n**2 + (1-f) * substratum_n**2)
-                k_eff = f * mucus_k + (1-f) * substratum_k
-                
-                # Create effective medium dispersion (per-wavelength)
-                ema_nk = n_eff + 1j * k_eff
-                ema_disp = Table(wavelengths_nm, ema_nk)
-                ema_mat = IsotropicMaterial(ema_disp)
-                
-                # elli.Layer takes (material, thickness) as positional args
-                layers.append(elli.Layer(ema_mat, sublayer_thickness))
+            roughness_layer = create_bruggeman_roughness_layer(
+                wavelengths_nm,
+                mucus_n, mucus_k,
+                substratum_n, substratum_k,
+                roughness_angstrom,
+                num_divisions=num_roughness_divisions,
+                use_error_function=use_error_function_profile,
+            )
+            layers.append(roughness_layer)
         else:
-            logger.debug("⚠️ No roughness modeling (roughness_angstrom = 0)")
+            logger.debug('⚠️ Roughness modeling disabled or roughness=0')
         
-        # Build structure: Air -> Lipid -> Aqueous -> [Roughness EMA layers] -> Mucus -> Substrate
+        # Build structure
         structure = elli.Structure(
-            elli.AIR,  # Front medium (air)
+            elli.AIR,
             layers,
-            substrate_mat  # Back medium (substrate)
+            substrate_mat,
         )
         
-        # Evaluate structure at normal incidence (theta_i = 0)
+        # Evaluate at normal incidence
         result = structure.evaluate(wavelengths_nm, theta_i=0.0)
         
-        # Get total reflectance (R is the total reflectance)
-        reflectance = result.R
-        
-        return np.array(reflectance)
+        return np.array(result.R)
         
     except ImportError:
         logger.error('❌ pyElli not installed. Run: pip install pyElli')
         raise
     except Exception as e:
-        logger.error(f'Error calculating pyElli reflectance: {e}')
-        # Fallback to custom TMM if pyElli fails
-        logger.warning('Falling back to custom TMM implementation')
+        logger.error(f'❌ Error calculating pyElli reflectance: {e}')
+        logger.warning('⚠️ Falling back to custom TMM implementation')
         return transfer_matrix_reflectance_fallback(
             wavelengths_nm,
             [
@@ -464,19 +522,25 @@ class PyElliGridSearch:
         wavelengths: np.ndarray,
         lipid_nm: float,
         aqueous_nm: float,
-        mucus_nm: float,  # Actually maps to roughness in Angstroms (LTA: 300-3000 Å)
+        roughness_nm: float,
+        enable_roughness: bool = True,
+        use_error_function_profile: bool = True,
     ) -> np.ndarray:
         """
-        Calculate theoretical spectrum using the actual pyElli library.
+        Calculate theoretical spectrum using pyElli with Bruggeman EMA roughness.
         
-        This uses pyElli's proper TMM implementation with roughness modeling.
+        This uses pyElli's TMM with proper interface roughness modeling via
+        BruggemanEMA + VaryingMixtureLayer.
         
         Args:
             wavelengths: Wavelength array in nm
             lipid_nm: Lipid layer thickness in nm
             aqueous_nm: Aqueous layer thickness in nm
-            mucus_nm: Roughness in Angstroms (LTA range: 300-3000 Å)
-                      Note: Mucus layer thickness is fixed at 500nm in LTA
+            roughness_nm: Interface roughness in nm (will be converted to Angstroms)
+                         LTA range: 30-300 nm = 300-3000 Å
+                         Note: Mucus layer thickness is fixed at 500nm in LTA
+            enable_roughness: If True, model interface roughness with Bruggeman EMA
+            use_error_function_profile: If True, use error function profile
             
         Returns:
             Theoretical reflectance array
@@ -490,13 +554,10 @@ class PyElliGridSearch:
         # LTA uses fixed mucus thickness of 500nm
         mucus_thickness_nm = 500.0
         
-        # Convert mucus_nm (which is actually roughness in Angstroms) to Angstroms
-        # The grid search uses nm, but LTA uses Angstroms, so we need to convert
-        # mucus_range: (30, 300, 30) nm = (300, 3000, 300) Angstroms
-        roughness_angstrom = mucus_nm * 10.0  # Convert nm to Angstroms
+        # Convert roughness from nm to Angstroms (LTA uses Angstroms internally)
+        roughness_angstrom = roughness_nm * 10.0
         
-        # Use actual pyElli library for TMM calculation
-        # Roughness disabled by default - doesn't improve fit and slows computation
+        # Use pyElli with Bruggeman EMA roughness modeling
         return calculate_reflectance_pyelli(
             wavelengths,
             lipid_n, lipid_k, lipid_nm,
@@ -504,7 +565,9 @@ class PyElliGridSearch:
             mucus_n, mucus_k, mucus_thickness_nm,
             substratum_n, substratum_k,
             roughness_angstrom=roughness_angstrom,
-            enable_roughness=False,  # Disabled: no improvement, increases runtime
+            enable_roughness=enable_roughness,
+            num_roughness_divisions=20,
+            use_error_function_profile=use_error_function_profile,
         )
     
     def _align_spectra(
@@ -557,21 +620,26 @@ class PyElliGridSearch:
         self,
         wavelengths: np.ndarray,
         measured: np.ndarray,
-        lipid_range: Tuple[float, float, float] = (0, 400, 60),    # Full range, larger step for ~966 combinations: (min, max, step) nm
-        aqueous_range: Tuple[float, float, float] = (-20, 6000, 270),  # Full range, larger step for ~966 combinations: (min, max, step) nm
-        mucus_range: Tuple[float, float, float] = (30, 300, 50),  # Full range, larger step for ~966 combinations: (min, max, step) nm
+        lipid_range: Tuple[float, float, float] = (0, 400, 60),
+        aqueous_range: Tuple[float, float, float] = (0, 6000, 270),
+        roughness_range: Tuple[float, float, float] = (30, 300, 50),
         top_k: int = 10,
+        enable_roughness: bool = True,
     ) -> List[PyElliResult]:
         """
         Run coarse grid search with monotonic alignment scoring.
         
+        Uses Bruggeman EMA for interface roughness modeling.
+        
         Args:
             wavelengths: Wavelength array
             measured: Measured reflectance
-            lipid_range: (min, max, step) for lipid thickness
-            aqueous_range: (min, max, step) for aqueous thickness
-            mucus_range: (min, max, step) for mucus thickness
+            lipid_range: (min, max, step) for lipid thickness in nm
+            aqueous_range: (min, max, step) for aqueous thickness in nm
+            roughness_range: (min, max, step) for interface roughness in nm
+                            (30-300 nm = 300-3000 Å in LTA units)
             top_k: Number of top results to return
+            enable_roughness: If True, use Bruggeman EMA roughness modeling
             
         Returns:
             List of top results sorted by score (descending)
@@ -581,32 +649,34 @@ class PyElliGridSearch:
         # Generate parameter grid
         lipid_values = np.arange(lipid_range[0], lipid_range[1] + 1, lipid_range[2])
         aqueous_values = np.arange(aqueous_range[0], aqueous_range[1] + 1, aqueous_range[2])
-        mucus_values = np.arange(mucus_range[0], mucus_range[1] + 1, mucus_range[2])
+        roughness_values = np.arange(roughness_range[0], roughness_range[1] + 1, roughness_range[2])
         
-        # Filter out negative values - pyElli rejects them and falls back to slow custom TMM
+        # Filter out negative values
         lipid_values = lipid_values[lipid_values >= 0]
         aqueous_values = aqueous_values[aqueous_values >= 0]
-        mucus_values = mucus_values[mucus_values >= 0]
+        roughness_values = roughness_values[roughness_values >= 0]
         
-        total = len(lipid_values) * len(aqueous_values) * len(mucus_values)
-        logger.info(f"🔍 Running grid search: {total} combinations (filtered out negative thicknesses)")
+        total = len(lipid_values) * len(aqueous_values) * len(roughness_values)
+        roughness_status = 'Bruggeman EMA' if enable_roughness else 'disabled'
+        logger.info(f'🔍 Running grid search: {total} combinations (roughness: {roughness_status})')
         
         for lipid in lipid_values:
             for aqueous in aqueous_values:
-                for mucus in mucus_values:
-                    # Calculate theoretical spectrum
+                for roughness in roughness_values:
+                    # Calculate theoretical spectrum with Bruggeman roughness
                     theoretical = self.calculate_theoretical_spectrum(
-                        wavelengths, lipid, aqueous, mucus
+                        wavelengths, lipid, aqueous, roughness,
+                        enable_roughness=enable_roughness,
                     )
                     
-                    # Align using linear regression (better than simple scaling!)
+                    # Align using linear regression
                     theoretical_scaled = self._align_spectra(
                         measured, theoretical, 
                         focus_min=600.0, focus_max=1100.0,
                         wavelengths=wavelengths
                     )
                     
-                    # Score using monotonic alignment (NOT simple RMSE!)
+                    # Score using monotonic alignment
                     score_result = calculate_monotonic_alignment_score(
                         wavelengths, measured, theoretical_scaled
                     )
@@ -614,26 +684,25 @@ class PyElliGridSearch:
                     results.append(PyElliResult(
                         lipid_nm=float(lipid),
                         aqueous_nm=float(aqueous),
-                        mucus_nm=float(mucus),
-                        score=score_result["score"],
-                        rmse=score_result["rmse"],
-                        correlation=score_result["correlation"],
-                        crossing_count=score_result["crossing_count"],
+                        mucus_nm=float(roughness),  # Keep as mucus_nm for compatibility
+                        score=score_result['score'],
+                        rmse=score_result['rmse'],
+                        correlation=score_result['correlation'],
+                        crossing_count=score_result['crossing_count'],
                         theoretical_spectrum=theoretical_scaled,
                         wavelengths=wavelengths,
                     ))
         
-        # Sort all results by score (descending) - no hard rejection
+        # Sort by score (descending)
         results.sort(key=lambda x: x.score, reverse=True)
         
-        # Log top result
         if results:
             best = results[0]
             logger.info(
-                f"✅ Best fit: Lipid={best.lipid_nm:.1f}nm, "
-                f"Aqueous={best.aqueous_nm:.1f}nm, Mucus={best.mucus_nm:.1f}nm, "
-                f"Score={best.score:.4f}, Crossings={best.crossing_count}, "
-                f"Correlation={best.correlation:.3f}"
+                f'✅ Best fit: Lipid={best.lipid_nm:.1f}nm, '
+                f'Aqueous={best.aqueous_nm:.1f}nm, Roughness={best.mucus_nm:.1f}nm, '
+                f'Score={best.score:.4f}, Crossings={best.crossing_count}, '
+                f'Correlation={best.correlation:.3f}'
             )
         
         return results[:top_k]
@@ -645,8 +714,8 @@ class PyElliGridSearch:
         best_result: PyElliResult,
         lipid_step: float = 5.0,
         aqueous_step: float = 50.0,
-        mucus_step: float = 25.0,
-        search_radius: float = 1.5,  # Multiplier for search window
+        roughness_step: float = 25.0,
+        enable_roughness: bool = True,
     ) -> List[PyElliResult]:
         """
         Fine-grain search around best coarse result.
@@ -655,36 +724,37 @@ class PyElliGridSearch:
             wavelengths: Wavelength array
             measured: Measured reflectance
             best_result: Best result from coarse search
-            lipid_step: Fine step for lipid
-            aqueous_step: Fine step for aqueous
-            mucus_step: Fine step for mucus
-            search_radius: How far around best to search (in coarse steps)
+            lipid_step: Fine step for lipid (nm)
+            aqueous_step: Fine step for aqueous (nm)
+            roughness_step: Fine step for roughness (nm)
+            enable_roughness: If True, use Bruggeman EMA roughness
             
         Returns:
             Refined top results
         """
         # Define search window around best
         lipid_range = (
-            max(20, best_result.lipid_nm - 30),
-            min(200, best_result.lipid_nm + 30),
+            max(0, best_result.lipid_nm - 30),
+            min(400, best_result.lipid_nm + 30),
             lipid_step
         )
         aqueous_range = (
-            max(500, best_result.aqueous_nm - 300),
+            max(0, best_result.aqueous_nm - 300),
             min(6000, best_result.aqueous_nm + 300),
             aqueous_step
         )
-        mucus_range = (
-            max(50, best_result.mucus_nm - 100),
-            min(800, best_result.mucus_nm + 100),
-            mucus_step
+        roughness_range = (
+            max(30, best_result.mucus_nm - 100),
+            min(300, best_result.mucus_nm + 100),
+            roughness_step
         )
         
-        logger.info(f"🔬 Refining around best result...")
+        logger.info(f'🔬 Refining around best result...')
         return self.run_grid_search(
             wavelengths, measured,
-            lipid_range, aqueous_range, mucus_range,
-            top_k=10
+            lipid_range, aqueous_range, roughness_range,
+            top_k=10,
+            enable_roughness=enable_roughness,
         )
 
 
@@ -693,23 +763,23 @@ class PyElliGridSearch:
 # =============================================================================
 
 def demo():
-    """Run a demo of PyElli grid search with monotonic alignment scoring."""
+    """Run a demo of PyElli grid search with Bruggeman EMA roughness modeling."""
     import matplotlib.pyplot as plt
     
     # Setup paths
-    materials_path = PROJECT_ROOT / "data" / "Materials"
-    sample_data_path = PROJECT_ROOT / "exploration" / "sample_data" / "good_fit" / "1"
+    materials_path = PROJECT_ROOT / 'data' / 'Materials'
+    sample_data_path = PROJECT_ROOT / 'exploration' / 'sample_data' / 'good_fit' / '1'
     
     # Find sample file
-    sample_files = list(sample_data_path.glob("(Run)spectra_*.txt"))
-    sample_files = [f for f in sample_files if "_BestFit" not in f.name]
+    sample_files = list(sample_data_path.glob('(Run)spectra_*.txt'))
+    sample_files = [f for f in sample_files if '_BestFit' not in f.name]
     
     if not sample_files:
-        logger.error("No sample files found!")
+        logger.error('❌ No sample files found!')
         return
     
     sample_file = sample_files[0]
-    logger.info(f"📂 Loading sample: {sample_file.name}")
+    logger.info(f'📂 Loading sample: {sample_file.name}')
     
     # Load measured spectrum
     wavelengths, measured = load_measured_spectrum(sample_file)
@@ -717,40 +787,43 @@ def demo():
     # Initialize grid search
     grid_search = PyElliGridSearch(materials_path)
     
-    # Run coarse search
-    print("\n" + "="*60)
-    print("COARSE GRID SEARCH (with monotonic alignment scoring)")
-    print("="*60)
+    # Run coarse search with Bruggeman EMA roughness
+    print('\n' + '=' * 70)
+    print('COARSE GRID SEARCH (Bruggeman EMA roughness + monotonic alignment)')
+    print('=' * 70)
     
     coarse_results = grid_search.run_grid_search(
         wavelengths, measured,
         lipid_range=(20, 150, 20),
         aqueous_range=(1000, 4500, 250),
-        mucus_range=(100, 500, 100),
+        roughness_range=(30, 270, 60),  # 30-270 nm = 300-2700 Å
+        enable_roughness=True,
     )
     
-    print("\nTop 5 results:")
-    print("-" * 80)
-    print(f"{'Rank':<6} {'Lipid(nm)':<12} {'Aqueous(nm)':<14} {'Mucus(nm)':<12} {'Score':<10} {'RMSE':<10} {'Crossings':<10}")
-    print("-" * 80)
+    print('\nTop 5 results:')
+    print('-' * 90)
+    header = f"{'Rank':<6} {'Lipid(nm)':<12} {'Aqueous(nm)':<14} {'Roughness(nm)':<14} {'Score':<10} {'RMSE':<10} {'Crossings':<10}"
+    print(header)
+    print('-' * 90)
     
     for i, r in enumerate(coarse_results[:5], 1):
-        print(f"{i:<6} {r.lipid_nm:<12.1f} {r.aqueous_nm:<14.1f} {r.mucus_nm:<12.1f} {r.score:<10.4f} {r.rmse:<10.6f} {r.crossing_count:<10}")
+        print(f'{i:<6} {r.lipid_nm:<12.1f} {r.aqueous_nm:<14.1f} {r.mucus_nm:<14.1f} {r.score:<10.4f} {r.rmse:<10.6f} {r.crossing_count:<10}')
     
     # Refine around best
     if coarse_results:
-        print("\n" + "="*60)
-        print("FINE REFINEMENT")
-        print("="*60)
+        print('\n' + '=' * 70)
+        print('FINE REFINEMENT (Bruggeman EMA)')
+        print('=' * 70)
         
         refined_results = grid_search.refine_around_best(
-            wavelengths, measured, coarse_results[0]
+            wavelengths, measured, coarse_results[0],
+            enable_roughness=True,
         )
         
-        print("\nRefined Top 5:")
-        print("-" * 80)
+        print('\nRefined Top 5:')
+        print('-' * 90)
         for i, r in enumerate(refined_results[:5], 1):
-            print(f"{i:<6} {r.lipid_nm:<12.1f} {r.aqueous_nm:<14.1f} {r.mucus_nm:<12.1f} {r.score:<10.4f} {r.rmse:<10.6f} {r.crossing_count:<10}")
+            print(f'{i:<6} {r.lipid_nm:<12.1f} {r.aqueous_nm:<14.1f} {r.mucus_nm:<14.1f} {r.score:<10.4f} {r.rmse:<10.6f} {r.crossing_count:<10}')
         
         # Plot best result
         best = refined_results[0]
@@ -761,10 +834,10 @@ def demo():
         plt.subplot(1, 2, 1)
         plt.plot(wavelengths, measured, 'b-', linewidth=2, label='Measured')
         plt.plot(best.wavelengths, best.theoretical_spectrum, 'r--', linewidth=2, 
-                label=f'PyElli TMM (L={best.lipid_nm:.0f}, A={best.aqueous_nm:.0f}, M={best.mucus_nm:.0f})')
+                label=f'PyElli+Bruggeman (L={best.lipid_nm:.0f}, A={best.aqueous_nm:.0f}, R={best.mucus_nm:.0f}nm)')
         plt.xlabel('Wavelength (nm)')
         plt.ylabel('Reflectance')
-        plt.title('PyElli Auto-Fit Result')
+        plt.title('PyElli Auto-Fit with Bruggeman EMA Roughness')
         plt.legend()
         plt.grid(True, alpha=0.3)
         
@@ -779,10 +852,11 @@ def demo():
         plt.grid(True, alpha=0.3)
         
         plt.tight_layout()
-        plt.savefig(PROJECT_ROOT / "exploration" / "pyelli_exploration" / "grid_search_result.png", dpi=150)
+        output_path = PROJECT_ROOT / 'exploration' / 'pyelli_exploration' / 'grid_search_result.png'
+        plt.savefig(output_path, dpi=150)
         plt.show()
         
-        print(f"\n✅ Plot saved to: exploration/pyelli_exploration/grid_search_result.png")
+        print(f'\n✅ Plot saved to: {output_path}')
 
 
 if __name__ == "__main__":
