@@ -29,6 +29,8 @@ from reportlab.platypus import (
 )
 from reportlab.lib.enums import TA_CENTER, TA_LEFT
 
+from src.analysis.measurement_utils import detrend_signal, detect_peaks, detect_valleys
+
 logger = logging.getLogger(__name__)
 
 # Page dimensions for landscape A4
@@ -566,6 +568,8 @@ def generate_pyelli_pdf_report(
     wl_min: float = 600,
     wl_max: float = 1200,
     top_n: int = 10,
+    cutoff_frequency: float = 0.008,
+    peak_prominence: float = 0.0001,
 ) -> bytes:
     """
     Generate PDF report for the PyElli exploration app.
@@ -577,6 +581,8 @@ def generate_pyelli_pdf_report(
         measured_spectrum: Measured reflectance values
         wl_min, wl_max: Wavelength range for plots
         top_n: Number of top results to include
+        cutoff_frequency: Cutoff frequency for detrending
+        peak_prominence: Prominence threshold for peak detection
     """
     fit_results = []
     
@@ -594,6 +600,46 @@ def generate_pyelli_pdf_report(
         # Interpolate measured to match theoretical wavelengths
         meas_interp = np.interp(wl_filtered, meas_wl_filtered, meas_filtered)
         
+        # Compute detrended signals for amplitude analysis
+        try:
+            meas_detrended_arr = detrend_signal(wl_filtered, meas_interp, cutoff_frequency, filter_order=3)
+            theo_detrended_arr = detrend_signal(wl_filtered, theo_filtered, cutoff_frequency, filter_order=3)
+            
+            # Create DataFrames for detrended data
+            measured_detrended = pd.DataFrame({
+                'wavelength': wl_filtered,
+                'detrended': meas_detrended_arr
+            })
+            theoretical_detrended = pd.DataFrame({
+                'wavelength': wl_filtered,
+                'detrended': theo_detrended_arr
+            })
+            
+            # Detect peaks and valleys
+            meas_peaks = detect_peaks(wl_filtered, meas_detrended_arr, prominence=peak_prominence)
+            theo_peaks = detect_peaks(wl_filtered, theo_detrended_arr, prominence=peak_prominence)
+            meas_valleys = detect_valleys(wl_filtered, meas_detrended_arr, prominence=peak_prominence)
+            theo_valleys = detect_valleys(wl_filtered, theo_detrended_arr, prominence=peak_prominence)
+            
+            # Rename columns for consistency with pdf report expectations
+            if len(meas_peaks) > 0:
+                meas_peaks = meas_peaks.rename(columns={'amplitude': 'detrended'})
+            if len(theo_peaks) > 0:
+                theo_peaks = theo_peaks.rename(columns={'amplitude': 'detrended'})
+            if len(meas_valleys) > 0:
+                meas_valleys = meas_valleys.rename(columns={'amplitude': 'detrended'})
+            if len(theo_valleys) > 0:
+                theo_valleys = theo_valleys.rename(columns={'amplitude': 'detrended'})
+                
+        except Exception as e:
+            logger.warning(f'⚠️ Could not compute amplitude analysis for rank {rank}: {e}')
+            measured_detrended = None
+            theoretical_detrended = None
+            meas_peaks = None
+            theo_peaks = None
+            meas_valleys = None
+            theo_valleys = None
+        
         metrics = {
             'correlation': result.correlation,
             'rmse': result.rmse,
@@ -605,19 +651,18 @@ def generate_pyelli_pdf_report(
             lipid_nm=result.lipid_nm,
             aqueous_nm=result.aqueous_nm,
             roughness_or_mucus=result.mucus_nm,
-            param_label='Mucus (nm)',
+            param_label='Roughness (Å)',
             score=result.score,
             metrics=metrics,
             wavelengths=wl_filtered,
             measured_spectrum=meas_interp,
             theoretical_spectrum=theo_filtered,
-            # PyElli doesn't have detrended analysis
-            measured_detrended=None,
-            theoretical_detrended=None,
-            measured_peaks=None,
-            theoretical_peaks=None,
-            measured_valleys=None,
-            theoretical_valleys=None,
+            measured_detrended=measured_detrended,
+            theoretical_detrended=theoretical_detrended,
+            measured_peaks=meas_peaks,
+            theoretical_peaks=theo_peaks,
+            measured_valleys=meas_valleys,
+            theoretical_valleys=theo_valleys,
         ))
     
     return generate_pdf_report(
