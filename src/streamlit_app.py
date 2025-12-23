@@ -1154,7 +1154,7 @@ def main():
                 ))
             
             fig.update_layout(
-                title=f"Spectra and Best Fit Data Overlay for {selected_file}",
+                title=f"Peak and Valley Detection for {selected_file}",
                 xaxis_title="Wavelength (nm)",
                 yaxis_title="Intensity (Detrended)",
                 xaxis_range=[wl_min, wl_max],
