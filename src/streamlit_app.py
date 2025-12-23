@@ -47,6 +47,8 @@ from tear_film_generator import (
     get_project_path,
 )
 
+from pdf_report import generate_pdf_report
+
 
 def clamp_to_step(value: float, min_val: float, step: float) -> float:
     """Snap a value to the nearest step from min_val."""
@@ -2033,14 +2035,62 @@ def main():
                     selection = st.selectbox(
                         "Select a candidate to apply", options=options, format_func=lambda idx: f"Rank {idx + 1}"
                     )
-                    if st.button("Apply Selection", key="apply_grid_selection"):
-                        row = display_df.loc[selection]
-                        st.session_state["pending_slider_update"] = {
-                            "lipid_slider": float(row["lipid_nm"]),
-                            "aqueous_slider": float(row["aqueous_nm"]),
-                            "rough_slider": float(row["roughness_A"]),
-                        }
-                        st.rerun()
+                    
+                    # Action buttons in columns
+                    btn_col1, btn_col2 = st.columns(2)
+                    
+                    with btn_col1:
+                        if st.button("Apply Selection", key="apply_grid_selection"):
+                            row = display_df.loc[selection]
+                            st.session_state["pending_slider_update"] = {
+                                "lipid_slider": float(row["lipid_nm"]),
+                                "aqueous_slider": float(row["aqueous_nm"]),
+                                "rough_slider": float(row["roughness_A"]),
+                            }
+                            st.rerun()
+                    
+                    with btn_col2:
+                        # PDF Export button
+                        pdf_top_n = st.number_input(
+                            "Top N for PDF", min_value=1, max_value=20, value=10, step=1,
+                            help="Number of top fits to include in PDF report"
+                        )
+                        
+                        if st.button("📄 Export PDF Report", key="export_pdf_report"):
+                            with st.spinner(f"Generating PDF report for top {pdf_top_n} fits..."):
+                                try:
+                                    pdf_bytes = generate_pdf_report(
+                                        results_df=results_df,
+                                        measurement_file=selected_file,
+                                        measured_df=selected_measurement,
+                                        single_spectrum_func=single_spectrum,
+                                        wavelengths=wavelengths,
+                                        analysis_cfg=analysis_cfg,
+                                        config=config,
+                                        detrend_func=detrend_dataframe,
+                                        detect_peaks_func=detect_peaks_df,
+                                        detect_valleys_func=detect_valleys_df,
+                                        prepare_theoretical_func=prepare_theoretical_spectrum,
+                                        top_n=pdf_top_n,
+                                    )
+                                    
+                                    # Generate filename with timestamp
+                                    timestamp = time.strftime("%Y%m%d_%H%M%S")
+                                    safe_filename = selected_file.replace('/', '_').replace('\\', '_')
+                                    pdf_filename = f"tear_film_report_{safe_filename}_{timestamp}.pdf"
+                                    
+                                    st.download_button(
+                                        label="⬇️ Download PDF Report",
+                                        data=pdf_bytes,
+                                        file_name=pdf_filename,
+                                        mime="application/pdf",
+                                        key="download_pdf_report"
+                                    )
+                                    st.success(f"✅ PDF report generated! Click above to download.")
+                                except Exception as e:
+                                    st.error(f"❌ Error generating PDF: {str(e)}")
+                                    import traceback
+                                    st.code(traceback.format_exc())
             else:
                 st.info("Run the grid search to see ranked candidates.")
 
