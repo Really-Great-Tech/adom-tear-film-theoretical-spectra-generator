@@ -6,20 +6,20 @@
 parameters:
   # Lipid layer thickness (nm)
   lipid:
-    min: 0          # Expanded below algorithm range (120nm) to allow exploration
-    max: 500         # Expanded above algorithm range (200nm) to allow exploration
+    min: 9           # Minimum accepted lipid thickness
+    max: 250         # Maximum accepted lipid thickness
     step: 5          # Step size
     
   # Aqueous layer thickness (nm)
   aqueous:
-    min: -20         # Expanded below algorithm range (680nm) to allow negative values
-    max: 12000       # Expanded above algorithm range (1200nm) to allow exploration
+    min: 800         # Minimum accepted aqueous thickness
+    max: 12000       # Maximum accepted aqueous thickness
     step: 10         # Step size
     
   # Mucus layer roughness (Angstroms)
   roughness:
-    min: 0           # Expanded below algorithm range (600Å) to allow exploration
-    max: 3000        # Expanded above algorithm range (2600Å) to allow exploration
+    min: 600         # Minimum accepted roughness
+    max: 2750        # Maximum accepted roughness
     step: 50         # Step size
 
 # Fixed Parameters
@@ -74,14 +74,14 @@ analysis:
     # If best fit is outside these, it's flagged as potentially invalid
     acceptable_ranges:
       lipid:
-        min: 0                   # Minimum feasible lipid thickness (nm) - can be 0
-        max: 500                 # Maximum feasible lipid thickness (nm) - wider than search range
+        min: 9                   # Minimum accepted lipid thickness (nm)
+        max: 250                 # Maximum accepted lipid thickness (nm)
       aqueous:
-        min: 0                   # Minimum feasible aqueous thickness (nm) - CAN BE ZERO
-        max: 2000                # Maximum feasible aqueous thickness (nm) - wider than search range
+        min: 800                 # Minimum accepted aqueous thickness (nm)
+        max: 12000               # Maximum accepted aqueous thickness (nm)
       roughness:
-        min: 0                   # Minimum feasible roughness (Å) - can be 0
-        max: 5000                # Maximum feasible roughness (Å) - wider than search range
+        min: 600                 # Minimum accepted roughness (Å)
+        max: 2750                # Maximum accepted roughness (Å)
   grid_search:
     use_temporal_seeding: true
     temporal_window_multiplier: 0.3
@@ -90,9 +90,9 @@ analysis:
     coarse:
       top_k: 50  # Increased to allow more candidates for refinement
       # Coarse search - optimized for ~20 min runtime
-      lipid: {min: 0, max: 500, step: 40}        # Expanded range for broader exploration
-      aqueous: {min: -20, max: 12000, step: 200} # Expanded range including negative values
-      roughness: {min: 0, max: 3000, step: 500}  # Expanded range for broader exploration
+      lipid: {min: 9, max: 250, step: 40}        # Accepted range for lipid
+      aqueous: {min: 800, max: 12000, step: 200} # Accepted range for aqueous
+      roughness: {min: 600, max: 2750, step: 500}  # Accepted range for roughness
     refine:
       lipid: {window_nm: 20, step_nm: 5}
       aqueous: {window_nm: 40, step_nm: 10}
@@ -168,26 +168,26 @@ presets:
   # Quick test - small parameter space around requested values
   quick_test:
     lipid: {min: 125, max: 135, step: 5}      # Around requested 129nm
-    aqueous: {min: 1000, max: 1200, step: 25} # Near max (clamped to algorithm range 680-1200nm)
-    roughness: {min: 2550, max: 2600, step: 50}  # Near stack default (clamped to algorithm range 600-2600Å)
+    aqueous: {min: 1000, max: 1200, step: 25} # Near typical values
+    roughness: {min: 2550, max: 2600, step: 50}  # Near typical values
     
   # Medium resolution scan
   medium_scan:
-    lipid: {min: 120, max: 200, step: 10}
-    aqueous: {min: 700, max: 1200, step: 50}
-    roughness: {min: 1500, max: 2500, step: 100}
+    lipid: {min: 9, max: 250, step: 10}
+    aqueous: {min: 800, max: 3000, step: 50}
+    roughness: {min: 600, max: 2750, step: 100}
     
   # High resolution scan (warning: generates many spectra!)
   high_resolution:
-    lipid: {min: 120, max: 200, step: 2}      # Clamped to algorithm range
-    aqueous: {min: 680, max: 1200, step: 10}  # Clamped to algorithm range
-    roughness: {min: 600, max: 2600, step: 25}  # Clamped to algorithm range
+    lipid: {min: 9, max: 250, step: 2}
+    aqueous: {min: 800, max: 3000, step: 10}
+    roughness: {min: 600, max: 2750, step: 25}
     
   # Lipid thickness focus
   lipid_focus:
-    lipid: {min: 120, max: 200, step: 5}      # Clamped to algorithm range
+    lipid: {min: 9, max: 250, step: 5}
     aqueous: {min: 900, max: 1000, step: 50}  # Keep aqueous relatively constant
-    roughness: {min: 2000, max: 2100, step: 100}  # Keep roughness relatively constant
+    roughness: {min: 1500, max: 1700, step: 100}  # Keep roughness relatively constant
 
 # Active preset (comment out to use manual parameters above)
 # active_preset disabled
