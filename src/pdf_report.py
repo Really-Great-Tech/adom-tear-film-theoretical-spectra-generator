@@ -29,7 +29,12 @@ from reportlab.platypus import (
 )
 from reportlab.lib.enums import TA_CENTER, TA_LEFT
 
-from analysis.measurement_utils import detrend_signal, detect_peaks, detect_valleys
+try:
+    # Try relative import first (when pdf_report.py is run from src/ context)
+    from analysis.measurement_utils import detrend_signal, detect_peaks, detect_valleys
+except ImportError:
+    # Fall back to absolute import (when imported from PyElli app with PROJECT_ROOT in path)
+    from src.analysis.measurement_utils import detrend_signal, detect_peaks, detect_valleys
 
 logger = logging.getLogger(__name__)
 
