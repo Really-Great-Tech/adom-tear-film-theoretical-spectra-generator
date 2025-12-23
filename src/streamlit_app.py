@@ -941,22 +941,22 @@ def main():
     aqueous_cfg = params["aqueous"]
     rough_cfg = params["roughness"]
     
-    
-    slider_lipid_min = float(lipid_cfg["min"])
-    slider_lipid_max = float(lipid_cfg["max"])
-    slider_aqueous_min = float(aqueous_cfg["min"])
-    slider_aqueous_max = float(aqueous_cfg["max"])
-    slider_rough_min = float(rough_cfg["min"])
-    slider_rough_max = float(rough_cfg["max"])
+    # Slider limits use accepted ranges (lipid: 9-250, aqueous: 800-12000, roughness: 600-2750)
+    slider_lipid_min = 9.0
+    slider_lipid_max = 250.0
+    slider_aqueous_min = 800.0
+    slider_aqueous_max = 12000.0
+    slider_rough_min = 600.0
+    slider_rough_max = 2750.0
 
-    # Defaults: use configured defaults if provided, or midpoints snapped to step
+    # Defaults: use configured defaults if provided, or midpoints of slider ranges
     defaults = ui_cfg.get("default_values", {})
-    def midpoint(cfg):
-        return clamp_to_step((cfg["min"] + cfg["max"]) / 2, cfg["min"], cfg["step"])
+    def slider_midpoint(min_val, max_val, step):
+        return clamp_to_step((min_val + max_val) / 2, min_val, step)
 
-    default_lipid = defaults.get("lipid", midpoint(lipid_cfg))
-    default_aqueous = defaults.get("aqueous", midpoint(aqueous_cfg))
-    default_rough = defaults.get("roughness", midpoint(rough_cfg))
+    default_lipid = max(slider_lipid_min, min(slider_lipid_max, defaults.get("lipid", slider_midpoint(slider_lipid_min, slider_lipid_max, lipid_cfg["step"]))))
+    default_aqueous = max(slider_aqueous_min, min(slider_aqueous_max, defaults.get("aqueous", slider_midpoint(slider_aqueous_min, slider_aqueous_max, aqueous_cfg["step"]))))
+    default_rough = max(slider_rough_min, min(slider_rough_max, defaults.get("roughness", slider_midpoint(slider_rough_min, slider_rough_max, rough_cfg["step"]))))
 
     # Initialize session state defaults for sliders and analysis controls so they can be reset later
     slider_defaults = {
