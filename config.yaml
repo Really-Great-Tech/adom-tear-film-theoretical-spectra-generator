@@ -221,6 +221,6 @@ ui:
     roughness: 2000
   client_reference_scoring:
     enabled: false              # Enable client reference scoring by default
-    default_lipid: 62.3         # Default client lipid thickness (nm)
-    default_aqueous: -2.0       # Default client aqueous thickness (nm)
-    default_roughness: 1200.0   # Default client roughness (Å)
+    default_lipid: 62.3         # Default client lipid thickness (nm) - range: 9-250
+    default_aqueous: 1000.0     # Default client aqueous thickness (nm) - range: 800-12000
+    default_roughness: 1200.0   # Default client roughness (Å) - range: 600-2750
