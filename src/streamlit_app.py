@@ -941,17 +941,13 @@ def main():
     aqueous_cfg = params["aqueous"]
     rough_cfg = params["roughness"]
     
-    # Get acceptable ranges for sliders (wider than parameter ranges, allows using grid search results)
-    edge_case_cfg = analysis_cfg.get("edge_case_detection", {})
-    acceptable_ranges = edge_case_cfg.get("acceptable_ranges", {})
     
-    # Use acceptable ranges for slider bounds, but keep step sizes from parameter config
-    slider_lipid_min = float(acceptable_ranges.get("lipid", {}).get("min", lipid_cfg["min"]))
-    slider_lipid_max = float(acceptable_ranges.get("lipid", {}).get("max", lipid_cfg["max"]))
-    slider_aqueous_min = float(acceptable_ranges.get("aqueous", {}).get("min", aqueous_cfg["min"]))
-    slider_aqueous_max = float(acceptable_ranges.get("aqueous", {}).get("max", aqueous_cfg["max"]))
-    slider_rough_min = float(acceptable_ranges.get("roughness", {}).get("min", rough_cfg["min"]))
-    slider_rough_max = float(acceptable_ranges.get("roughness", {}).get("max", rough_cfg["max"]))
+    slider_lipid_min = float(lipid_cfg["min"])
+    slider_lipid_max = float(lipid_cfg["max"])
+    slider_aqueous_min = float(aqueous_cfg["min"])
+    slider_aqueous_max = float(aqueous_cfg["max"])
+    slider_rough_min = float(rough_cfg["min"])
+    slider_rough_max = float(rough_cfg["max"])
 
     # Defaults: use configured defaults if provided, or midpoints snapped to step
     defaults = ui_cfg.get("default_values", {})
