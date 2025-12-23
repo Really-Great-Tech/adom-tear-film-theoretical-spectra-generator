@@ -855,6 +855,11 @@ def create_comparison_plot(theoretical_wl: np.ndarray, theoretical_spec: np.ndar
     plot_config = config.get('plotting', {})
     style = plot_config.get('plot_style', {})
     
+    # Get wavelength range of interest from config
+    wavelength_range_cfg = config.get("analysis", {}).get("wavelength_range", {})
+    wl_min = float(wavelength_range_cfg.get("min", 600))
+    wl_max = float(wavelength_range_cfg.get("max", 1120))
+    
     fig = go.Figure()
     
     # Add measured spectrum
@@ -884,9 +889,10 @@ def create_comparison_plot(theoretical_wl: np.ndarray, theoretical_spec: np.ndar
     ))
     
     fig.update_layout(
-        title="Measured vs Theoretical Reflectance Spectra",
+        title=f"Measured vs Theoretical Reflectance Spectra ({wl_min:.0f}-{wl_max:.0f}nm)",
         xaxis_title="Wavelength (nm)",
         yaxis_title="Reflectance",
+        xaxis_range=[wl_min, wl_max],  # Zoom to wavelength range of interest
         hovermode="x unified",
         template="plotly_white",
         width=style.get('width', 1000),
