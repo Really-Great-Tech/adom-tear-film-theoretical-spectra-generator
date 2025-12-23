@@ -50,7 +50,12 @@ from exploration.pyelli_exploration.pyelli_utils import (
 )
 from exploration.pyelli_exploration.pyelli_grid_search import (
     PyElliGridSearch,
-    calculate_monotonic_alignment_score,
+    calculate_peak_based_score,
+)
+from src.analysis.measurement_utils import (
+    detrend_signal,
+    detect_peaks,
+    detect_valleys,
 )
 
 # Configure logging
@@ -68,6 +73,14 @@ st.set_page_config(
     initial_sidebar_state='expanded'
 )
 
+# Initialize session state early (before sidebar code accesses it)
+if 'pending_update' not in st.session_state:
+    st.session_state.pending_update = None
+if 'autofit_results' not in st.session_state:
+    st.session_state.autofit_results = None
+if 'last_run_elapsed_s' not in st.session_state:
+    st.session_state.last_run_elapsed_s = None
+
 # Clean Light Theme CSS
 st.markdown('''
 <style>
@@ -76,6 +89,24 @@ st.markdown('''
     /* Main app styling */
     .stApp {
         background: #ffffff;
+    }
+    
+    /* Make sidebar wider */
+    section[data-testid="stSidebar"] {
+        min-width: 400px !important;
+        max-width: 450px !important;
+    }
+    
+    /* Hide sidebar collapse button */
+    button[data-testid="baseButton-header"] {
+        display: none !important;
+    }
+    
+    /* Hide the keyboard_double_arrow icon text */
+    [data-testid="stSidebar"] button,
+    [data-testid="stSidebar"] [class*="keyboard"],
+    [data-testid="stSidebar"] [class*="double"] {
+        display: none !important;
     }
     
     /* Remove default padding */
@@ -422,28 +453,179 @@ with st.sidebar:
     <p style="color: #1e40af; font-weight: 600; margin-bottom: 10px; font-size: 0.8rem;">📂 DATA STATUS</p>
     ''', unsafe_allow_html=True)
     
-    col1, col2 = st.columns(2)
+    col1, col2, col3 = st.columns(3)
     with col1:
-        st.markdown(f'''
+        st.markdown('''
         <div style="background: #f0fdf4; border: 1px solid #bbf7d0; border-radius: 8px; padding: 10px; text-align: center;">
-            <div style="font-size: 1.3rem; font-weight: 700; color: #16a34a;">{len(samples["good_fit"])}</div>
+            <div style="font-size: 1.3rem; font-weight: 700; color: #16a34a;">10</div>
             <div style="color: #64748b; font-size: 0.65rem; text-transform: uppercase;">Good Fits</div>
         </div>
         ''', unsafe_allow_html=True)
     with col2:
-        st.markdown(f'''
+        st.markdown('''
         <div style="background: #fef2f2; border: 1px solid #fecaca; border-radius: 8px; padding: 10px; text-align: center;">
-            <div style="font-size: 1.3rem; font-weight: 700; color: #dc2626;">{len(samples["bad_fit"])}</div>
+            <div style="font-size: 1.3rem; font-weight: 700; color: #dc2626;">10</div>
             <div style="color: #64748b; font-size: 0.65rem; text-transform: uppercase;">Bad Fits</div>
         </div>
         ''', unsafe_allow_html=True)
-    
-    st.markdown(f'''
-    <div style="background: #eff6ff; border: 1px solid #bfdbfe; border-radius: 8px; padding: 10px; text-align: center; margin-top: 8px;">
-        <div style="font-size: 1.3rem; font-weight: 700; color: #1e40af;">{len(materials)}</div>
-        <div style="color: #64748b; font-size: 0.65rem; text-transform: uppercase;">Materials</div>
+    with col3:
+        st.markdown('''
+        <div style="background: #eff6ff; border: 1px solid #bfdbfe; border-radius: 8px; padding: 10px; text-align: center;">
+            <div style="font-size: 1.3rem; font-weight: 700; color: #1e40af;">170</div>
+            <div style="color: #64748b; font-size: 0.65rem; text-transform: uppercase;">Shlomo Spectra</div>
     </div>
     ''', unsafe_allow_html=True)
+    
+    st.markdown('<hr style="margin: 12px 0; border-color: #e2e8f0;">', unsafe_allow_html=True)
+    
+    # =============================================================================
+    # Sidebar Controls (Constant across all tabs)
+    # =============================================================================
+    
+    st.markdown('### 📂 Spectrum Source')
+    
+    spectrum_sources = {
+        # Shlomo spectra are now in-repo for deployment
+        'Shlomo Raw Spectra': PROJECT_ROOT / 'spectra_from_shlomo',
+        'Sample Data (Good Fit)': PROJECT_ROOT / 'exploration' / 'sample_data' / 'good_fit',
+        'Sample Data (Bad Fit)': PROJECT_ROOT / 'exploration' / 'sample_data' / 'bad_fit',
+        'Exploration Measurements': PROJECT_ROOT / 'exploration' / 'measurements',
+    }
+    
+    selected_source = st.selectbox(
+        'Select Source',
+        list(spectrum_sources.keys()),
+        key='autofit_source_main'
+    )
+    
+    source_path = spectrum_sources[selected_source]
+    
+    if source_path.exists():
+        if selected_source in ['Sample Data (Good Fit)', 'Sample Data (Bad Fit)']:
+            spectrum_files = []
+            for subdir in sorted(source_path.iterdir()):
+                if subdir.is_dir():
+                    for f in subdir.glob('(Run)spectra_*.txt'):
+                        if '_BestFit' not in f.name:
+                            spectrum_files.append(f)
+        else:
+            spectrum_files = sorted([
+                f for f in source_path.glob('(Run)spectra_*.txt')
+                if '_BestFit' not in f.name
+            ])
+    else:
+        spectrum_files = []
+        st.warning('⚠️ Source path not found')
+    
+    if spectrum_files:
+        selected_file = st.selectbox(
+            f'Select Spectrum ({len(spectrum_files)} files)',
+            spectrum_files,
+            format_func=lambda x: x.name,
+            key='autofit_file_main'
+        )
+        # Store in session state for access in main area
+        st.session_state.selected_file = selected_file
+        
+        st.markdown('---')
+        st.markdown('### 📏 Display Settings')
+        
+        wavelength_range = st.slider(
+            'Wavelength Range (nm)',
+            400, 1200,
+            (600, 1200),  # Default matches LTA focus region
+            step=10,
+            key='wl_range_main'
+        )
+        # Store in session state
+        st.session_state.wavelength_range = wavelength_range
+        st.session_state.run_autofit = False  # Reset on file change
+        # Store in session state
+        st.session_state.wavelength_range = wavelength_range
+        
+        show_residual = st.checkbox('Show Residual Plot', value=True, key='show_res_main')
+        
+        st.markdown('---')
+        st.markdown('### 🔧 Parameters')
+        st.caption('Adjust manually or use Auto-Fit to find best values')
+        
+        # Handle pending_update: update session state before creating widgets
+        if st.session_state.pending_update is not None:
+            # Update session state with best fit values before creating widgets
+            st.session_state._pending_lipid = float(st.session_state.pending_update['lipid'])
+            st.session_state._pending_aqueous = float(st.session_state.pending_update['aqueous'])
+            st.session_state._pending_mucus = float(st.session_state.pending_update['mucus'])
+            st.session_state.autofit_results = st.session_state.pending_update['results']
+            # Clear pending_update
+            st.session_state.pending_update = None
+        
+        # Create sliders - Streamlit will use session state values if keys exist
+        # Use pending values if available from grid search results
+        lipid_init = st.session_state.get('_pending_lipid', st.session_state.get('param_lipid', 150))
+        if '_pending_lipid' in st.session_state:
+            del st.session_state._pending_lipid  # Clear after use
+        
+        aqueous_init = st.session_state.get('_pending_aqueous', st.session_state.get('param_aqueous', 850))
+        if '_pending_aqueous' in st.session_state:
+            del st.session_state._pending_aqueous  # Clear after use
+        
+        mucus_init = st.session_state.get('_pending_mucus', st.session_state.get('param_mucus', 2000))
+        if '_pending_mucus' in st.session_state:
+            del st.session_state._pending_mucus  # Clear after use
+        
+        current_lipid = st.slider(
+            'Lipid (nm)', 0, 400,
+            value=int(round(lipid_init)),
+            key='param_lipid',
+            step=5
+        )
+        current_aqueous = st.slider(
+            'Aqueous (nm)', -20, 6000,
+            value=int(round(aqueous_init)),
+            key='param_aqueous',
+            step=50
+        )
+        # Interface roughness in Angstroms (mucus thickness is fixed at 500nm)
+        # LTA range: 300-3000 Å, default: 2000 Å
+        current_mucus = st.slider(
+            'Interface Roughness (Å)', 300, 3000,
+            value=int(round(mucus_init)),
+            key='param_mucus',
+            step=50
+        )
+        
+        st.markdown('---')
+        st.markdown('<p class="section-header">⚙️ Search Range Settings</p>', unsafe_allow_html=True)
+        
+        col_a, col_b, col_c = st.columns(3)
+        with col_a:
+            lipid_min = st.number_input('Lipid Min', value=0, key='grid_lipid_min')
+            lipid_max = st.number_input('Lipid Max', value=400, key='grid_lipid_max')
+            lipid_step = st.number_input('Lipid Step', value=20, key='grid_lipid_step')  # Matches LTA app coarse search
+        with col_b:
+            aqueous_min = st.number_input('Aqueous Min', value=-20, key='grid_aq_min')
+            aqueous_max = st.number_input('Aqueous Max', value=6000, key='grid_aq_max')
+            aqueous_step = st.number_input('Aqueous Step', value=200, key='grid_aq_step')  # Matches LTA app coarse search
+        with col_c:
+            # Interface roughness range in Angstroms (mucus thickness is fixed at 500nm)
+            # Matches LTA app coarse search: 300-3000 Å, step 300 Å
+            mucus_min = st.number_input('Roughness Min (Å)', value=300, key='grid_mu_min')
+            mucus_max = st.number_input('Roughness Max (Å)', value=3000, key='grid_mu_max')
+            mucus_step = st.number_input('Roughness Step (Å)', value=300, key='grid_mu_step')  # Matches LTA app coarse search
+    else:
+        st.session_state.selected_file = None
+        st.session_state.run_autofit = False
+        st.session_state.wavelength_range = (600, 1200)  # Default matches LTA focus region
+        st.info('👈 No spectrum files found')
+    
+    # Auto-Fit button at the bottom of sidebar
+    st.markdown('---')
+    run_autofit = st.button('🚀 Run Auto-Fit', use_container_width=True, type='primary')
+    # Store button state in session state
+    if run_autofit:
+        st.session_state.run_autofit = True
+    else:
+        st.session_state.run_autofit = False
 
 
 # =============================================================================
@@ -502,358 +684,399 @@ COLORS = {
     'residual': '#d97706',     # Amber for residual
 }
 
-# For client experiments: only show Auto-Fit tab
-# Other tabs hidden to simplify interface
+# Get sidebar values from session state (set in sidebar section above)
+selected_file = st.session_state.get('selected_file', None)
+run_autofit = st.session_state.get('run_autofit', False)
+wavelength_range = st.session_state.get('wavelength_range', (600, 1200))
+current_lipid = st.session_state.get('param_lipid', 150)
+current_aqueous = st.session_state.get('param_aqueous', 850)
+current_mucus = st.session_state.get('param_mucus', 2000)
+show_residual = st.session_state.get('show_res_main', True)
+
+# Two tabs: Spectrum Comparison and Amplitude Analysis
 tabs = st.tabs([
-    '🎯 Auto-Fit (Grid Search)',  # Only tab visible for client experiments
+    '📊 Spectrum Comparison',
+    '📈 Amplitude Analysis',
 ])
 
-
 # =============================================================================
-# Tab 1: Auto-Fit (Grid Search) - DEFAULT TAB
+# Shared Data Loading and Processing (runs once, used by both tabs)
 # =============================================================================
 
-# Initialize session state for best fit results
-if 'pending_update' not in st.session_state:
-    st.session_state.pending_update = None
-if 'autofit_results' not in st.session_state:
-    st.session_state.autofit_results = None
-# Track last grid-search elapsed time (seconds)
-if 'last_run_elapsed_s' not in st.session_state:
-    st.session_state.last_run_elapsed_s = None
+if selected_file and Path(selected_file).exists():
+    try:
+        wavelengths, measured = load_measured_spectrum(selected_file)
+        
+        wl_mask = (wavelengths >= wavelength_range[0]) & (wavelengths <= wavelength_range[1])
+        wl_display = wavelengths[wl_mask]
+        meas_display = measured[wl_mask]
+        
+        grid_search = PyElliGridSearch(MATERIALS_PATH)
+        
+        # Run auto-fit if button pressed
+        if run_autofit:
+            timer_placeholder = st.empty()
+            start_time = time.perf_counter()
 
-# Note: pending_update is handled right before creating sliders to avoid warnings
-
-with tabs[0]:
-    st.markdown("""
-    <div style="margin-bottom: 24px;">
-        <h2>🎯 Auto-Fit with Grid Search</h2>
-        <p style="color: #94a3b8;">Load any spectrum file and automatically find the best fit using PyElli TMM. Adjust sliders manually or run auto-fit.</p>
-    </div>
-    """, unsafe_allow_html=True)
-    
-    col1, col2 = st.columns([1, 3])
-    
-    with col1:
-        st.markdown('### 📂 Spectrum Source')
-        
-        spectrum_sources = {
-            # Shlomo spectra are now in-repo for deployment
-            'Shlomo Raw Spectra': PROJECT_ROOT / 'spectra_from_shlomo',
-            'Sample Data (Good Fit)': PROJECT_ROOT / 'exploration' / 'sample_data' / 'good_fit',
-            'Sample Data (Bad Fit)': PROJECT_ROOT / 'exploration' / 'sample_data' / 'bad_fit',
-            'Exploration Measurements': PROJECT_ROOT / 'exploration' / 'measurements',
-        }
-        
-        selected_source = st.selectbox(
-            'Select Source',
-            list(spectrum_sources.keys()),
-            key='autofit_source_main'
-        )
-        
-        source_path = spectrum_sources[selected_source]
-        
-        if source_path.exists():
-            if selected_source in ['Sample Data (Good Fit)', 'Sample Data (Bad Fit)']:
-                spectrum_files = []
-                for subdir in sorted(source_path.iterdir()):
-                    if subdir.is_dir():
-                        for f in subdir.glob('(Run)spectra_*.txt'):
-                            if '_BestFit' not in f.name:
-                                spectrum_files.append(f)
-            else:
-                spectrum_files = sorted([
-                    f for f in source_path.glob('(Run)spectra_*.txt')
-                    if '_BestFit' not in f.name
-                ])
-        else:
-            spectrum_files = []
-            st.warning('⚠️ Source path not found')
-        
-        if spectrum_files:
-            selected_file = st.selectbox(
-                f'Select Spectrum ({len(spectrum_files)} files)',
-                spectrum_files,
-                format_func=lambda x: x.name,
-                key='autofit_file_main'
-            )
-            
-            st.markdown('---')
-            st.markdown('### 📏 Display Settings')
-            
-            wavelength_range = st.slider(
-                'Wavelength Range (nm)',
-                400, 1200,
-                (600, 1200),  # Default matches LTA focus region
-                step=10,
-                key='wl_range_main'
-            )
-            
-            show_residual = st.checkbox('Show Residual Plot', value=True, key='show_res_main')
-            
-            st.markdown('---')
-            st.markdown('### 🔧 Parameters')
-            st.caption('Adjust manually or use Auto-Fit to find best values')
-            
-            # Slider ranges match LTA grid search ranges
-            # Handle pending_update: update session state before creating widgets
-            # This ensures sliders use the new values from grid search
-            if st.session_state.pending_update is not None:
-                # Update session state with best fit values before creating widgets
-                st.session_state.param_lipid = int(st.session_state.pending_update['lipid'])
-                st.session_state.param_aqueous = int(st.session_state.pending_update['aqueous'])
-                st.session_state.param_mucus = int(st.session_state.pending_update['mucus'])
-                st.session_state.autofit_results = st.session_state.pending_update['results']
-                # Clear pending_update
-                st.session_state.pending_update = None
-            
-            # Create sliders - Streamlit will use session state values if keys exist
-            # If keys don't exist, use defaults
-            current_lipid = st.slider(
-                'Lipid (nm)', 0, 400,
-                value=st.session_state.get('param_lipid', 60),
-                key='param_lipid',
-                step=5
-            )
-            current_aqueous = st.slider(
-                'Aqueous (nm)', -20, 6000,
-                value=st.session_state.get('param_aqueous', 2500),
-                key='param_aqueous',
-                step=50
-            )
-            # Mucus maps to LTA roughness: 300-3000 Å = 30-300 nm
-            current_mucus = st.slider(
-                'Mucus (nm)', 30, 300,
-                value=st.session_state.get('param_mucus', 300),
-                key='param_mucus',
-                step=10
-            )
-            
-            st.markdown('---')
-            st.markdown('<p class="section-header">⚙️ Search Range Settings</p>', unsafe_allow_html=True)
-            
-            col_a, col_b, col_c = st.columns(3)
-            with col_a:
-                lipid_min = st.number_input('Lipid Min', value=0, key='grid_lipid_min')  # Full range, larger step for ~966 combinations
-                lipid_max = st.number_input('Lipid Max', value=400, key='grid_lipid_max')
-                lipid_step = st.number_input('Lipid Step', value=60, key='grid_lipid_step')  # Larger step for faster runtime
-            with col_b:
-                aqueous_min = st.number_input('Aqueous Min', value=-20, key='grid_aq_min')  # Full range, larger step for ~966 combinations
-                aqueous_max = st.number_input('Aqueous Max', value=6000, key='grid_aq_max')
-                aqueous_step = st.number_input('Aqueous Step', value=270, key='grid_aq_step')  # Larger step for faster runtime
-            with col_c:
-                # Note: Mucus in pyElli maps to Roughness in LTA
-                # Full range, larger step for ~966 combinations
-                mucus_min = st.number_input('Mucus Min', value=30, key='grid_mu_min')
-                mucus_max = st.number_input('Mucus Max', value=300, key='grid_mu_max')
-                mucus_step = st.number_input('Mucus Step', value=50, key='grid_mu_step')  # Larger step for faster runtime
-            
-            st.markdown('---')
-            run_autofit = st.button('🚀 Run Auto-Fit', use_container_width=True, type='primary')
-        else:
-            selected_file = None
-            run_autofit = False
-            wavelength_range = (600, 1200)  # Default matches LTA focus region
-            current_lipid, current_aqueous, current_mucus = 60, 2500, 300
-            st.info('👈 No spectrum files found')
-    
-    with col2:
-        if selected_file and spectrum_files:
-            try:
-                wavelengths, measured = load_measured_spectrum(selected_file)
+            def _run_search():
+                lipid_min = st.session_state.get('grid_lipid_min', 0)
+                lipid_max = st.session_state.get('grid_lipid_max', 400)
+                lipid_step = st.session_state.get('grid_lipid_step', 20)
+                aqueous_min = st.session_state.get('grid_aq_min', -20)
+                aqueous_max = st.session_state.get('grid_aq_max', 6000)
+                aqueous_step = st.session_state.get('grid_aq_step', 200)
+                mucus_min = st.session_state.get('grid_mu_min', 300)
+                mucus_max = st.session_state.get('grid_mu_max', 3000)
+                mucus_step = st.session_state.get('grid_mu_step', 300)
                 
-                wl_mask = (wavelengths >= wavelength_range[0]) & (wavelengths <= wavelength_range[1])
-                wl_display = wavelengths[wl_mask]
-                meas_display = measured[wl_mask]
-                
-                grid_search = PyElliGridSearch(MATERIALS_PATH)
-                
-                # Run auto-fit if button pressed
-                if run_autofit:
-                    timer_placeholder = st.empty()
-                    start_time = time.perf_counter()
+                return grid_search.run_grid_search(
+                    wavelengths, measured,
+                    lipid_range=(lipid_min, lipid_max, lipid_step),
+                    aqueous_range=(aqueous_min, aqueous_max, aqueous_step),
+                    roughness_range=(mucus_min, mucus_max, mucus_step),
+                    top_k=10,
+                    enable_roughness=True,
+                    fine_search=True,  # Enable fine refinement for better peak alignment
+                    fine_refinement_factor=0.2,  # 20% of coarse step size
+                )
 
-                    def _run_search():
-                        return grid_search.run_grid_search(
-                            wavelengths, measured,
-                            lipid_range=(lipid_min, lipid_max, lipid_step),
-                            aqueous_range=(aqueous_min, aqueous_max, aqueous_step),
-                            roughness_range=(mucus_min, mucus_max, mucus_step),
-                            top_k=10,
-                            enable_roughness=True,
-                        )
-
-                    with ThreadPoolExecutor(max_workers=1) as executor:
-                        future = executor.submit(_run_search)
-                        while future.running():
-                            elapsed = time.perf_counter() - start_time
-                            mins, secs = divmod(int(elapsed), 60)
-                            timer_placeholder.info(f'Running grid search... {mins:02d}:{secs:02d} elapsed')
-                            time.sleep(0.25)
-                        try:
-                            results = future.result()
-                        except Exception as exc:
-                            timer_placeholder.error(f'Grid search failed: {exc}')
-                            raise
-
+            with ThreadPoolExecutor(max_workers=1) as executor:
+                future = executor.submit(_run_search)
+                while future.running():
                     elapsed = time.perf_counter() - start_time
                     mins, secs = divmod(int(elapsed), 60)
-                    timer_placeholder.success(f'Grid search completed in {mins:02d}:{secs:02d} ({elapsed:.1f}s)')
-                    st.session_state.last_run_elapsed_s = elapsed
+                    timer_placeholder.info(f'Running grid search... {mins:02d}:{secs:02d} elapsed')
+                    time.sleep(0.25)
+                try:
+                    results = future.result()
+                except Exception as exc:
+                    timer_placeholder.error(f'Grid search failed: {exc}')
+                    raise
 
-                    if results:
-                        best = results[0]
-                        # Store the update to be applied before widgets are created on next run
-                        st.session_state.pending_update = {
-                            'lipid': best.lipid_nm,
-                            'aqueous': best.aqueous_nm,
-                            'mucus': best.mucus_nm,
-                            'results': results
-                        }
-                        # Rerun to update sliders
-                        st.rerun()
-                    else:
-                        st.warning('⚠️ No valid fits found (all had criss-crossing)')
-                
-                # Use current slider values for display
-                display_lipid = current_lipid
-                display_aqueous = current_aqueous
-                display_mucus = current_mucus
-                
-                # Calculate theoretical spectrum with current params
-                theoretical = grid_search.calculate_theoretical_spectrum(
-                    wavelengths, display_lipid, display_aqueous, display_mucus
-                )
-                theoretical_aligned = grid_search._align_spectra(
-                    measured, theoretical,
-                    focus_min=600.0, focus_max=1100.0,
-                    wavelengths=wavelengths
-                )
-                theoretical_display = theoretical_aligned[wl_mask]
-                
-                # Calculate metrics
-                score_result = calculate_monotonic_alignment_score(
-                    wl_display, meas_display, theoretical_display
-                )
-                
-                elapsed_note = ''
-                if st.session_state.last_run_elapsed_s is not None:
-                    mins, secs = divmod(int(st.session_state.last_run_elapsed_s), 60)
-                    elapsed_note = f' -- {mins:02d}:{secs:02d} ({st.session_state.last_run_elapsed_s:.1f}s)'
-                st.markdown(f'### 📈 `{selected_file.name}`{elapsed_note}')
-                
-                # Metrics row
-                mcols = st.columns(6)
-                with mcols[0]:
-                    st.metric('Lipid', f'{display_lipid} nm')
-                with mcols[1]:
-                    st.metric('Aqueous', f'{display_aqueous} nm')
-                with mcols[2]:
-                    st.metric('Mucus', f'{display_mucus} nm')
-                with mcols[3]:
-                    score_icon = '🟢' if score_result['score'] >= 0.7 else ('🟡' if score_result['score'] >= 0.5 else '🔴')
-                    st.metric('Score', f'{score_icon} {score_result["score"]:.3f}')
-                with mcols[4]:
-                    st.metric('Correlation', f'{score_result["correlation"]:.3f}')
-                with mcols[5]:
-                    crossings = int(score_result.get('crossings', 0))
-                    st.metric('Crossings', f'{crossings}')
-                
-                # Single plot
-                if show_residual:
-                    fig = make_subplots(
-                        rows=2, cols=1,
-                        row_heights=[0.7, 0.3],
-                        shared_xaxes=True,
-                        vertical_spacing=0.08,
-                        subplot_titles=['Spectrum Comparison', 'Residual']
-                    )
-                    
-                    fig.add_trace(go.Scatter(
-                        x=wl_display, y=meas_display,
-                            mode='lines', name='Measured',
-                        line=dict(color='#2563eb', width=2.5)
-                    ), row=1, col=1)
-                    
-                    fig.add_trace(go.Scatter(
-                        x=wl_display, y=theoretical_display,
-                        mode='lines', name=f'Theoretical (L={display_lipid}, A={display_aqueous}, M={display_mucus})',
-                        line=dict(color='#059669', width=2.5, dash='dash')
-                    ), row=1, col=1)
-                    
-                    residual = meas_display - theoretical_display
-                    fig.add_trace(go.Scatter(
-                        x=wl_display, y=residual,
-                            mode='lines', name='Residual',
-                        line=dict(color='#d97706', width=1.5),
-                            fill='tozeroy',
-                            fillcolor='rgba(251, 191, 36, 0.15)'
-                    ), row=2, col=1)
-                    fig.add_hline(y=0, line_dash='dot', line_color='gray', row=2, col=1)
-                    
-                    fig.update_xaxes(title_text='Wavelength (nm)', row=2, col=1)
-                    fig.update_yaxes(title_text='Reflectance', row=1, col=1)
-                    fig.update_yaxes(title_text='Δ', row=2, col=1)
-                    height = 500
-                else:
-                    fig = go.Figure()
-                    fig.add_trace(go.Scatter(
-                        x=wl_display, y=meas_display,
-                            mode='lines', name='Measured',
-                        line=dict(color='#2563eb', width=2.5)
-                    ))
-                    fig.add_trace(go.Scatter(
-                        x=wl_display, y=theoretical_display,
-                        mode='lines', name=f'Theoretical (L={display_lipid}, A={display_aqueous}, M={display_mucus})',
-                        line=dict(color='#059669', width=2.5, dash='dash')
-                    ))
-                    fig.update_xaxes(title_text='Wavelength (nm)')
-                    fig.update_yaxes(title_text='Reflectance')
-                    height = 350
-                
-                fig.update_layout(
-                    height=height,
-                    margin=dict(t=40, b=40, l=60, r=30),
-                    paper_bgcolor='#ffffff',
-                    plot_bgcolor='#ffffff',
-                    legend=dict(orientation='h', yanchor='bottom', y=1.02, xanchor='right', x=1)
-                )
-                
-                st.plotly_chart(fig, use_container_width=True)
-                
-                # Show results table if auto-fit was run
-                if st.session_state.autofit_results:
-                    st.markdown('---')
-                    st.markdown('<p class="section-header">📊 Auto-Fit Results (Top 10)</p>', unsafe_allow_html=True)
-                    
-                    def get_quality(score, crossings):
-                        if score >= 0.7: return '🟢 Excellent'
-                        elif score >= 0.5: return '🟡 Good'
-                        elif score >= 0.3: return '🟠 Fair'
-                        else: return '🔴 Poor'
-                    
-                    results_df = pd.DataFrame([{
-                        'Rank': i+1,
-                        'Lipid': r.lipid_nm,
-                        'Aqueous': r.aqueous_nm,
-                        'Mucus': r.mucus_nm,
-                        'Score': f'{r.score:.3f}',
-                        'Corr': f'{r.correlation:.3f}',
-                        'Quality': get_quality(r.score, r.crossing_count)
-                    } for i, r in enumerate(st.session_state.autofit_results)])
-                    
-                    st.dataframe(results_df, use_container_width=True, hide_index=True)
-                            
-            except Exception as e:
-                st.error(f'Error: {e}')
-                import traceback
-                st.code(traceback.format_exc())
+            elapsed = time.perf_counter() - start_time
+            mins, secs = divmod(int(elapsed), 60)
+            timer_placeholder.success(f'Grid search completed in {mins:02d}:{secs:02d} ({elapsed:.1f}s)')
+            st.session_state.last_run_elapsed_s = elapsed
+
+            if results:
+                best = results[0]
+                # Store the update to be applied before widgets are created on next run
+                st.session_state.pending_update = {
+                    'lipid': best.lipid_nm,
+                    'aqueous': best.aqueous_nm,
+                    'mucus': best.mucus_nm,
+                    'results': results
+                }
+                # Rerun to update sliders
+                st.rerun()
+            else:
+                st.warning('⚠️ No valid fits found')
+        
+        # Use current slider values for display
+        display_lipid = current_lipid
+        display_aqueous = current_aqueous
+        display_mucus = current_mucus  # Already in Angstroms from slider
+        
+        # Calculate theoretical spectrum with current params
+        # Convert roughness from Angstroms to nm for calculate_theoretical_spectrum
+        roughness_nm = display_mucus / 10.0
+        theoretical = grid_search.calculate_theoretical_spectrum(
+            wavelengths, display_lipid, display_aqueous, roughness_nm
+        )
+        theoretical_aligned = grid_search._align_spectra(
+            measured, theoretical,
+            focus_min=600.0, focus_max=1100.0,
+            wavelengths=wavelengths
+        )
+        theoretical_display = theoretical_aligned[wl_mask]
+        
+        # Calculate metrics using peak-based scoring
+        score_result = calculate_peak_based_score(
+            wl_display, meas_display, theoretical_display
+        )
+        
+        # Calculate correlation separately for display
+        if np.std(meas_display) > 1e-10 and np.std(theoretical_display) > 1e-10:
+            correlation = float(np.corrcoef(meas_display, theoretical_display)[0, 1])
+            if np.isnan(correlation):
+                correlation = 0.0
         else:
-            st.info('👈 Select a spectrum source and file to begin')
-
+            correlation = 0.0
+        
+        # Store computed values for use in tabs
+        computed_data = {
+            'wavelengths': wavelengths,
+            'measured': measured,
+            'wl_display': wl_display,
+            'meas_display': meas_display,
+            'theoretical_display': theoretical_display,
+            'score_result': score_result,
+            'correlation': correlation,
+            'display_lipid': display_lipid,
+            'display_aqueous': display_aqueous,
+            'display_mucus': display_mucus,
+            'grid_search': grid_search,
+        }
+    except Exception as e:
+        st.error(f'Error loading spectrum: {e}')
+        computed_data = None
+else:
+    computed_data = None
 
 # =============================================================================
-# Tab 2: Sample Data Viewer
+# Tab 1: Spectrum Comparison
+# =============================================================================
+
+with tabs[0]:
+    if computed_data:
+        # Spectrum name at the top
+        elapsed_note = ''
+        if st.session_state.last_run_elapsed_s is not None:
+            mins, secs = divmod(int(st.session_state.last_run_elapsed_s), 60)
+            elapsed_note = f' -- {mins:02d}:{secs:02d} ({st.session_state.last_run_elapsed_s:.1f}s)'
+        st.markdown(f'### 📈 `{Path(selected_file).name}`{elapsed_note}')
+        
+        # Spectrum comparison plot (before metrics)
+        if show_residual:
+            fig = make_subplots(
+                rows=2, cols=1,
+                row_heights=[0.7, 0.3],
+                shared_xaxes=True,
+                vertical_spacing=0.08,
+                subplot_titles=['Spectrum Comparison', 'Residual']
+            )
+            
+            fig.add_trace(go.Scatter(
+                x=computed_data['wl_display'], y=computed_data['meas_display'],
+                mode='lines', name='Measured',
+                line=dict(color='#2563eb', width=2.5)
+            ), row=1, col=1)
+            
+            fig.add_trace(go.Scatter(
+                x=computed_data['wl_display'], y=computed_data['theoretical_display'],
+                mode='lines', name=f'Theoretical (L={computed_data["display_lipid"]}, A={computed_data["display_aqueous"]}, R={computed_data["display_mucus"]:.0f}Å)',
+                line=dict(color='#059669', width=2.5, dash='dash')
+            ), row=1, col=1)
+            
+            residual = computed_data['meas_display'] - computed_data['theoretical_display']
+            fig.add_trace(go.Scatter(
+                x=computed_data['wl_display'], y=residual,
+                mode='lines', name='Residual',
+                line=dict(color='#d97706', width=1.5),
+                fill='tozeroy',
+                fillcolor='rgba(251, 191, 36, 0.15)'
+            ), row=2, col=1)
+            fig.add_hline(y=0, line_dash='dot', line_color='gray', row=2, col=1)
+            
+            fig.update_xaxes(title_text='Wavelength (nm)', row=2, col=1)
+            fig.update_yaxes(title_text='Reflectance', row=1, col=1)
+            fig.update_yaxes(title_text='Δ', row=2, col=1)
+            height = 500
+        else:
+            fig = go.Figure()
+            fig.add_trace(go.Scatter(
+                x=computed_data['wl_display'], y=computed_data['meas_display'],
+                mode='lines', name='Measured',
+                line=dict(color='#2563eb', width=2.5)
+            ))
+            fig.add_trace(go.Scatter(
+                x=computed_data['wl_display'], y=computed_data['theoretical_display'],
+                mode='lines', name=f'Theoretical (L={computed_data["display_lipid"]}, A={computed_data["display_aqueous"]}, R={computed_data["display_mucus"]:.0f}Å)',
+                line=dict(color='#059669', width=2.5, dash='dash')
+            ))
+            fig.update_xaxes(title_text='Wavelength (nm)')
+            fig.update_yaxes(title_text='Reflectance')
+            height = 350
+        
+        fig.update_layout(
+            height=height,
+            margin=dict(t=40, b=40, l=60, r=30),
+            paper_bgcolor='#ffffff',
+            plot_bgcolor='#ffffff',
+            legend=dict(orientation='h', yanchor='bottom', y=1.02, xanchor='right', x=1)
+        )
+        
+        st.plotly_chart(fig, use_container_width=True)
+        
+        # Metrics below the plot
+        st.markdown('---')
+        st.markdown('### 📊 Fit Parameters & Metrics')
+        
+        mcols = st.columns(6)
+        with mcols[0]:
+            st.metric('Lipid', f'{computed_data["display_lipid"]} nm')
+        with mcols[1]:
+            st.metric('Aqueous', f'{computed_data["display_aqueous"]} nm')
+        with mcols[2]:
+            st.metric('Roughness', f'{computed_data["display_mucus"]:.0f} Å')
+        with mcols[3]:
+            score_icon = '🟢' if computed_data['score_result']['score'] >= 0.7 else ('🟡' if computed_data['score_result']['score'] >= 0.5 else '🔴')
+            st.metric('Score', f'{score_icon} {computed_data["score_result"]["score"]:.3f}')
+        with mcols[4]:
+            st.metric('Correlation', f'{computed_data["correlation"]:.3f}')
+        with mcols[5]:
+            matched_peaks = int(computed_data['score_result'].get('matched_peaks', 0))
+            st.metric('Matched Peaks', f'{matched_peaks}')
+    else:
+        st.info('👈 Please select a spectrum file from the sidebar')
+
+# =============================================================================
+# Tab 2: Amplitude Analysis
+# =============================================================================
+
+with tabs[1]:
+    if computed_data:
+        st.markdown('### 📊 Amplitude Analysis')
+        st.markdown('<p style="color: #94a3b8; margin-bottom: 1rem;">Detrended amplitude signals with peak alignment to verify fit quality</p>', unsafe_allow_html=True)
+        
+        # Get default values for settings (will be used for initial plot)
+        cutoff_freq = st.session_state.get('cutoff_freq_amp', 0.008)
+        peak_prominence = st.session_state.get('peak_prom_amp', 0.0001)
+        
+        try:
+            # Detrend both signals
+            meas_detrended = detrend_signal(computed_data['wl_display'], computed_data['meas_display'], cutoff_freq, filter_order=3)
+            theo_detrended = detrend_signal(computed_data['wl_display'], computed_data['theoretical_display'], cutoff_freq, filter_order=3)
+            
+            # Detect peaks and valleys
+            meas_peaks_df = detect_peaks(computed_data['wl_display'], meas_detrended, prominence=peak_prominence)
+            theo_peaks_df = detect_peaks(computed_data['wl_display'], theo_detrended, prominence=peak_prominence)
+            
+            meas_valleys_df = detect_valleys(computed_data['wl_display'], meas_detrended, prominence=peak_prominence)
+            theo_valleys_df = detect_valleys(computed_data['wl_display'], theo_detrended, prominence=peak_prominence)
+            
+            # Calculate peak-based score for amplitude analysis
+            score_result_amp = calculate_peak_based_score(
+                computed_data['wl_display'], computed_data['meas_display'], computed_data['theoretical_display'],
+                cutoff_frequency=cutoff_freq,
+                peak_prominence=peak_prominence
+            )
+            
+            # Create amplitude plot (before settings and metrics)
+            st.markdown('**Detrended Amplitude Signals with Peaks and Valleys**')
+            fig_amp = go.Figure()
+            
+            # Plot detrended signals
+            fig_amp.add_trace(go.Scatter(
+                x=computed_data['wl_display'],
+                y=meas_detrended,
+                mode='lines',
+                name='Measured (Detrended)',
+                line=dict(color='#2563eb', width=2.5)
+            ))
+            
+            fig_amp.add_trace(go.Scatter(
+                x=computed_data['wl_display'],
+                y=theo_detrended,
+                mode='lines',
+                name='Theoretical (Detrended)',
+                line=dict(color='#059669', width=2.5, dash='dash')
+            ))
+            
+            # Plot peaks
+            if len(meas_peaks_df) > 0:
+                fig_amp.add_trace(go.Scatter(
+                    x=meas_peaks_df['wavelength'],
+                    y=meas_peaks_df['amplitude'],
+                    mode='markers',
+                    name='Measured Peaks',
+                    marker=dict(size=8, symbol='circle', color='blue')
+                ))
+            
+            if len(theo_peaks_df) > 0:
+                fig_amp.add_trace(go.Scatter(
+                    x=theo_peaks_df['wavelength'],
+                    y=theo_peaks_df['amplitude'],
+                    mode='markers',
+                    name='Theoretical Peaks',
+                    marker=dict(size=8, symbol='circle', color='red')
+                ))
+            
+            # Plot valleys
+            if len(meas_valleys_df) > 0:
+                fig_amp.add_trace(go.Scatter(
+                    x=meas_valleys_df['wavelength'],
+                    y=meas_valleys_df['amplitude'],
+                    mode='markers',
+                    name='Measured Valleys',
+                    marker=dict(size=8, symbol='circle', color='cyan')
+                ))
+            
+            if len(theo_valleys_df) > 0:
+                fig_amp.add_trace(go.Scatter(
+                    x=theo_valleys_df['wavelength'],
+                    y=theo_valleys_df['amplitude'],
+                    mode='markers',
+                    name='Theoretical Valleys',
+                    marker=dict(size=8, symbol='circle', color='pink')
+                ))
+            
+            fig_amp.update_layout(
+                height=600,
+                title='',
+                xaxis_title='Wavelength (nm)',
+                yaxis_title='Amplitude',
+                xaxis_range=[wavelength_range[0], wavelength_range[1]],
+                hovermode='x unified',
+                margin=dict(t=60, b=40, l=60, r=30),
+                paper_bgcolor='#ffffff',
+                plot_bgcolor='#ffffff',
+                legend=dict(orientation='h', yanchor='bottom', y=1.02, xanchor='right', x=1)
+            )
+            
+            st.plotly_chart(fig_amp, use_container_width=True)
+            
+            # Settings and metrics below the plot
+            st.markdown('---')
+            st.markdown('### ⚙️ Analysis Settings')
+            
+            # Amplitude analysis settings
+            col_amp_settings = st.columns(2)
+            with col_amp_settings[0]:
+                cutoff_freq_new = st.slider(
+                    'Detrending Cutoff Frequency',
+                    0.001, 0.02,
+                    value=cutoff_freq,
+                    step=0.001,
+                    key='cutoff_freq_amp'
+                )
+            with col_amp_settings[1]:
+                peak_prominence_new = st.slider(
+                    'Peak Prominence',
+                    0.00001, 0.001,
+                    value=peak_prominence,
+                    step=0.00001,
+                    format='%.5f',
+                    key='peak_prom_amp'
+                )
+            
+            # Recalculate if settings changed
+            if cutoff_freq_new != cutoff_freq or peak_prominence_new != peak_prominence:
+                st.rerun()
+            
+            st.markdown('---')
+            st.markdown('### 📈 Peak Analysis Metrics')
+            
+            # Amplitude metrics
+            mcols_amp = st.columns(5)
+            with mcols_amp[0]:
+                st.metric('Measured Peaks', f'{int(score_result_amp.get("measurement_peaks", 0))}')
+            with mcols_amp[1]:
+                st.metric('Theoretical Peaks', f'{int(score_result_amp.get("theoretical_peaks", 0))}')
+            with mcols_amp[2]:
+                st.metric('Matched Peaks', f'{int(score_result_amp.get("matched_peaks", 0))}')
+            with mcols_amp[3]:
+                st.metric('Mean Delta', f'{score_result_amp.get("mean_delta_nm", 0):.2f} nm')
+            with mcols_amp[4]:
+                score_icon_amp = '🟢' if score_result_amp['score'] >= 0.7 else ('🟡' if score_result_amp['score'] >= 0.5 else '🔴')
+                st.metric('Peak Score', f'{score_icon_amp} {score_result_amp["score"]:.3f}')
+            
+        except Exception as e:
+            st.warning(f'Could not generate amplitude analysis: {e}')
+    else:
+        st.info('👈 Please select a spectrum file from the sidebar')
+# =============================================================================
+# Tab 2: Sample Data Viewer (Hidden)
 # =============================================================================
 # HIDDEN FOR CLIENT EXPERIMENTS
 
@@ -863,9 +1086,9 @@ if False:  # Disabled for client
     <div style="margin-bottom: 24px;">
         <h2>📊 Sample Data Viewer</h2>
         <p style="color: #94a3b8;">Explore measured spectra and their corresponding BestFit theoretical matches from ADOM's LTA software.</p>
-                    </div>
-                    ''', unsafe_allow_html=True)
-                
+    </div>
+    ''', unsafe_allow_html=True)
+    
     col1_sdv, col2_sdv = st.columns([1, 3])
     
     with col1_sdv:
