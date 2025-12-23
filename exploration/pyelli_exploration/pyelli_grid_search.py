@@ -15,9 +15,9 @@ import logging
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple, Any, Callable
 import sys
-from concurrent.futures import ProcessPoolExecutor, as_completed
-from functools import partial
 import os
+from functools import partial
+from concurrent.futures import ProcessPoolExecutor, as_completed
 
 import numpy as np
 import pandas as pd
@@ -641,6 +641,24 @@ def _evaluate_single_combination(
     Returns:
         PyElliResult or None if calculation fails
     """
+    # Suppress warnings in worker processes (multiprocessing workers don't have Streamlit context)
+    import warnings
+    import logging
+    import sys
+    
+    # Suppress all ScriptRunContext warnings
+    warnings.filterwarnings('ignore', message='.*ScriptRunContext.*')
+    warnings.filterwarnings('ignore', message='.*missing ScriptRunContext.*')
+    
+    # Suppress Streamlit runtime warnings
+    streamlit_logger = logging.getLogger('streamlit')
+    streamlit_logger.setLevel(logging.ERROR)
+    logging.getLogger('streamlit.runtime.scriptrunner_utils.script_run_context').setLevel(logging.CRITICAL)
+    logging.getLogger('streamlit.runtime.scriptrunner_utils').setLevel(logging.CRITICAL)
+    
+    # Redirect stderr to suppress warnings if needed (but keep errors)
+    # Note: This is a last resort - warnings should be filtered above
+    
     try:
         # Get material n,k values
         lipid_n = np.interp(wavelengths, material_data['lipid']['wavelength_nm'], material_data['lipid']['n'])
@@ -668,8 +686,8 @@ def _evaluate_single_combination(
             use_error_function_profile=True,
         )
         
-        # Align using linear regression (focus region 600-1100 nm)
-        focus_mask = (wavelengths >= 600.0) & (wavelengths <= 1100.0)
+        # Align using linear regression (focus region 600-1120 nm)
+        focus_mask = (wavelengths >= 600.0) & (wavelengths <= 1120.0)
         if focus_mask.sum() > 0:
             meas_focus = measured[focus_mask]
             theo_focus = theoretical[focus_mask]
@@ -818,7 +836,7 @@ class PyElliGridSearch:
         measured: np.ndarray,
         theoretical: np.ndarray,
         focus_min: float = 600.0,
-        focus_max: float = 1100.0,
+        focus_max: float = 1120.0,
         wavelengths: Optional[np.ndarray] = None,
     ) -> np.ndarray:
         """
@@ -904,6 +922,10 @@ class PyElliGridSearch:
         total = len(lipid_values) * len(aqueous_values) * len(roughness_values_angstrom)
         roughness_status = 'Bruggeman EMA' if enable_roughness else 'disabled'
         
+        # Determine number of workers (use up to 10 cores)
+        num_workers = min(os.cpu_count() or 4, 10)
+        logger.info(f'🔍 Running parallel grid search: {total} combinations, {num_workers} workers (roughness: {roughness_status})')
+        
         # Prepare material data for worker processes
         material_data = {
             'lipid': {
@@ -927,10 +949,6 @@ class PyElliGridSearch:
                 'k': self.substratum_df['k'].values,
             },
         }
-        
-        # Determine number of workers (use CPU count, but cap at 10 for safety)
-        num_workers = min(os.cpu_count() or 4, 10)
-        logger.info(f'🔍 Running parallel grid search: {total} combinations, {num_workers} workers (roughness: {roughness_status})')
         
         # Generate all parameter combinations
         combinations = [
@@ -971,38 +989,13 @@ class PyElliGridSearch:
         # Sort by score (descending)
         results.sort(key=lambda x: x.score, reverse=True)
         
-        # Fine refinement around top candidates
+        # Fine refinement around top candidates (parallel processing)
         if fine_search and results:
             logger.info(f'🔬 Refining top {min(5, len(results))} candidates with fine search...')
             top_candidates = results[:min(5, len(results))]
             refined_results = []
-            
-            # Prepare material data for worker processes
-            material_data = {
-                'lipid': {
-                    'wavelength_nm': self.lipid_df['wavelength_nm'].values,
-                    'n': self.lipid_df['n'].values,
-                    'k': self.lipid_df['k'].values,
-                },
-                'water': {
-                    'wavelength_nm': self.water_df['wavelength_nm'].values,
-                    'n': self.water_df['n'].values,
-                    'k': self.water_df['k'].values,
-                },
-                'mucus': {
-                    'wavelength_nm': self.mucus_df['wavelength_nm'].values,
-                    'n': self.mucus_df['n'].values,
-                    'k': self.mucus_df['k'].values,
-                },
-                'substratum': {
-                    'wavelength_nm': self.substratum_df['wavelength_nm'].values,
-                    'n': self.substratum_df['n'].values,
-                    'k': self.substratum_df['k'].values,
-                },
-            }
-            
-            # Generate fine search combinations
             fine_combinations = []
+            
             for candidate in top_candidates:
                 # Create fine search ranges around each candidate
                 fine_lipid_step = max(1.0, lipid_range[2] * fine_refinement_factor)
@@ -1027,6 +1020,7 @@ class PyElliGridSearch:
                 fine_aqueous_values = fine_aqueous_values[fine_aqueous_values >= 0]
                 fine_roughness_values = fine_roughness_values[fine_roughness_values >= 0]
                 
+                # Generate fine search combinations
                 for lipid in fine_lipid_values:
                     for aqueous in fine_aqueous_values:
                         for roughness_angstrom in fine_roughness_values:
@@ -1038,28 +1032,53 @@ class PyElliGridSearch:
                             fine_combinations.append((lipid, aqueous, roughness_angstrom))
             
             # Parallel fine search
-            num_workers = min(os.cpu_count() or 4, 10)
-            logger.info(f'🔬 Refining {len(fine_combinations)} combinations with {num_workers} workers...')
-            
-            with ProcessPoolExecutor(max_workers=num_workers) as executor:
-                futures = {
-                    executor.submit(
-                        _evaluate_single_combination,
-                        wavelengths,
-                        measured,
-                        lipid,
-                        aqueous,
-                        roughness_angstrom,
-                        material_data,
-                        enable_roughness,
-                    ): (lipid, aqueous, roughness_angstrom)
-                    for lipid, aqueous, roughness_angstrom in fine_combinations
+            if fine_combinations:
+                num_workers = min(os.cpu_count() or 4, 10)
+                logger.info(f'🔬 Refining {len(fine_combinations)} combinations with {num_workers} workers...')
+                
+                # Prepare material data for worker processes (same as coarse search)
+                material_data = {
+                    'lipid': {
+                        'wavelength_nm': self.lipid_df['wavelength_nm'].values,
+                        'n': self.lipid_df['n'].values,
+                        'k': self.lipid_df['k'].values,
+                    },
+                    'water': {
+                        'wavelength_nm': self.water_df['wavelength_nm'].values,
+                        'n': self.water_df['n'].values,
+                        'k': self.water_df['k'].values,
+                    },
+                    'mucus': {
+                        'wavelength_nm': self.mucus_df['wavelength_nm'].values,
+                        'n': self.mucus_df['n'].values,
+                        'k': self.mucus_df['k'].values,
+                    },
+                    'substratum': {
+                        'wavelength_nm': self.substratum_df['wavelength_nm'].values,
+                        'n': self.substratum_df['n'].values,
+                        'k': self.substratum_df['k'].values,
+                    },
                 }
                 
-                for future in as_completed(futures):
-                    result = future.result()
-                    if result is not None:
-                        refined_results.append(result)
+                with ProcessPoolExecutor(max_workers=num_workers) as executor:
+                    futures = {
+                        executor.submit(
+                            _evaluate_single_combination,
+                            wavelengths,
+                            measured,
+                            lipid,
+                            aqueous,
+                            roughness_angstrom,
+                            material_data,
+                            enable_roughness,
+                        ): (lipid, aqueous, roughness_angstrom)
+                        for lipid, aqueous, roughness_angstrom in fine_combinations
+                    }
+                    
+                    for future in as_completed(futures):
+                        result = future.result()
+                        if result is not None:
+                            refined_results.append(result)
         
             # Combine coarse and refined results, sort by score
             all_results = results + refined_results
@@ -1100,7 +1119,7 @@ class PyElliGridSearch:
                     f'  Rank {i+1}: L={r.lipid_nm:.1f}, A={r.aqueous_nm:.1f}, R={r.mucus_nm:.0f}Å, '
                     f'Score={r.score:.4f}, Matched={r_score.get("matched_peaks", 0):.0f}, '
                     f'Delta={r_score.get("mean_delta_nm", 0):.2f}nm'
-                )
+            )
         
         return results[:top_k]
     

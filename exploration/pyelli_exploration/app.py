@@ -30,9 +30,25 @@ warnings.filterwarnings(
     message='.*widget.*key.*was created with a default value but also had its value set via the Session State API.*',
     category=UserWarning
 )
+# Suppress ScriptRunContext warnings from multiprocessing (these are harmless)
+warnings.filterwarnings(
+    'ignore',
+    message='.*missing ScriptRunContext.*',
+    category=UserWarning
+)
+warnings.filterwarnings(
+    'ignore',
+    message='.*ScriptRunContext.*',
+    category=UserWarning
+)
 # Also suppress via Streamlit logger if it's logged there
 streamlit_logger = logging.getLogger('streamlit')
 streamlit_logger.setLevel(logging.ERROR)  # Only show errors, not warnings
+# Suppress ScriptRunContext warnings from streamlit runtime
+logging.getLogger('streamlit.runtime.scriptrunner_utils.script_run_context').setLevel(logging.ERROR)
+logging.getLogger('streamlit.runtime.scriptrunner_utils').setLevel(logging.ERROR)
+# Suppress ScriptRunContext warnings from streamlit runtime
+logging.getLogger('streamlit.runtime.scriptrunner_utils.script_run_context').setLevel(logging.ERROR)
 
 # Add parent paths for imports
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
@@ -97,16 +113,21 @@ st.markdown('''
         max-width: 450px !important;
     }
     
-    /* Hide sidebar collapse button */
-    button[data-testid="baseButton-header"] {
+    /* Hide sidebar collapse button and hover key icon */
+    button[data-testid="baseButton-header"],
+    [data-testid="stSidebar"] button[title*="Close"],
+    [data-testid="stSidebar"] button[title*="Open"],
+    [data-testid="stSidebar"] button[aria-label*="Close"],
+    [data-testid="stSidebar"] button[aria-label*="Open"],
+    [data-testid="stSidebar"] [class*="keyboard"],
+    [data-testid="stSidebar"] [class*="double"],
+    [data-testid="stSidebar"] svg[viewBox*="24"] {
         display: none !important;
     }
     
-    /* Hide the keyboard_double_arrow icon text */
-    [data-testid="stSidebar"] button,
-    [data-testid="stSidebar"] [class*="keyboard"],
-    [data-testid="stSidebar"] [class*="double"] {
-        display: none !important;
+    /* Ensure regular buttons in sidebar are visible */
+    [data-testid="stSidebar"] .stButton button {
+        display: block !important;
     }
     
     /* Remove default padding */
@@ -533,7 +554,7 @@ with st.sidebar:
         wavelength_range = st.slider(
             'Wavelength Range (nm)',
             400, 1200,
-            (600, 1200),  # Default matches LTA focus region
+            (600, 1120),  # Default matches LTA analysis region (600-1120 nm)
             step=10,
             key='wl_range_main'
         )
@@ -547,7 +568,7 @@ with st.sidebar:
         
         st.markdown('---')
         st.markdown('### 🔧 Parameters')
-        st.caption('Adjust manually or use Auto-Fit to find best values')
+        st.caption('Adjust manually or use Grid Search to find best values')
         
         # Handle pending_update: update session state before creating widgets
         if st.session_state.pending_update is not None:
@@ -612,20 +633,21 @@ with st.sidebar:
             mucus_min = st.number_input('Roughness Min (Å)', value=300, key='grid_mu_min')
             mucus_max = st.number_input('Roughness Max (Å)', value=3000, key='grid_mu_max')
             mucus_step = st.number_input('Roughness Step (Å)', value=300, key='grid_mu_step')  # Matches LTA app coarse search
+        
+        # Grid Search button right below search range settings
+        st.markdown('---')
+        st.markdown('### 🔍 Grid Search')
+        run_autofit = st.button('🚀 Run Grid Search', width='stretch', type='primary', key='run_grid_search_btn')
+        # Store button state in session state
+        if run_autofit:
+            st.session_state.run_autofit = True
+        else:
+            st.session_state.run_autofit = False
     else:
         st.session_state.selected_file = None
         st.session_state.run_autofit = False
-        st.session_state.wavelength_range = (600, 1200)  # Default matches LTA focus region
+        st.session_state.wavelength_range = (600, 1120)  # Default matches LTA analysis region (600-1120 nm)
         st.info('👈 No spectrum files found')
-    
-    # Auto-Fit button at the bottom of sidebar
-    st.markdown('---')
-    run_autofit = st.button('🚀 Run Auto-Fit', use_container_width=True, type='primary')
-    # Store button state in session state
-    if run_autofit:
-        st.session_state.run_autofit = True
-    else:
-        st.session_state.run_autofit = False
 
 
 # =============================================================================
@@ -633,15 +655,7 @@ with st.sidebar:
 # =============================================================================
 
 st.markdown('''
-<div style="text-align: center; padding: 16px 0 32px 0;">
-    <h1 style="font-size: 2.2rem; margin-bottom: 12px; color: #0f172a;">
-        🔬 PyElli Exploration
-    </h1>
-    <p class="hero-text" style="max-width: 650px; margin: 0 auto; color: #64748b;">
-        Evaluate <span style="color: #1e40af; font-weight: 600;">pyElli</span> for tear film interferometry modeling. 
-        Explore transfer matrix calculations, material dispersion, and spectral fitting.
-    </p>
-</div>
+<div style="text-align: center; padding: 16px 0 32px 0;"></div>
 ''', unsafe_allow_html=True)
 
 # Custom Plotly theme - Clean white
@@ -687,7 +701,7 @@ COLORS = {
 # Get sidebar values from session state (set in sidebar section above)
 selected_file = st.session_state.get('selected_file', None)
 run_autofit = st.session_state.get('run_autofit', False)
-wavelength_range = st.session_state.get('wavelength_range', (600, 1200))
+wavelength_range = st.session_state.get('wavelength_range', (600, 1120))
 current_lipid = st.session_state.get('param_lipid', 150)
 current_aqueous = st.session_state.get('param_aqueous', 850)
 current_mucus = st.session_state.get('param_mucus', 2000)
@@ -713,9 +727,8 @@ if selected_file and Path(selected_file).exists():
         
         grid_search = PyElliGridSearch(MATERIALS_PATH)
         
-        # Run auto-fit if button pressed
+        # Run grid search if button pressed
         if run_autofit:
-            timer_placeholder = st.empty()
             start_time = time.perf_counter()
 
             def _run_search():
@@ -740,22 +753,30 @@ if selected_file and Path(selected_file).exists():
                     fine_refinement_factor=0.2,  # 20% of coarse step size
                 )
 
+            # Show progress bar and timer BEFORE the plot
+            progress_bar = st.progress(0, text='⏳ Starting grid search...')
+            
             with ThreadPoolExecutor(max_workers=1) as executor:
                 future = executor.submit(_run_search)
+                # Update progress bar and timer while running
                 while future.running():
                     elapsed = time.perf_counter() - start_time
                     mins, secs = divmod(int(elapsed), 60)
-                    timer_placeholder.info(f'Running grid search... {mins:02d}:{secs:02d} elapsed')
-                    time.sleep(0.25)
+                    # Update progress bar (estimate ~5 min max)
+                    progress_pct = min(0.99, elapsed / 300)
+                    progress_bar.progress(progress_pct, text=f'⏳ Running grid search... {mins:02d}:{secs:02d} elapsed')
+                    time.sleep(0.5)
                 try:
                     results = future.result()
                 except Exception as exc:
-                    timer_placeholder.error(f'Grid search failed: {exc}')
+                    progress_bar.empty()
+                    st.error(f'Grid search failed: {exc}')
                     raise
 
             elapsed = time.perf_counter() - start_time
             mins, secs = divmod(int(elapsed), 60)
-            timer_placeholder.success(f'Grid search completed in {mins:02d}:{secs:02d} ({elapsed:.1f}s)')
+            # Clear progress bar and show completion time
+            progress_bar.empty()
             st.session_state.last_run_elapsed_s = elapsed
 
             if results:
@@ -785,7 +806,7 @@ if selected_file and Path(selected_file).exists():
         )
         theoretical_aligned = grid_search._align_spectra(
             measured, theoretical,
-            focus_min=600.0, focus_max=1100.0,
+            focus_min=600.0, focus_max=1120.0,
             wavelengths=wavelengths
         )
         theoretical_display = theoretical_aligned[wl_mask]
@@ -829,12 +850,13 @@ else:
 
 with tabs[0]:
     if computed_data:
-        # Spectrum name at the top
-        elapsed_note = ''
-        if st.session_state.last_run_elapsed_s is not None:
+        # Display filename at the top
+        st.markdown(f'### 📈 `{Path(selected_file).name}`')
+        
+        # Show timer BEFORE the plot - always visible when available
+        if st.session_state.get('last_run_elapsed_s') is not None:
             mins, secs = divmod(int(st.session_state.last_run_elapsed_s), 60)
-            elapsed_note = f' -- {mins:02d}:{secs:02d} ({st.session_state.last_run_elapsed_s:.1f}s)'
-        st.markdown(f'### 📈 `{Path(selected_file).name}`{elapsed_note}')
+            st.success(f'✅ Grid search completed in **{mins:02d}:{secs:02d}** ({st.session_state.last_run_elapsed_s:.1f}s)')
         
         # Spectrum comparison plot (before metrics)
         if show_residual:
@@ -896,7 +918,7 @@ with tabs[0]:
             legend=dict(orientation='h', yanchor='bottom', y=1.02, xanchor='right', x=1)
         )
         
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, width='stretch')
         
         # Metrics below the plot
         st.markdown('---')
@@ -1024,7 +1046,7 @@ with tabs[1]:
                 legend=dict(orientation='h', yanchor='bottom', y=1.02, xanchor='right', x=1)
             )
             
-            st.plotly_chart(fig_amp, use_container_width=True)
+            st.plotly_chart(fig_amp, width='stretch')
             
             # Settings and metrics below the plot
             st.markdown('---')
@@ -1158,7 +1180,7 @@ if False:  # Disabled for client
                     height_sdv = 400
                 
                 fig_sdv.update_layout(height=height_sdv, margin=dict(t=30, b=30, l=60, r=30), paper_bgcolor='#ffffff', plot_bgcolor='#ffffff', legend=dict(orientation='h', yanchor='bottom', y=1.02, xanchor='right', x=1))
-                st.plotly_chart(fig_sdv, use_container_width=True)
+                st.plotly_chart(fig_sdv, width='stretch')
                 
                 mcols_sdv = st.columns(4)
                 with mcols_sdv[0]:
@@ -1308,7 +1330,7 @@ if False:  # Disabled for client
                 )
             )
             
-            st.plotly_chart(fig, use_container_width=True)
+            st.plotly_chart(fig, width='stretch')
             
             # Material info table
             st.markdown('### Material Summary')
@@ -1323,7 +1345,7 @@ if False:  # Disabled for client
                     'n @ 800nm': f'{np.interp(800, mat_df["wavelength_nm"], mat_df["n"]):.4f}',
                 })
             
-            st.dataframe(pd.DataFrame(summary_data), use_container_width=True)
+            st.dataframe(pd.DataFrame(summary_data), width='stretch')
         else:
             st.info('👈 Select materials from the sidebar to visualize their optical properties')
 
@@ -1541,7 +1563,7 @@ if False:  # Disabled for client
             )
         )
         
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, width='stretch')
         
         # Structure visualization
         st.markdown('### Layer Structure Diagram')
@@ -1589,7 +1611,7 @@ if False:  # Disabled for client
             )
         )
         
-        st.plotly_chart(fig_structure, use_container_width=True)
+        st.plotly_chart(fig_structure, width='stretch')
 
 
 # =============================================================================
@@ -1649,7 +1671,7 @@ if False:  # Disabled for client
         )
         
         st.markdown('---')
-        auto_fit = st.button('🔍 Auto-Fit (Simple Grid)', use_container_width=True)
+        auto_fit = st.button('🔍 Grid Search (Simple)', width='stretch')
     
     with col2:
         sample_info = samples[compare_category][compare_sample]
@@ -1775,7 +1797,7 @@ if False:  # Disabled for client
                 )
             )
             
-            st.plotly_chart(fig, use_container_width=True)
+            st.plotly_chart(fig, width='stretch')
             
             # Metrics comparison
             st.markdown('### Fit Quality Metrics')
@@ -1810,7 +1832,7 @@ if False:  # Disabled for client
                     delta=f'{(corr_pyelli - corr_lta) * 100:.2f}%' if corr_lta > 0 else None
                 )
             
-            # Auto-fit result
+            # Grid search result
             if auto_fit:
                 st.markdown('### 🔍 Grid Search Results')
                 with st.spinner('Running grid search...'):
