@@ -566,6 +566,38 @@ with st.sidebar:
         
         show_residual = st.checkbox('Show Residual Plot', value=True, key='show_res_main')
         
+        # Check for corresponding BestFit file
+        bestfit_file = None
+        selected_path = Path(selected_file)
+        if '_BestFit' not in selected_path.name:
+            # Try to find corresponding BestFit file in the same directory
+            bestfit_name = selected_path.name.replace('.txt', '_BestFit.txt')
+            bestfit_path = selected_path.parent / bestfit_name
+            if bestfit_path.exists():
+                bestfit_file = bestfit_path
+                st.session_state.bestfit_file = str(bestfit_file)
+        
+        # Toggle to show LTA BestFit
+        show_bestfit = False
+        show_both_theoretical = False
+        if bestfit_file:
+            st.markdown('---')
+            st.markdown('### 🔬 LTA BestFit Comparison')
+            view_mode = st.radio(
+                'Theoretical Spectrum View',
+                ['PyElli Theoretical Only', 'LTA BestFit Only', 'Both (PyElli + BestFit)'],
+                key='theoretical_view_mode',
+                help='Compare PyElli-generated theoretical spectra with LTA BestFit results'
+            )
+            show_bestfit = view_mode in ['LTA BestFit Only', 'Both (PyElli + BestFit)']
+            show_both_theoretical = view_mode == 'Both (PyElli + BestFit)'
+            st.session_state.show_bestfit = show_bestfit
+            st.session_state.show_both_theoretical = show_both_theoretical
+        else:
+            st.session_state.bestfit_file = None
+            st.session_state.show_bestfit = False
+            st.session_state.show_both_theoretical = False
+        
         st.markdown('---')
         st.markdown('### 🔧 Parameters')
         st.caption('Adjust manually or use Grid Search to find best values')
@@ -706,6 +738,8 @@ current_lipid = st.session_state.get('param_lipid', 150)
 current_aqueous = st.session_state.get('param_aqueous', 850)
 current_mucus = st.session_state.get('param_mucus', 2000)
 show_residual = st.session_state.get('show_res_main', True)
+show_bestfit = st.session_state.get('show_bestfit', False)
+show_both_theoretical = st.session_state.get('show_both_theoretical', False)
 
 # Two tabs: Spectrum Comparison and Amplitude Analysis
 tabs = st.tabs([
@@ -798,6 +832,43 @@ if selected_file and Path(selected_file).exists():
         display_aqueous = current_aqueous
         display_mucus = current_mucus  # Already in Angstroms from slider
         
+        # Load BestFit spectrum if available
+        bestfit_wl = None
+        bestfit_refl = None
+        bestfit_display = None
+        bestfit_score_result = None
+        bestfit_correlation = 0.0
+        
+        bestfit_file_path = st.session_state.get('bestfit_file', None)
+        show_bestfit = st.session_state.get('show_bestfit', False)
+        show_both_theoretical = st.session_state.get('show_both_theoretical', False)
+        
+        if bestfit_file_path and Path(bestfit_file_path).exists():
+            try:
+                bestfit_wl, bestfit_refl = load_bestfit_spectrum(Path(bestfit_file_path))
+                # Interpolate BestFit to match wavelengths
+                bestfit_interp = np.interp(wavelengths, bestfit_wl, bestfit_refl)
+                # Align BestFit with measured
+                bestfit_aligned = grid_search._align_spectra(
+                    measured, bestfit_interp,
+                    focus_min=600.0, focus_max=1120.0,
+                    wavelengths=wavelengths
+                )
+                bestfit_display = bestfit_aligned[wl_mask]
+                
+                # Calculate metrics for BestFit
+                bestfit_score_result = calculate_peak_based_score(
+                    wl_display, meas_display, bestfit_display
+                )
+                
+                if np.std(meas_display) > 1e-10 and np.std(bestfit_display) > 1e-10:
+                    bestfit_correlation = float(np.corrcoef(meas_display, bestfit_display)[0, 1])
+                    if np.isnan(bestfit_correlation):
+                        bestfit_correlation = 0.0
+            except Exception as e:
+                logger.warning(f'Error loading BestFit spectrum: {e}')
+                bestfit_display = None
+        
         # Calculate theoretical spectrum with current params
         # Convert roughness from Angstroms to nm for calculate_theoretical_spectrum
         roughness_nm = display_mucus / 10.0
@@ -824,19 +895,43 @@ if selected_file and Path(selected_file).exists():
         else:
             correlation = 0.0
         
+        # Determine which theoretical to show based on toggle
+        if show_bestfit and not show_both_theoretical and bestfit_display is not None:
+            # Show only BestFit, replace theoretical
+            display_theoretical = bestfit_display
+            display_score_result = bestfit_score_result
+            display_correlation = bestfit_correlation
+            theoretical_label = 'LTA BestFit'
+        else:
+            # Show PyElli theoretical (or both will be handled in plot)
+            display_theoretical = theoretical_display
+            display_score_result = score_result
+            display_correlation = correlation
+            theoretical_label = f'Theoretical (L={display_lipid}, A={display_aqueous}, R={display_mucus:.0f}Å)'
+        
         # Store computed values for use in tabs
         computed_data = {
             'wavelengths': wavelengths,
             'measured': measured,
             'wl_display': wl_display,
             'meas_display': meas_display,
-            'theoretical_display': theoretical_display,
-            'score_result': score_result,
-            'correlation': correlation,
+            'theoretical_display': theoretical_display,  # PyElli theoretical
+            'bestfit_display': bestfit_display,  # LTA BestFit
+            'display_theoretical': display_theoretical,  # What to actually display
+            'score_result': display_score_result,
+            'pyelli_score_result': score_result,  # Keep PyElli score
+            'bestfit_score_result': bestfit_score_result,  # Keep BestFit score
+            'correlation': display_correlation,
+            'pyelli_correlation': correlation,  # Keep PyElli correlation
+            'bestfit_correlation': bestfit_correlation,  # Keep BestFit correlation
             'display_lipid': display_lipid,
             'display_aqueous': display_aqueous,
             'display_mucus': display_mucus,
             'grid_search': grid_search,
+            'theoretical_label': theoretical_label,
+            'show_bestfit': show_bestfit,
+            'show_both_theoretical': show_both_theoretical,
+            'has_bestfit': bestfit_display is not None,
         }
     except Exception as e:
         st.error(f'Error loading spectrum: {e}')
@@ -859,6 +954,9 @@ with tabs[0]:
             st.success(f'✅ Grid search completed in **{mins:02d}:{secs:02d}** ({st.session_state.last_run_elapsed_s:.1f}s)')
         
         # Spectrum comparison plot (before metrics)
+        has_bestfit_plot = computed_data.get('has_bestfit', False) and computed_data.get('bestfit_display') is not None
+        show_both_plot = computed_data.get('show_both_theoretical', False) and has_bestfit_plot
+        
         if show_residual:
             fig = make_subplots(
                 rows=2, cols=1,
@@ -868,19 +966,37 @@ with tabs[0]:
                 subplot_titles=['Spectrum Comparison', 'Residual']
             )
             
+            # Always show measured
             fig.add_trace(go.Scatter(
                 x=computed_data['wl_display'], y=computed_data['meas_display'],
                 mode='lines', name='Measured',
                 line=dict(color='#2563eb', width=2.5)
             ), row=1, col=1)
             
-            fig.add_trace(go.Scatter(
-                x=computed_data['wl_display'], y=computed_data['theoretical_display'],
-                mode='lines', name=f'Theoretical (L={computed_data["display_lipid"]}, A={computed_data["display_aqueous"]}, R={computed_data["display_mucus"]:.0f}Å)',
-                line=dict(color='#059669', width=2.5, dash='dash')
-            ), row=1, col=1)
+            # Show theoretical based on toggle
+            if show_both_plot and has_bestfit_plot:
+                # Show both PyElli and BestFit
+                fig.add_trace(go.Scatter(
+                    x=computed_data['wl_display'], y=computed_data['theoretical_display'],
+                    mode='lines', name=f'PyElli (L={computed_data["display_lipid"]}, A={computed_data["display_aqueous"]}, R={computed_data["display_mucus"]:.0f}Å)',
+                    line=dict(color='#059669', width=2.5, dash='dash')
+                ), row=1, col=1)
+                fig.add_trace(go.Scatter(
+                    x=computed_data['wl_display'], y=computed_data['bestfit_display'],
+                    mode='lines', name='LTA BestFit',
+                    line=dict(color='#db2777', width=2.5, dash='dot')
+                ), row=1, col=1)
+                # Residual is measured - displayed theoretical (PyElli if only one shown)
+                residual = computed_data['meas_display'] - computed_data['theoretical_display']
+            else:
+                # Show the selected one (either PyElli or BestFit)
+                fig.add_trace(go.Scatter(
+                    x=computed_data['wl_display'], y=computed_data['display_theoretical'],
+                    mode='lines', name=computed_data['theoretical_label'],
+                    line=dict(color='#059669' if not computed_data.get('show_bestfit', False) else '#db2777', width=2.5, dash='dash')
+                ), row=1, col=1)
+                residual = computed_data['meas_display'] - computed_data['display_theoretical']
             
-            residual = computed_data['meas_display'] - computed_data['theoretical_display']
             fig.add_trace(go.Scatter(
                 x=computed_data['wl_display'], y=residual,
                 mode='lines', name='Residual',
@@ -901,11 +1017,28 @@ with tabs[0]:
                 mode='lines', name='Measured',
                 line=dict(color='#2563eb', width=2.5)
             ))
-            fig.add_trace(go.Scatter(
-                x=computed_data['wl_display'], y=computed_data['theoretical_display'],
-                mode='lines', name=f'Theoretical (L={computed_data["display_lipid"]}, A={computed_data["display_aqueous"]}, R={computed_data["display_mucus"]:.0f}Å)',
-                line=dict(color='#059669', width=2.5, dash='dash')
-            ))
+            
+            # Show theoretical based on toggle
+            if show_both_plot and has_bestfit_plot:
+                # Show both PyElli and BestFit
+                fig.add_trace(go.Scatter(
+                    x=computed_data['wl_display'], y=computed_data['theoretical_display'],
+                    mode='lines', name=f'PyElli (L={computed_data["display_lipid"]}, A={computed_data["display_aqueous"]}, R={computed_data["display_mucus"]:.0f}Å)',
+                    line=dict(color='#059669', width=2.5, dash='dash')
+                ))
+                fig.add_trace(go.Scatter(
+                    x=computed_data['wl_display'], y=computed_data['bestfit_display'],
+                    mode='lines', name='LTA BestFit',
+                    line=dict(color='#db2777', width=2.5, dash='dot')
+                ))
+            else:
+                # Show the selected one (either PyElli or BestFit)
+                fig.add_trace(go.Scatter(
+                    x=computed_data['wl_display'], y=computed_data['display_theoretical'],
+                    mode='lines', name=computed_data['theoretical_label'],
+                    line=dict(color='#059669' if not computed_data.get('show_bestfit', False) else '#db2777', width=2.5, dash='dash')
+                ))
+            
             fig.update_xaxes(title_text='Wavelength (nm)')
             fig.update_yaxes(title_text='Reflectance')
             height = 350
@@ -924,21 +1057,53 @@ with tabs[0]:
         st.markdown('---')
         st.markdown('### 📊 Fit Parameters & Metrics')
         
-        mcols = st.columns(6)
-        with mcols[0]:
-            st.metric('Lipid', f'{computed_data["display_lipid"]} nm')
-        with mcols[1]:
-            st.metric('Aqueous', f'{computed_data["display_aqueous"]} nm')
-        with mcols[2]:
-            st.metric('Roughness', f'{computed_data["display_mucus"]:.0f} Å')
-        with mcols[3]:
-            score_icon = '🟢' if computed_data['score_result']['score'] >= 0.7 else ('🟡' if computed_data['score_result']['score'] >= 0.5 else '🔴')
-            st.metric('Score', f'{score_icon} {computed_data["score_result"]["score"]:.3f}')
-        with mcols[4]:
-            st.metric('Correlation', f'{computed_data["correlation"]:.3f}')
-        with mcols[5]:
-            matched_peaks = int(computed_data['score_result'].get('matched_peaks', 0))
-            st.metric('Matched Peaks', f'{matched_peaks}')
+        # Determine which metrics to show
+        has_bestfit_metrics = computed_data.get('has_bestfit', False) and computed_data.get('bestfit_score_result') is not None
+        show_both_metrics = computed_data.get('show_both_theoretical', False) and has_bestfit_metrics
+        
+        if show_both_metrics:
+            # Show both PyElli and BestFit metrics side by side
+            st.markdown('#### PyElli Theoretical')
+            mcols_pyelli = st.columns(4)
+            with mcols_pyelli[0]:
+                score_icon = '🟢' if computed_data['pyelli_score_result']['score'] >= 0.7 else ('🟡' if computed_data['pyelli_score_result']['score'] >= 0.5 else '🔴')
+                st.metric('Score', f'{score_icon} {computed_data["pyelli_score_result"]["score"]:.3f}')
+            with mcols_pyelli[1]:
+                st.metric('Correlation', f'{computed_data["pyelli_correlation"]:.3f}')
+            with mcols_pyelli[2]:
+                matched_peaks = int(computed_data['pyelli_score_result'].get('matched_peaks', 0))
+                st.metric('Matched Peaks', f'{matched_peaks}')
+            with mcols_pyelli[3]:
+                st.metric('Parameters', f'L={computed_data["display_lipid"]}, A={computed_data["display_aqueous"]}, R={computed_data["display_mucus"]:.0f}Å')
+            
+            st.markdown('#### LTA BestFit')
+            mcols_bestfit = st.columns(3)
+            with mcols_bestfit[0]:
+                score_icon = '🟢' if computed_data['bestfit_score_result']['score'] >= 0.7 else ('🟡' if computed_data['bestfit_score_result']['score'] >= 0.5 else '🔴')
+                st.metric('Score', f'{score_icon} {computed_data["bestfit_score_result"]["score"]:.3f}')
+            with mcols_bestfit[1]:
+                st.metric('Correlation', f'{computed_data["bestfit_correlation"]:.3f}')
+            with mcols_bestfit[2]:
+                matched_peaks = int(computed_data['bestfit_score_result'].get('matched_peaks', 0))
+                st.metric('Matched Peaks', f'{matched_peaks}')
+        else:
+            # Show single set of metrics
+            mcols = st.columns(6)
+            with mcols[0]:
+                st.metric('Lipid', f'{computed_data["display_lipid"]} nm')
+            with mcols[1]:
+                st.metric('Aqueous', f'{computed_data["display_aqueous"]} nm')
+            with mcols[2]:
+                st.metric('Roughness', f'{computed_data["display_mucus"]:.0f} Å')
+            with mcols[3]:
+                score_result = computed_data['score_result']
+                score_icon = '🟢' if score_result['score'] >= 0.7 else ('🟡' if score_result['score'] >= 0.5 else '🔴')
+                st.metric('Score', f'{score_icon} {score_result["score"]:.3f}')
+            with mcols[4]:
+                st.metric('Correlation', f'{computed_data["correlation"]:.3f}')
+            with mcols[5]:
+                matched_peaks = int(score_result.get('matched_peaks', 0))
+                st.metric('Matched Peaks', f'{matched_peaks}')
     else:
         st.info('👈 Please select a spectrum file from the sidebar')
 
@@ -955,30 +1120,78 @@ with tabs[1]:
         cutoff_freq = st.session_state.get('cutoff_freq_amp', 0.008)
         peak_prominence = st.session_state.get('peak_prom_amp', 0.0001)
         
+        # Get toggle state from session state
+        show_bestfit_amp = computed_data.get('show_bestfit', False)
+        show_both_amp = computed_data.get('show_both_theoretical', False)
+        has_bestfit_amp = computed_data.get('has_bestfit', False) and computed_data.get('bestfit_display') is not None
+        
         try:
-            # Detrend both signals
+            # Detrend measured signal
             meas_detrended = detrend_signal(computed_data['wl_display'], computed_data['meas_display'], cutoff_freq, filter_order=3)
-            theo_detrended = detrend_signal(computed_data['wl_display'], computed_data['theoretical_display'], cutoff_freq, filter_order=3)
             
-            # Detect peaks and valleys
-            meas_peaks_df = detect_peaks(computed_data['wl_display'], meas_detrended, prominence=peak_prominence)
-            theo_peaks_df = detect_peaks(computed_data['wl_display'], theo_detrended, prominence=peak_prominence)
-            
-            meas_valleys_df = detect_valleys(computed_data['wl_display'], meas_detrended, prominence=peak_prominence)
-            theo_valleys_df = detect_valleys(computed_data['wl_display'], theo_detrended, prominence=peak_prominence)
-            
-            # Calculate peak-based score for amplitude analysis
-            score_result_amp = calculate_peak_based_score(
-                computed_data['wl_display'], computed_data['meas_display'], computed_data['theoretical_display'],
-                cutoff_frequency=cutoff_freq,
-                peak_prominence=peak_prominence
-            )
+            # Determine which theoretical(s) to analyze based on toggle
+            if show_both_amp and has_bestfit_amp:
+                # Detrend both PyElli and BestFit
+                theo_pyelli_detrended = detrend_signal(computed_data['wl_display'], computed_data['theoretical_display'], cutoff_freq, filter_order=3)
+                theo_bestfit_detrended = detrend_signal(computed_data['wl_display'], computed_data['bestfit_display'], cutoff_freq, filter_order=3)
+                
+                # Detect peaks and valleys for both
+                meas_peaks_df = detect_peaks(computed_data['wl_display'], meas_detrended, prominence=peak_prominence)
+                theo_pyelli_peaks_df = detect_peaks(computed_data['wl_display'], theo_pyelli_detrended, prominence=peak_prominence)
+                theo_bestfit_peaks_df = detect_peaks(computed_data['wl_display'], theo_bestfit_detrended, prominence=peak_prominence)
+                
+                meas_valleys_df = detect_valleys(computed_data['wl_display'], meas_detrended, prominence=peak_prominence)
+                theo_pyelli_valleys_df = detect_valleys(computed_data['wl_display'], theo_pyelli_detrended, prominence=peak_prominence)
+                theo_bestfit_valleys_df = detect_valleys(computed_data['wl_display'], theo_bestfit_detrended, prominence=peak_prominence)
+                
+                # Calculate scores for both
+                score_result_pyelli = calculate_peak_based_score(
+                    computed_data['wl_display'], computed_data['meas_display'], computed_data['theoretical_display'],
+                    cutoff_frequency=cutoff_freq,
+                    peak_prominence=peak_prominence
+                )
+                score_result_bestfit = calculate_peak_based_score(
+                    computed_data['wl_display'], computed_data['meas_display'], computed_data['bestfit_display'],
+                    cutoff_frequency=cutoff_freq,
+                    peak_prominence=peak_prominence
+                )
+                score_result_amp = score_result_pyelli  # Use PyElli for main display
+            elif show_bestfit_amp and has_bestfit_amp:
+                # Use BestFit only
+                theo_detrended = detrend_signal(computed_data['wl_display'], computed_data['bestfit_display'], cutoff_freq, filter_order=3)
+                
+                meas_peaks_df = detect_peaks(computed_data['wl_display'], meas_detrended, prominence=peak_prominence)
+                theo_peaks_df = detect_peaks(computed_data['wl_display'], theo_detrended, prominence=peak_prominence)
+                
+                meas_valleys_df = detect_valleys(computed_data['wl_display'], meas_detrended, prominence=peak_prominence)
+                theo_valleys_df = detect_valleys(computed_data['wl_display'], theo_detrended, prominence=peak_prominence)
+                
+                score_result_amp = calculate_peak_based_score(
+                    computed_data['wl_display'], computed_data['meas_display'], computed_data['bestfit_display'],
+                    cutoff_frequency=cutoff_freq,
+                    peak_prominence=peak_prominence
+                )
+            else:
+                # Use PyElli only (default)
+                theo_detrended = detrend_signal(computed_data['wl_display'], computed_data['theoretical_display'], cutoff_freq, filter_order=3)
+                
+                meas_peaks_df = detect_peaks(computed_data['wl_display'], meas_detrended, prominence=peak_prominence)
+                theo_peaks_df = detect_peaks(computed_data['wl_display'], theo_detrended, prominence=peak_prominence)
+                
+                meas_valleys_df = detect_valleys(computed_data['wl_display'], meas_detrended, prominence=peak_prominence)
+                theo_valleys_df = detect_valleys(computed_data['wl_display'], theo_detrended, prominence=peak_prominence)
+                
+                score_result_amp = calculate_peak_based_score(
+                    computed_data['wl_display'], computed_data['meas_display'], computed_data['theoretical_display'],
+                    cutoff_frequency=cutoff_freq,
+                    peak_prominence=peak_prominence
+                )
             
             # Create amplitude plot (before settings and metrics)
             st.markdown('**Detrended Amplitude Signals with Peaks and Valleys**')
             fig_amp = go.Figure()
             
-            # Plot detrended signals
+            # Plot measured (always shown)
             fig_amp.add_trace(go.Scatter(
                 x=computed_data['wl_display'],
                 y=meas_detrended,
@@ -987,13 +1200,34 @@ with tabs[1]:
                 line=dict(color='#2563eb', width=2.5)
             ))
             
-            fig_amp.add_trace(go.Scatter(
-                x=computed_data['wl_display'],
-                y=theo_detrended,
-                mode='lines',
-                name='Theoretical (Detrended)',
-                line=dict(color='#059669', width=2.5, dash='dash')
-            ))
+            # Plot theoretical based on toggle selection
+            if show_both_amp and has_bestfit_amp:
+                # Show both PyElli and BestFit
+                fig_amp.add_trace(go.Scatter(
+                    x=computed_data['wl_display'],
+                    y=theo_pyelli_detrended,
+                    mode='lines',
+                    name='PyElli (Detrended)',
+                    line=dict(color='#059669', width=2.5, dash='dash')
+                ))
+                fig_amp.add_trace(go.Scatter(
+                    x=computed_data['wl_display'],
+                    y=theo_bestfit_detrended,
+                    mode='lines',
+                    name='LTA BestFit (Detrended)',
+                    line=dict(color='#db2777', width=2.5, dash='dot')
+                ))
+            else:
+                # Show single theoretical (PyElli or BestFit)
+                theo_label = 'LTA BestFit (Detrended)' if (show_bestfit_amp and has_bestfit_amp) else 'PyElli (Detrended)'
+                theo_color = '#db2777' if (show_bestfit_amp and has_bestfit_amp) else '#059669'
+                fig_amp.add_trace(go.Scatter(
+                    x=computed_data['wl_display'],
+                    y=theo_detrended,
+                    mode='lines',
+                    name=theo_label,
+                    line=dict(color=theo_color, width=2.5, dash='dash')
+                ))
             
             # Plot peaks
             if len(meas_peaks_df) > 0:
@@ -1005,14 +1239,36 @@ with tabs[1]:
                     marker=dict(size=8, symbol='circle', color='blue')
                 ))
             
-            if len(theo_peaks_df) > 0:
-                fig_amp.add_trace(go.Scatter(
-                    x=theo_peaks_df['wavelength'],
-                    y=theo_peaks_df['amplitude'],
-                    mode='markers',
-                    name='Theoretical Peaks',
-                    marker=dict(size=8, symbol='circle', color='red')
-                ))
+            if show_both_amp and has_bestfit_amp:
+                # Plot peaks for both PyElli and BestFit
+                if len(theo_pyelli_peaks_df) > 0:
+                    fig_amp.add_trace(go.Scatter(
+                        x=theo_pyelli_peaks_df['wavelength'],
+                        y=theo_pyelli_peaks_df['amplitude'],
+                        mode='markers',
+                        name='PyElli Peaks',
+                        marker=dict(size=8, symbol='circle', color='green')
+                    ))
+                if len(theo_bestfit_peaks_df) > 0:
+                    fig_amp.add_trace(go.Scatter(
+                        x=theo_bestfit_peaks_df['wavelength'],
+                        y=theo_bestfit_peaks_df['amplitude'],
+                        mode='markers',
+                        name='BestFit Peaks',
+                        marker=dict(size=8, symbol='circle', color='red')
+                    ))
+            else:
+                # Plot peaks for single theoretical
+                if len(theo_peaks_df) > 0:
+                    peak_name = 'BestFit Peaks' if (show_bestfit_amp and has_bestfit_amp) else 'PyElli Peaks'
+                    peak_color = 'red' if (show_bestfit_amp and has_bestfit_amp) else 'green'
+                    fig_amp.add_trace(go.Scatter(
+                        x=theo_peaks_df['wavelength'],
+                        y=theo_peaks_df['amplitude'],
+                        mode='markers',
+                        name=peak_name,
+                        marker=dict(size=8, symbol='circle', color=peak_color)
+                    ))
             
             # Plot valleys
             if len(meas_valleys_df) > 0:
@@ -1024,14 +1280,36 @@ with tabs[1]:
                     marker=dict(size=8, symbol='circle', color='cyan')
                 ))
             
-            if len(theo_valleys_df) > 0:
-                fig_amp.add_trace(go.Scatter(
-                    x=theo_valleys_df['wavelength'],
-                    y=theo_valleys_df['amplitude'],
-                    mode='markers',
-                    name='Theoretical Valleys',
-                    marker=dict(size=8, symbol='circle', color='pink')
-                ))
+            if show_both_amp and has_bestfit_amp:
+                # Plot valleys for both PyElli and BestFit
+                if len(theo_pyelli_valleys_df) > 0:
+                    fig_amp.add_trace(go.Scatter(
+                        x=theo_pyelli_valleys_df['wavelength'],
+                        y=theo_pyelli_valleys_df['amplitude'],
+                        mode='markers',
+                        name='PyElli Valleys',
+                        marker=dict(size=8, symbol='circle', color='lightgreen')
+                    ))
+                if len(theo_bestfit_valleys_df) > 0:
+                    fig_amp.add_trace(go.Scatter(
+                        x=theo_bestfit_valleys_df['wavelength'],
+                        y=theo_bestfit_valleys_df['amplitude'],
+                        mode='markers',
+                        name='BestFit Valleys',
+                        marker=dict(size=8, symbol='circle', color='pink')
+                    ))
+            else:
+                # Plot valleys for single theoretical
+                if len(theo_valleys_df) > 0:
+                    valley_name = 'BestFit Valleys' if (show_bestfit_amp and has_bestfit_amp) else 'PyElli Valleys'
+                    valley_color = 'pink' if (show_bestfit_amp and has_bestfit_amp) else 'lightgreen'
+                    fig_amp.add_trace(go.Scatter(
+                        x=theo_valleys_df['wavelength'],
+                        y=theo_valleys_df['amplitude'],
+                        mode='markers',
+                        name=valley_name,
+                        marker=dict(size=8, symbol='circle', color=valley_color)
+                    ))
             
             fig_amp.update_layout(
                 height=600,
@@ -1079,19 +1357,50 @@ with tabs[1]:
             st.markdown('---')
             st.markdown('### 📈 Peak Analysis Metrics')
             
-            # Amplitude metrics
-            mcols_amp = st.columns(5)
-            with mcols_amp[0]:
-                st.metric('Measured Peaks', f'{int(score_result_amp.get("measurement_peaks", 0))}')
-            with mcols_amp[1]:
-                st.metric('Theoretical Peaks', f'{int(score_result_amp.get("theoretical_peaks", 0))}')
-            with mcols_amp[2]:
-                st.metric('Matched Peaks', f'{int(score_result_amp.get("matched_peaks", 0))}')
-            with mcols_amp[3]:
-                st.metric('Mean Delta', f'{score_result_amp.get("mean_delta_nm", 0):.2f} nm')
-            with mcols_amp[4]:
-                score_icon_amp = '🟢' if score_result_amp['score'] >= 0.7 else ('🟡' if score_result_amp['score'] >= 0.5 else '🔴')
-                st.metric('Peak Score', f'{score_icon_amp} {score_result_amp["score"]:.3f}')
+            # Show metrics based on toggle selection
+            if show_both_amp and has_bestfit_amp:
+                # Show metrics for both PyElli and BestFit
+                st.markdown('#### PyElli Theoretical')
+                mcols_pyelli_amp = st.columns(5)
+                with mcols_pyelli_amp[0]:
+                    st.metric('Measured Peaks', f'{int(score_result_pyelli.get("measurement_peaks", 0))}')
+                with mcols_pyelli_amp[1]:
+                    st.metric('Theoretical Peaks', f'{int(score_result_pyelli.get("theoretical_peaks", 0))}')
+                with mcols_pyelli_amp[2]:
+                    st.metric('Matched Peaks', f'{int(score_result_pyelli.get("matched_peaks", 0))}')
+                with mcols_pyelli_amp[3]:
+                    st.metric('Mean Delta', f'{score_result_pyelli.get("mean_delta_nm", 0):.2f} nm')
+                with mcols_pyelli_amp[4]:
+                    score_icon_amp = '🟢' if score_result_pyelli['score'] >= 0.7 else ('🟡' if score_result_pyelli['score'] >= 0.5 else '🔴')
+                    st.metric('Peak Score', f'{score_icon_amp} {score_result_pyelli["score"]:.3f}')
+                
+                st.markdown('#### LTA BestFit')
+                mcols_bestfit_amp = st.columns(5)
+                with mcols_bestfit_amp[0]:
+                    st.metric('Measured Peaks', f'{int(score_result_bestfit.get("measurement_peaks", 0))}')
+                with mcols_bestfit_amp[1]:
+                    st.metric('Theoretical Peaks', f'{int(score_result_bestfit.get("theoretical_peaks", 0))}')
+                with mcols_bestfit_amp[2]:
+                    st.metric('Matched Peaks', f'{int(score_result_bestfit.get("matched_peaks", 0))}')
+                with mcols_bestfit_amp[3]:
+                    st.metric('Mean Delta', f'{score_result_bestfit.get("mean_delta_nm", 0):.2f} nm')
+                with mcols_bestfit_amp[4]:
+                    score_icon_amp = '🟢' if score_result_bestfit['score'] >= 0.7 else ('🟡' if score_result_bestfit['score'] >= 0.5 else '🔴')
+                    st.metric('Peak Score', f'{score_icon_amp} {score_result_bestfit["score"]:.3f}')
+            else:
+                # Show single set of metrics
+                mcols_amp = st.columns(5)
+                with mcols_amp[0]:
+                    st.metric('Measured Peaks', f'{int(score_result_amp.get("measurement_peaks", 0))}')
+                with mcols_amp[1]:
+                    st.metric('Theoretical Peaks', f'{int(score_result_amp.get("theoretical_peaks", 0))}')
+                with mcols_amp[2]:
+                    st.metric('Matched Peaks', f'{int(score_result_amp.get("matched_peaks", 0))}')
+                with mcols_amp[3]:
+                    st.metric('Mean Delta', f'{score_result_amp.get("mean_delta_nm", 0):.2f} nm')
+                with mcols_amp[4]:
+                    score_icon_amp = '🟢' if score_result_amp['score'] >= 0.7 else ('🟡' if score_result_amp['score'] >= 0.5 else '🔴')
+                    st.metric('Peak Score', f'{score_icon_amp} {score_result_amp["score"]:.3f}')
             
         except Exception as e:
             st.warning(f'Could not generate amplitude analysis: {e}')
