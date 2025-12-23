@@ -104,7 +104,7 @@ def create_comparison_plot_for_pdf(
         y=theo_filtered[:len(wl_filtered)] if len(theo_filtered) > len(wl_filtered) else theo_filtered,
         mode='lines',
         name=f'Theoretical',
-        line=dict(color='#059669', width=2, dash='dash')
+        line=dict(color='#dc2626', width=2, dash='dash')
     ))
     
     fig.update_layout(
@@ -155,7 +155,7 @@ def create_analysis_plot_for_pdf(
             y=theoretical_detrended['detrended'],
             mode='lines',
             name='Theoretical',
-            line=dict(color='#059669', width=2, dash='dot')
+            line=dict(color='#dc2626', width=2, dash='dot')
         ))
         
         # Peaks and valleys
@@ -170,7 +170,7 @@ def create_analysis_plot_for_pdf(
             fig.add_trace(go.Scatter(
                 x=theo_peaks['wavelength'], y=theo_peaks['detrended'],
                 mode='markers', name='Theo Peaks',
-                marker=dict(color='#059669', size=6, symbol='circle')
+                marker=dict(color='#dc2626', size=6, symbol='circle')
             ))
         
         if meas_valleys is not None and len(meas_valleys) > 0:
@@ -184,7 +184,7 @@ def create_analysis_plot_for_pdf(
             fig.add_trace(go.Scatter(
                 x=theo_valleys['wavelength'], y=theo_valleys['detrended'],
                 mode='markers', name='Theo Valleys',
-                marker=dict(color='#34d399', size=6, symbol='triangle-down')
+                marker=dict(color='#f87171', size=6, symbol='triangle-down')
             ))
         
         y_title = 'Detrended Intensity'
