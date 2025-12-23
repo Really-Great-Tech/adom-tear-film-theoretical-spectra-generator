@@ -1,5 +1,4 @@
-# Tear Film Spectra Analysis - Dependencies
-# Install with: pip install -r requirements.txt
+
 
 # Core data science
 numpy>=2.0.0
