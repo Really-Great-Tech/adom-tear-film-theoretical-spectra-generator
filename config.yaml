@@ -47,6 +47,12 @@ measurements:
 
 # Signal Analysis Configuration
 analysis:
+  # Wavelength range of interest for analysis (nm)
+  # Based on notebook exploration: 600-1120nm captures the relevant spectral features
+  wavelength_range:
+    min: 600   # Start of analysis region (nm)
+    max: 1120  # End of analysis region (nm)
+  
   detrending:
     default_cutoff_frequency: 0.008  # Default high-pass filter cutoff
     filter_order: 3  # Butterworth filter order
@@ -112,14 +118,14 @@ analysis:
       tau_roughness_A: 150.0
     composite:
       weights:
-        # Prioritize phase_overlap and raw spectrum alignment for visual quality
-        # Based on analysis: visual quality correlates with phase_overlap and RMSE/MAE, NOT peak matching
-        phase_overlap: 0.7      # Primary indicator of visual quality
-        residual: 0.2           # RMSE/MAE matter (overall error), R² ignored when negative
-        peak_count: 0.0         # Removed - not correlated with visual quality
-        peak_delta: 0.0         # Removed - not correlated with visual quality
-        quality: 0.1
-        temporal_continuity: 0.1
+        # Balanced weights: peak matching is important for visual alignment
+        # Based on notebook exploration: peaks/valleys alignment matters for fit quality
+        peak_count: 0.3         # Peak count matching (important for oscillation matching)
+        peak_delta: 0.3         # Peak position alignment (important for phase alignment)
+        phase_overlap: 0.2      # FFT-based phase coherence (reduced weight)
+        residual: 0.1           # RMSE/MAE fit quality
+        quality: 0.1            # Measurement quality score
+        temporal_continuity: 0.0  # Disabled for single measurements
 
 
 # File Paths (relative to project root)

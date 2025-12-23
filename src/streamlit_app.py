@@ -846,7 +846,7 @@ def main():
     # Create tabs
     tab1, tab2, tab3, tab4 = st.tabs([
         "📊 Spectrum Comparison",
-        "📈 Detrended Analysis",
+        "📈 Spectrum Analysis",
         "⚙️ Parameters",
         "🔍 Grid Search",
     ])
@@ -1060,161 +1060,160 @@ def main():
             )
             st.plotly_chart(fig, use_container_width=True)
 
-    # Tab 2: Detrended Analysis
+    # Tab 2: Spectrum Analysis (zoomed view 600-1120nm with detrended signals)
     with tab2:
-        st.markdown("## Detrended Signal Analysis with Peak Detection")
+        # Get wavelength range from config
+        wavelength_range_cfg = config.get("analysis", {}).get("wavelength_range", {})
+        wl_min = float(wavelength_range_cfg.get("min", 600))
+        wl_max = float(wavelength_range_cfg.get("max", 1120))
+        
+        st.markdown(f"## Spectrum Analysis ({wl_min:.0f}-{wl_max:.0f}nm)")
+        st.caption("Detrended signals with peak and valley detection in the wavelength range of interest")
         
         if measurements_enabled and selected_file and selected_file != "None":
             selected_measurement = measurements[selected_file]
             
-            # Detrend both theoretical and measured signals
+            # Filter to wavelength range of interest
             filter_order = config.get("analysis", {}).get("detrending", {}).get("filter_order", 3)
-            theoretical_detrended = detrend_dataframe(theoretical_df, cutoff_freq, filter_order)
-            measured_detrended = detrend_dataframe(selected_measurement, cutoff_freq, filter_order)
             
-            # Detect peaks in detrended signals
+            # Filter theoretical spectrum to wavelength range
+            theoretical_filtered = theoretical_df[
+                (theoretical_df['wavelength'] >= wl_min) & 
+                (theoretical_df['wavelength'] <= wl_max)
+            ].reset_index(drop=True)
+            
+            # Filter measured spectrum to wavelength range
+            measured_filtered = selected_measurement[
+                (selected_measurement['wavelength'] >= wl_min) & 
+                (selected_measurement['wavelength'] <= wl_max)
+            ].reset_index(drop=True)
+            
+            # Detrend both signals
+            theoretical_detrended = detrend_dataframe(theoretical_filtered, cutoff_freq, filter_order)
+            measured_detrended = detrend_dataframe(measured_filtered, cutoff_freq, filter_order)
+            
+            # Detect peaks and valleys in detrended signals
             theo_peaks = detect_peaks_df(theoretical_detrended, 'detrended', peak_prominence)
             meas_peaks = detect_peaks_df(measured_detrended, 'detrended', peak_prominence)
-            
-            # Detect valleys in detrended signals
             theo_valleys = detect_valleys_df(theoretical_detrended, 'detrended', peak_prominence)
             meas_valleys = detect_valleys_df(measured_detrended, 'detrended', peak_prominence)
             
-            # Create subplot figure
-            fig = make_subplots(
-                rows=2, cols=1,
-                subplot_titles=("Original vs Detrended Signals", "Peak and Valley Detection"),
-                vertical_spacing=0.1
-            )
+            # Create single zoomed plot showing detrended signals with peaks/valleys
+            fig = go.Figure()
             
-            # Top plot: Original vs Detrended
+            # Measured detrended signal (solid line)
             fig.add_trace(go.Scatter(
-                x=theoretical_detrended['wavelength'], 
-                y=theoretical_detrended['reflectance'],
-                mode='lines', name='Theoretical Original',
+                x=measured_detrended['wavelength'],
+                y=measured_detrended['detrended'],
+                mode='lines', name='Measured (Spectra)',
                 line=dict(color='blue', width=2)
-            ), row=1, col=1)
+            ))
             
+            # Theoretical detrended signal (dotted line)
             fig.add_trace(go.Scatter(
-                x=measured_detrended['wavelength'], 
-                y=measured_detrended['reflectance'],
-                mode='lines', name='Measured Original',
-                line=dict(color='red', width=2)
-            ), row=1, col=1)
-            
-            fig.add_trace(go.Scatter(
-                x=theoretical_detrended['wavelength'], 
+                x=theoretical_detrended['wavelength'],
                 y=theoretical_detrended['detrended'],
-                mode='lines', name='Theoretical Detrended',
-                line=dict(color='lightblue', width=2, dash='dash')
-            ), row=1, col=1)
+                mode='lines', name='Best Fit (Theoretical)',
+                line=dict(color='red', width=2, dash='dot')
+            ))
             
-            fig.add_trace(go.Scatter(
-                x=measured_detrended['wavelength'], 
-                y=measured_detrended['detrended'],
-                mode='lines', name='Measured Detrended',
-                line=dict(color='lightcoral', width=2, dash='dash')
-            ), row=1, col=1)
-            
-            # Bottom plot: Detrended with peaks and valleys
-            fig.add_trace(go.Scatter(
-                x=theoretical_detrended['wavelength'], 
-                y=theoretical_detrended['detrended'],
-                mode='lines', name='Theoretical Detrended',
-                line=dict(color='blue', width=2), showlegend=False
-            ), row=2, col=1)
-            
-            fig.add_trace(go.Scatter(
-                x=measured_detrended['wavelength'], 
-                y=measured_detrended['detrended'],
-                mode='lines', name='Measured Detrended',
-                line=dict(color='red', width=2), showlegend=False
-            ), row=2, col=1)
-            
-            # Add peaks
-            if len(theo_peaks) > 0:
-                fig.add_trace(go.Scatter(
-                    x=theo_peaks['wavelength'], 
-                    y=theo_peaks['detrended'],
-                    mode='markers', name='Theoretical Peaks',
-                    marker=dict(color='blue', size=8, symbol='triangle-up')
-                ), row=2, col=1)
-            
+            # Measured peaks
             if len(meas_peaks) > 0:
                 fig.add_trace(go.Scatter(
-                    x=meas_peaks['wavelength'], 
+                    x=meas_peaks['wavelength'],
                     y=meas_peaks['detrended'],
-                    mode='markers', name='Measured Peaks',
-                    marker=dict(color='red', size=8, symbol='triangle-up')
-                ), row=2, col=1)
+                    mode='markers', name='Spectra Peaks',
+                    marker=dict(color='blue', size=8, symbol='circle')
+                ))
             
-            # Add valleys
-            if len(theo_valleys) > 0:
+            # Theoretical peaks
+            if len(theo_peaks) > 0:
                 fig.add_trace(go.Scatter(
-                    x=theo_valleys['wavelength'], 
-                    y=theo_valleys['detrended'],
-                    mode='markers', name='Theoretical Valleys',
-                    marker=dict(color='blue', size=8, symbol='triangle-down')
-                ), row=2, col=1)
+                    x=theo_peaks['wavelength'],
+                    y=theo_peaks['detrended'],
+                    mode='markers', name='Best Fit Peaks',
+                    marker=dict(color='red', size=8, symbol='circle')
+                ))
             
+            # Measured valleys
             if len(meas_valleys) > 0:
                 fig.add_trace(go.Scatter(
-                    x=meas_valleys['wavelength'], 
+                    x=meas_valleys['wavelength'],
                     y=meas_valleys['detrended'],
-                    mode='markers', name='Measured Valleys',
-                    marker=dict(color='red', size=8, symbol='triangle-down')
-                ), row=2, col=1)
+                    mode='markers', name='Spectra Valleys',
+                    marker=dict(color='cyan', size=8, symbol='circle')
+                ))
             
-            fig.update_xaxes(title_text="Wavelength (nm)")
-            fig.update_yaxes(title_text="Reflectance", row=1, col=1)
-            fig.update_yaxes(title_text="Detrended Reflectance", row=2, col=1)
-            fig.update_layout(height=800, template="plotly_white")
+            # Theoretical valleys
+            if len(theo_valleys) > 0:
+                fig.add_trace(go.Scatter(
+                    x=theo_valleys['wavelength'],
+                    y=theo_valleys['detrended'],
+                    mode='markers', name='Best Fit Valleys',
+                    marker=dict(color='pink', size=8, symbol='circle')
+                ))
+            
+            fig.update_layout(
+                title=f"Spectra and Best Fit Data Overlay for {selected_file}",
+                xaxis_title="Wavelength (nm)",
+                yaxis_title="Intensity (Detrended)",
+                xaxis_range=[wl_min, wl_max],
+                hovermode="x unified",
+                template="plotly_white",
+                height=600,
+                legend=dict(
+                    yanchor="top", y=0.99,
+                    xanchor="right", x=0.99
+                )
+            )
             
             st.plotly_chart(fig, use_container_width=True)
             
-            # Peak analysis summary
+            # Peak analysis summary in two columns
             col1, col2 = st.columns(2)
             with col1:
-                st.markdown("### Theoretical Signal Analysis")
-                st.write(f"**Peaks detected:** {len(theo_peaks)}")
-                if len(theo_peaks) > 0:
-                    st.write("Peak wavelengths:", [f"{w:.1f}nm" for w in theo_peaks['wavelength'].head(5)])
-                st.write(f"**Valleys detected:** {len(theo_valleys)}")
-                if len(theo_valleys) > 0:
-                    st.write("Valley wavelengths:", [f"{w:.1f}nm" for w in theo_valleys['wavelength'].head(5)])
-            
-            with col2:
-                st.markdown("### Measured Signal Analysis")
+                st.markdown("### Measured Spectrum Analysis")
                 st.write(f"**Peaks detected:** {len(meas_peaks)}")
                 if len(meas_peaks) > 0:
-                    st.write("Peak wavelengths:", [f"{w:.1f}nm" for w in meas_peaks['wavelength'].head(5)])
+                    peak_wls = [f"{w:.1f}nm" for w in meas_peaks['wavelength']]
+                    st.write("Peak wavelengths:", peak_wls)
                 st.write(f"**Valleys detected:** {len(meas_valleys)}")
                 if len(meas_valleys) > 0:
-                    st.write("Valley wavelengths:", [f"{w:.1f}nm" for w in meas_valleys['wavelength'].head(5)])
+                    valley_wls = [f"{w:.1f}nm" for w in meas_valleys['wavelength']]
+                    st.write("Valley wavelengths:", valley_wls)
+            
+            with col2:
+                st.markdown("### Theoretical Spectrum Analysis")
+                st.write(f"**Peaks detected:** {len(theo_peaks)}")
+                if len(theo_peaks) > 0:
+                    peak_wls = [f"{w:.1f}nm" for w in theo_peaks['wavelength']]
+                    st.write("Peak wavelengths:", peak_wls)
+                st.write(f"**Valleys detected:** {len(theo_valleys)}")
+                if len(theo_valleys) > 0:
+                    valley_wls = [f"{w:.1f}nm" for w in theo_valleys['wavelength']]
+                    st.write("Valley wavelengths:", valley_wls)
             
         else:
-            # Show only theoretical detrended
+            # Show only theoretical detrended (filtered to wavelength range)
             filter_order = config.get("analysis", {}).get("detrending", {}).get("filter_order", 3)
-            theoretical_detrended = detrend_dataframe(theoretical_df, cutoff_freq, filter_order)
+            
+            theoretical_filtered = theoretical_df[
+                (theoretical_df['wavelength'] >= wl_min) & 
+                (theoretical_df['wavelength'] <= wl_max)
+            ].reset_index(drop=True)
+            
+            theoretical_detrended = detrend_dataframe(theoretical_filtered, cutoff_freq, filter_order)
             theo_peaks = detect_peaks_df(theoretical_detrended, 'detrended', peak_prominence)
             theo_valleys = detect_valleys_df(theoretical_detrended, 'detrended', peak_prominence)
             
             fig = go.Figure()
             
-            # Original signal
-            fig.add_trace(go.Scatter(
-                x=theoretical_detrended['wavelength'],
-                y=theoretical_detrended['reflectance'],
-                mode='lines', name='Original',
-                line=dict(color='blue', width=2)
-            ))
-            
             # Detrended signal
             fig.add_trace(go.Scatter(
                 x=theoretical_detrended['wavelength'],
                 y=theoretical_detrended['detrended'],
-                mode='lines', name='Detrended',
-                line=dict(color='lightblue', width=2, dash='dash')
+                mode='lines', name='Theoretical (Detrended)',
+                line=dict(color='blue', width=2)
             ))
             
             # Peaks
@@ -1223,7 +1222,7 @@ def main():
                     x=theo_peaks['wavelength'],
                     y=theo_peaks['detrended'],
                     mode='markers', name='Peaks',
-                    marker=dict(color='green', size=8, symbol='triangle-up')
+                    marker=dict(color='blue', size=8, symbol='circle')
                 ))
             
             # Valleys
@@ -1232,15 +1231,20 @@ def main():
                     x=theo_valleys['wavelength'],
                     y=theo_valleys['detrended'],
                     mode='markers', name='Valleys',
-                    marker=dict(color='orange', size=8, symbol='triangle-down')
+                    marker=dict(color='cyan', size=8, symbol='circle')
                 ))
             
             fig.update_layout(
-                title="Theoretical Signal: Original vs Detrended with Peak/Valley Detection",
+                title=f"Theoretical Detrended Signal ({wl_min:.0f}-{wl_max:.0f}nm)",
                 xaxis_title="Wavelength (nm)",
-                yaxis_title="Reflectance",
+                yaxis_title="Intensity (Detrended)",
+                xaxis_range=[wl_min, wl_max],
                 template="plotly_white",
-                height=600
+                height=600,
+                legend=dict(
+                    yanchor="top", y=0.99,
+                    xanchor="right", x=0.99
+                )
             )
             
             st.plotly_chart(fig, use_container_width=True)
