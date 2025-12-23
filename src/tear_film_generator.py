@@ -318,24 +318,6 @@ def make_single_spectrum_calculator(config: Dict[str, Any]):
     materials_path = get_project_path(paths['materials'])
     base_stack_path = get_project_path(paths['stack'])
 
-    # Validate that all required files exist
-    required_files = {
-        'DLL': dll_path,
-        'Algorithm XML': algorithm_path,
-        'Configuration XML': config_xml_path,
-        'Materials directory': materials_path,
-        'Stack XML': base_stack_path,
-    }
-    
-    missing_files = []
-    for name, file_path in required_files.items():
-        if not file_path.exists():
-            missing_files.append(f"{name}: {file_path}")
-    
-    if missing_files:
-        error_msg = "Required files not found:\n" + "\n".join(f"  - {f}" for f in missing_files)
-        raise FileNotFoundError(error_msg)
-
     # Prepare wavelength vector
     _, wl = prepare_wavelengths_from_config(config)
 
@@ -392,101 +374,15 @@ def make_calc_refl(dll: pathlib.Path, algorithm_xml: pathlib.Path,
     if not CLR_AVAILABLE:
         raise ImportError("pythonnet (clr) module required for DLL functionality. Install with: pip install pythonnet")
     
-    # SpAnalizer.dll depends on log4net.dll and BatchUtility.dll - load them first
-    # Use absolute paths to avoid path resolution issues
-    dll_abs = dll.resolve()
-    dll_dir = dll_abs.parent
-    
-    # On Windows, add DLL directory to PATH so .NET can find dependencies
-    import sys
-    import os
-    dll_dir_str = str(dll_dir)
-    if dll_dir_str not in os.environ.get('PATH', ''):
-        os.environ['PATH'] = dll_dir_str + os.pathsep + os.environ.get('PATH', '')
-    
-    # List of potential dependency locations (in order of preference)
-    dependency_locations = [
-        dll_dir,  # Same directory as SpAnalizer.dll (most likely location)
-        dll_dir.parent,  # Parent directory
-        pathlib.Path(__file__).parent.resolve(),  # src/ directory
-        PROJECT_ROOT / "src",  # src/ from project root
-    ]
-    
-    # Try to load log4net.dll from multiple locations
-    log4net_loaded = False
-    for loc in dependency_locations:
-        log4net_path = loc / "log4net.dll"
-        if log4net_path.exists():
-            try:
-                log4net_abs = str(log4net_path.resolve())
-                clr.AddReference(log4net_abs)
-                log4net_loaded = True
-                break
-            except Exception:
-                continue
-    
-    # If not found in file system, try loading from GAC or by name
-    if not log4net_loaded:
-        try:
-            clr.AddReference("log4net")
-            log4net_loaded = True
-        except Exception:
-            pass
-    
-    # Try to load BatchUtility.dll from multiple locations
-    batchutil_loaded = False
-    for loc in dependency_locations:
-        batchutil_path = loc / "BatchUtility.dll"
-        if batchutil_path.exists():
-            try:
-                batchutil_abs = str(batchutil_path.resolve())
-                clr.AddReference(batchutil_abs)
-                batchutil_loaded = True
-                break
-            except Exception:
-                continue
-    
-    # If not found in file system, try loading from GAC or by name
-    if not batchutil_loaded:
-        try:
-            clr.AddReference("BatchUtility")
-            batchutil_loaded = True
-        except Exception:
-            pass
-    
-    # Now load SpAnalizer.dll (dependencies should be loaded first)
-    # Use absolute path to ensure proper resolution
-    clr.AddReference(str(dll_abs))
+    clr.AddReference(str(dll))
     from SpAnalizer import (Serializer, SpAnalizeHelper,
                             PolarizationTypeEnum, AnalizerTypeEnum,
                             IParameter)
     from System.Collections.Generic import List
 
     ser     = Serializer()
-    
-    # Validate algorithm XML exists and resolve to absolute path
-    if not algorithm_xml.exists():
-        raise FileNotFoundError(f"Algorithm XML file not found: {algorithm_xml}")
-    algorithm_xml_abs = str(algorithm_xml.resolve())
-    alg = ser.ReadAlgorithmFromFile(AnalizerTypeEnum.Thickness, algorithm_xml_abs)
-    
-    # Validate and load configuration XML if provided
-    # Use absolute resolved path to avoid network path issues
-    if config_xml:
-        if not config_xml.exists():
-            raise FileNotFoundError(f"Configuration XML file not found: {config_xml}")
-        # Convert to absolute path string to avoid network path issues
-        config_xml_abs = str(config_xml.resolve())
-        try:
-            cfg = ser.LoadConfigurationthFromFile(config_xml_abs)
-        except Exception as e:
-            raise FileNotFoundError(
-                f"Failed to load configuration XML from: {config_xml_abs}\n"
-                f"Original error: {e}\n"
-                f"Please verify the file exists and is accessible."
-            ) from e
-    else:
-        cfg = None
+    alg     = ser.ReadAlgorithmFromFile(AnalizerTypeEnum.Thickness, str(algorithm_xml))
+    cfg     = ser.LoadConfigurationthFromFile(str(config_xml)) if config_xml else None
     helper  = SpAnalizeHelper()
     empty_p = List[IParameter]()
 
