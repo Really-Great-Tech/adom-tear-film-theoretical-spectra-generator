@@ -595,21 +595,21 @@ with st.sidebar:
             del st.session_state._pending_mucus  # Clear after use
         
         current_lipid = st.slider(
-            'Lipid (nm)', 0, 400,
+            'Lipid (nm)', 9, 250,
             value=int(round(lipid_init)),
             key='param_lipid',
             step=5
         )
         current_aqueous = st.slider(
-            'Aqueous (nm)', -20, 6000,
+            'Aqueous (nm)', 800, 12000,
             value=int(round(aqueous_init)),
             key='param_aqueous',
             step=50
         )
         # Interface roughness in Angstroms (mucus thickness is fixed at 500nm)
-        # LTA range: 300-3000 Å, default: 2000 Å
+        # Accepted range: 600-2750 Å, default: 2000 Å
         current_mucus = st.slider(
-            'Interface Roughness (Å)', 300, 3000,
+            'Interface Roughness (Å)', 600, 2750,
             value=int(round(mucus_init)),
             key='param_mucus',
             step=50
@@ -620,19 +620,19 @@ with st.sidebar:
         
         col_a, col_b, col_c = st.columns(3)
         with col_a:
-            lipid_min = st.number_input('Lipid Min', value=0, key='grid_lipid_min')
-            lipid_max = st.number_input('Lipid Max', value=400, key='grid_lipid_max')
-            lipid_step = st.number_input('Lipid Step', value=20, key='grid_lipid_step')  # Matches LTA app coarse search
+            lipid_min = st.number_input('Lipid Min', value=9, key='grid_lipid_min')
+            lipid_max = st.number_input('Lipid Max', value=250, key='grid_lipid_max')
+            lipid_step = st.number_input('Lipid Step', value=20, key='grid_lipid_step')
         with col_b:
-            aqueous_min = st.number_input('Aqueous Min', value=-20, key='grid_aq_min')
-            aqueous_max = st.number_input('Aqueous Max', value=6000, key='grid_aq_max')
-            aqueous_step = st.number_input('Aqueous Step', value=200, key='grid_aq_step')  # Matches LTA app coarse search
+            aqueous_min = st.number_input('Aqueous Min', value=800, key='grid_aq_min')
+            aqueous_max = st.number_input('Aqueous Max', value=12000, key='grid_aq_max')
+            aqueous_step = st.number_input('Aqueous Step', value=200, key='grid_aq_step')
         with col_c:
             # Interface roughness range in Angstroms (mucus thickness is fixed at 500nm)
-            # Matches LTA app coarse search: 300-3000 Å, step 300 Å
-            mucus_min = st.number_input('Roughness Min (Å)', value=300, key='grid_mu_min')
-            mucus_max = st.number_input('Roughness Max (Å)', value=3000, key='grid_mu_max')
-            mucus_step = st.number_input('Roughness Step (Å)', value=300, key='grid_mu_step')  # Matches LTA app coarse search
+            # Accepted range: 600-2750 Å
+            mucus_min = st.number_input('Roughness Min (Å)', value=600, key='grid_mu_min')
+            mucus_max = st.number_input('Roughness Max (Å)', value=2750, key='grid_mu_max')
+            mucus_step = st.number_input('Roughness Step (Å)', value=300, key='grid_mu_step')
         
         # Grid Search button right below search range settings
         st.markdown('---')
@@ -1393,25 +1393,26 @@ if False:  # Disabled for client
         
         lipid_thickness = st.slider(
             'Lipid Thickness (nm)',
-            10, 200, 80,
-            help='Typical range: 40-100 nm',
+            9, 250, 80,
+            help='Accepted range: 9-250 nm',
             key='demo_lipid'
         )
         
         aqueous_thickness = st.slider(
             'Aqueous Thickness (nm)',
-            500, 5000, 2337,
+            800, 12000, 2337,
             step=50,
-            help='Typical range: 1000-5000 nm',
+            help='Accepted range: 800-12000 nm',
             key='demo_aqueous'
         )
         
         mucus_thickness = st.slider(
             'Mucus Thickness (nm)',
-            100, 1000, 500,
+            500, 500, 500,
             step=50,
-            help='Typical range: 200-800 nm',
-            key='demo_mucus'
+            help='Fixed at 500 nm',
+            key='demo_mucus',
+            disabled=True
         )
         
         st.markdown('#### Calculation Parameters')
@@ -1652,22 +1653,23 @@ if False:  # Disabled for client
         
         fit_lipid = st.slider(
             'Lipid (nm)',
-            10, 200, 80,
+            9, 250, 80,
             key='fit_lipid'
         )
         
         fit_aqueous = st.slider(
             'Aqueous (nm)',
-            500, 5000, 2337,
+            800, 12000, 2337,
             step=25,
             key='fit_aqueous'
         )
         
         fit_mucus = st.slider(
             'Mucus (nm)',
-            100, 1000, 500,
+            500, 500, 500,
             step=25,
-            key='fit_mucus'
+            key='fit_mucus',
+            disabled=True
         )
         
         st.markdown('---')
