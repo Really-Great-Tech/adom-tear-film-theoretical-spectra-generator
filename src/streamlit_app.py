@@ -59,6 +59,8 @@ from tear_film_generator import (
     get_project_path,
 )
 
+from pdf_report import generate_main_app_pdf_report
+
 
 def clamp_to_step(value: float, min_val: float, step: float) -> float:
     """Snap a value to the nearest step from min_val."""
@@ -276,17 +278,17 @@ def flag_edge_cases(
     # Get acceptable/feasible ranges (wider than search ranges)
     if acceptable_ranges is None:
         acceptable_ranges = {
-            "lipid": {"min": 0, "max": 500},
-            "aqueous": {"min": 0, "max": 2000},  # Note: aqueous CAN be 0
-            "roughness": {"min": 0, "max": 5000},
+            "lipid": {"min": 9, "max": 250},
+            "aqueous": {"min": 800, "max": 12000},
+            "roughness": {"min": 600, "max": 2750},
         }
     
-    accept_lipid_min = float(acceptable_ranges.get("lipid", {}).get("min", 0))
-    accept_lipid_max = float(acceptable_ranges.get("lipid", {}).get("max", 500))
-    accept_aqueous_min = float(acceptable_ranges.get("aqueous", {}).get("min", 0))
-    accept_aqueous_max = float(acceptable_ranges.get("aqueous", {}).get("max", 2000))
-    accept_rough_min = float(acceptable_ranges.get("roughness", {}).get("min", 0))
-    accept_rough_max = float(acceptable_ranges.get("roughness", {}).get("max", 5000))
+    accept_lipid_min = float(acceptable_ranges.get("lipid", {}).get("min", 9))
+    accept_lipid_max = float(acceptable_ranges.get("lipid", {}).get("max", 250))
+    accept_aqueous_min = float(acceptable_ranges.get("aqueous", {}).get("min", 800))
+    accept_aqueous_max = float(acceptable_ranges.get("aqueous", {}).get("max", 12000))
+    accept_rough_min = float(acceptable_ranges.get("roughness", {}).get("min", 600))
+    accept_rough_max = float(acceptable_ranges.get("roughness", {}).get("max", 2750))
     
     # Check for "no good fit" scenario (best score is too low)
     best_score = float(results_df["score_composite"].max()) if "score_composite" in results_df.columns else 0.0
@@ -309,13 +311,8 @@ def flag_edge_cases(
             edge_case_reasons.append(f"lipid_outside_acceptable_range({lipid:.0f}nm, acceptable: {accept_lipid_min:.0f}-{accept_lipid_max:.0f}nm)")
             is_edge_case = True
         
-        # Aqueous can be 0, so only flag if > max (not if == 0)
-        if aqueous < accept_aqueous_min:
-            if aqueous != 0:  # 0 is valid for aqueous
-                edge_case_reasons.append(f"aqueous_below_min({aqueous:.0f}nm, min: {accept_aqueous_min:.0f}nm)")
-                is_edge_case = True
-        elif aqueous > accept_aqueous_max:
-            edge_case_reasons.append(f"aqueous_above_max({aqueous:.0f}nm, max: {accept_aqueous_max:.0f}nm)")
+        if aqueous < accept_aqueous_min or aqueous > accept_aqueous_max:
+            edge_case_reasons.append(f"aqueous_outside_acceptable_range({aqueous:.0f}nm, acceptable: {accept_aqueous_min:.0f}-{accept_aqueous_max:.0f}nm)")
             is_edge_case = True
         
         if rough < accept_rough_min or rough > accept_rough_max:
@@ -618,12 +615,12 @@ def run_coarse_fine_grid_search(
         # Get acceptable ranges for clamping (wider than configured search ranges)
         edge_case_cfg = analysis_cfg.get("edge_case_detection", {})
         acceptable_ranges = edge_case_cfg.get("acceptable_ranges", {})
-        accept_lipid_min = float(acceptable_ranges.get("lipid", {}).get("min", 0))
-        accept_lipid_max = float(acceptable_ranges.get("lipid", {}).get("max", 500))
-        accept_aqueous_min = float(acceptable_ranges.get("aqueous", {}).get("min", 0))
-        accept_aqueous_max = float(acceptable_ranges.get("aqueous", {}).get("max", 2000))
-        accept_rough_min = float(acceptable_ranges.get("roughness", {}).get("min", 0))
-        accept_rough_max = float(acceptable_ranges.get("roughness", {}).get("max", 5000))
+        accept_lipid_min = float(acceptable_ranges.get("lipid", {}).get("min", 9))
+        accept_lipid_max = float(acceptable_ranges.get("lipid", {}).get("max", 250))
+        accept_aqueous_min = float(acceptable_ranges.get("aqueous", {}).get("min", 800))
+        accept_aqueous_max = float(acceptable_ranges.get("aqueous", {}).get("max", 12000))
+        accept_rough_min = float(acceptable_ranges.get("roughness", {}).get("min", 600))
+        accept_rough_max = float(acceptable_ranges.get("roughness", {}).get("max", 2750))
         
         # Expand refinement window beyond configured ranges, but clamp to acceptable ranges
         # This allows finding optimal values outside the initial search range
@@ -1003,22 +1000,22 @@ def main():
     aqueous_cfg = params["aqueous"]
     rough_cfg = params["roughness"]
     
-    
-    slider_lipid_min = float(lipid_cfg["min"])
-    slider_lipid_max = float(lipid_cfg["max"])
-    slider_aqueous_min = float(aqueous_cfg["min"])
-    slider_aqueous_max = float(aqueous_cfg["max"])
-    slider_rough_min = float(rough_cfg["min"])
-    slider_rough_max = float(rough_cfg["max"])
+    # Slider limits use accepted ranges (lipid: 9-250, aqueous: 800-12000, roughness: 600-2750)
+    slider_lipid_min = 9.0
+    slider_lipid_max = 250.0
+    slider_aqueous_min = 800.0
+    slider_aqueous_max = 12000.0
+    slider_rough_min = 600.0
+    slider_rough_max = 2750.0
 
-    # Defaults: use configured defaults if provided, or midpoints snapped to step
+    # Defaults: use configured defaults if provided, or midpoints of slider ranges
     defaults = ui_cfg.get("default_values", {})
-    def midpoint(cfg):
-        return clamp_to_step((cfg["min"] + cfg["max"]) / 2, cfg["min"], cfg["step"])
+    def slider_midpoint(min_val, max_val, step):
+        return clamp_to_step((min_val + max_val) / 2, min_val, step)
 
-    default_lipid = defaults.get("lipid", midpoint(lipid_cfg))
-    default_aqueous = defaults.get("aqueous", midpoint(aqueous_cfg))
-    default_rough = defaults.get("roughness", midpoint(rough_cfg))
+    default_lipid = max(slider_lipid_min, min(slider_lipid_max, defaults.get("lipid", slider_midpoint(slider_lipid_min, slider_lipid_max, lipid_cfg["step"]))))
+    default_aqueous = max(slider_aqueous_min, min(slider_aqueous_max, defaults.get("aqueous", slider_midpoint(slider_aqueous_min, slider_aqueous_max, aqueous_cfg["step"]))))
+    default_rough = max(slider_rough_min, min(slider_rough_max, defaults.get("roughness", slider_midpoint(slider_rough_min, slider_rough_max, rough_cfg["step"]))))
 
     # Initialize session state defaults for sliders and analysis controls so they can be reset later
     slider_defaults = {
@@ -1535,24 +1532,24 @@ def main():
                     ref_cols = st.columns(3)
                     client_lipid = ref_cols[0].number_input(
                         "Client Lipid (nm)",
-                        min_value=0.0,
-                        max_value=500.0,
+                        min_value=9.0,
+                        max_value=250.0,
                         value=float(client_ref_cfg.get("default_lipid", 62.3)),
                         step=0.1,
                         key="client_ref_lipid"
                     )
                     client_aqueous = ref_cols[1].number_input(
                         "Client Aqueous (nm)",
-                        min_value=-20.0,
+                        min_value=800.0,
                         max_value=12000.0,
-                        value=float(client_ref_cfg.get("default_aqueous", -2.0)),
+                        value=float(client_ref_cfg.get("default_aqueous", 800.0)),
                         step=0.1,
                         key="client_ref_aqueous"
                     )
                     client_roughness = ref_cols[2].number_input(
                         "Client Roughness (Å)",
-                        min_value=0.0,
-                        max_value=3000.0,
+                        min_value=600.0,
+                        max_value=2750.0,
                         value=float(client_ref_cfg.get("default_roughness", 1200.0)),
                         step=1.0,
                         key="client_ref_roughness"
@@ -2092,14 +2089,60 @@ def main():
                     selection = st.selectbox(
                         "Select a candidate to apply", options=options, format_func=lambda idx: f"Rank {idx + 1}"
                     )
-                    if st.button("Apply Selection", key="apply_grid_selection"):
-                        row = display_df.loc[selection]
-                        st.session_state["pending_slider_update"] = {
-                            "lipid_slider": float(row["lipid_nm"]),
-                            "aqueous_slider": float(row["aqueous_nm"]),
-                            "rough_slider": float(row["roughness_A"]),
-                        }
-                        st.rerun()
+                    
+                    # Action buttons in columns
+                    btn_col1, btn_col2 = st.columns(2)
+                    
+                    with btn_col1:
+                        if st.button("Apply Selection", key="apply_grid_selection"):
+                            row = display_df.loc[selection]
+                            st.session_state["pending_slider_update"] = {
+                                "lipid_slider": float(row["lipid_nm"]),
+                                "aqueous_slider": float(row["aqueous_nm"]),
+                                "rough_slider": float(row["roughness_A"]),
+                            }
+                            st.rerun()
+                    
+                    with btn_col2:
+                        # PDF Export button
+                        pdf_top_n = st.number_input(
+                            "Top N for PDF", min_value=1, max_value=20, value=10, step=1,
+                            help="Number of top fits to include in PDF report"
+                        )
+                        
+                        if st.button("📄 Export PDF Report", key="export_pdf_report"):
+                            with st.spinner(f"Generating PDF report for top {pdf_top_n} fits..."):
+                                try:
+                                    pdf_bytes = generate_main_app_pdf_report(
+                                        results_df=results_df,
+                                        measurement_file=selected_file,
+                                        measured_df=selected_measurement,
+                                        single_spectrum_func=single_spectrum,
+                                        wavelengths=wavelengths,
+                                        analysis_cfg=analysis_cfg,
+                                        detrend_func=detrend_dataframe,
+                                        detect_peaks_func=detect_peaks_df,
+                                        detect_valleys_func=detect_valleys_df,
+                                        top_n=pdf_top_n,
+                                    )
+                                    
+                                    # Generate filename with timestamp
+                                    timestamp = time.strftime("%Y%m%d_%H%M%S")
+                                    safe_filename = selected_file.replace('/', '_').replace('\\', '_')
+                                    pdf_filename = f"tear_film_report_{safe_filename}_{timestamp}.pdf"
+                                    
+                                    st.download_button(
+                                        label="⬇️ Download PDF Report",
+                                        data=pdf_bytes,
+                                        file_name=pdf_filename,
+                                        mime="application/pdf",
+                                        key="download_pdf_report"
+                                    )
+                                    st.success(f"✅ PDF report generated! Click above to download.")
+                                except Exception as e:
+                                    st.error(f"❌ Error generating PDF: {str(e)}")
+                                    import traceback
+                                    st.code(traceback.format_exc())
             else:
                 st.info("Run the grid search to see ranked candidates.")
 
