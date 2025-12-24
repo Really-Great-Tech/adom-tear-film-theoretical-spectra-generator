@@ -103,6 +103,38 @@ def detect_valleys_df(df: pd.DataFrame, column: str, prominence: float) -> pd.Da
     return result
 
 
+def load_bestfit_spectrum(file_path: pathlib.Path) -> pd.DataFrame:
+    """Load BestFit theoretical spectrum file.
+    
+    Args:
+        file_path: Path to the BestFit spectrum file
+        
+    Returns:
+        DataFrame with 'wavelength' and 'reflectance' columns
+    """
+    wavelengths = []
+    reflectances = []
+    
+    with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
+        for line in f:
+            line = line.strip()
+            # Skip header line
+            if line.startswith('BestFit') or not line:
+                continue
+            parts = line.split()
+            if len(parts) >= 2:
+                try:
+                    wavelengths.append(float(parts[0]))
+                    reflectances.append(float(parts[1]))
+                except ValueError:
+                    continue
+    
+    return pd.DataFrame({
+        'wavelength': wavelengths,
+        'reflectance': reflectances
+    }).sort_values('wavelength').reset_index(drop=True)
+
+
 def load_measurement_files(measurements_dir: pathlib.Path, config: Dict[str, Any]) -> Dict[str, pd.DataFrame]:
     """Load measurement spectra using the shared loader.
     
@@ -847,8 +879,23 @@ def calculate_fit_metrics(measured: np.ndarray, theoretical: np.ndarray) -> Dict
 
 def create_comparison_plot(theoretical_wl: np.ndarray, theoretical_spec: np.ndarray,
                           measured_df: pd.DataFrame, lipid_val: float, aqueous_val: float, 
-                          rough_val: float, config: Dict[str, Any], selected_file: str) -> go.Figure:
-    """Create a plot comparing theoretical and measured spectra."""
+                          rough_val: float, config: Dict[str, Any], selected_file: str,
+                          bestfit_df: Optional[pd.DataFrame] = None,
+                          show_bestfit: bool = False,
+                          show_both_theoretical: bool = False) -> go.Figure:
+    """Create a plot comparing theoretical and measured spectra.
+    
+    Args:
+        theoretical_wl: Wavelength array for theoretical spectrum
+        theoretical_spec: Theoretical spectrum values
+        measured_df: Measured spectrum DataFrame
+        lipid_val, aqueous_val, rough_val: Parameter values for display
+        config: Configuration dictionary
+        selected_file: Selected measurement file name
+        bestfit_df: Optional BestFit spectrum DataFrame
+        show_bestfit: Whether to show BestFit instead of theoretical
+        show_both_theoretical: Whether to show both theoretical and BestFit
+    """
     plot_config = config.get('plotting', {})
     style = plot_config.get('plot_style', {})
     
@@ -872,18 +919,60 @@ def create_comparison_plot(theoretical_wl: np.ndarray, theoretical_spec: np.ndar
         hovertemplate='λ=%{x:.1f}nm<br>R=%{y:.4f}<br>Measured<extra></extra>'
     ))
     
-    # Add theoretical spectrum
-    fig.add_trace(go.Scatter(
-        x=theoretical_wl,
-        y=theoretical_spec,
-        mode='lines',
-        name=f'Theoretical (L={lipid_val:.0f}, A={aqueous_val:.0f}, R={rough_val:.0f})',
-        line=dict(
-            color=style.get('theoretical_color', 'blue'),
-            width=style.get('line_width', 2)
-        ),
-        hovertemplate='λ=%{x:.1f}nm<br>R=%{y:.4f}<br>Theoretical<extra></extra>'
-    ))
+    # Add theoretical spectrum(s) based on toggle
+    if show_both_theoretical and bestfit_df is not None:
+        # Show both LTA theoretical and BestFit
+        fig.add_trace(go.Scatter(
+            x=theoretical_wl,
+            y=theoretical_spec,
+            mode='lines',
+            name=f'LTA Theoretical (L={lipid_val:.0f}, A={aqueous_val:.0f}, R={rough_val:.0f})',
+            line=dict(
+                color=style.get('theoretical_color', 'blue'),
+                width=style.get('line_width', 2),
+                dash='dash'
+            ),
+            hovertemplate='λ=%{x:.1f}nm<br>R=%{y:.4f}<br>LTA Theoretical<extra></extra>'
+        ))
+        fig.add_trace(go.Scatter(
+            x=bestfit_df['wavelength'],
+            y=bestfit_df['reflectance'],
+            mode='lines',
+            name='LTA BestFit',
+            line=dict(
+                color='#db2777',
+                width=style.get('line_width', 2),
+                dash='dot'
+            ),
+            hovertemplate='λ=%{x:.1f}nm<br>R=%{y:.4f}<br>LTA BestFit<extra></extra>'
+        ))
+    elif show_bestfit and bestfit_df is not None:
+        # Show only BestFit
+        fig.add_trace(go.Scatter(
+            x=bestfit_df['wavelength'],
+            y=bestfit_df['reflectance'],
+            mode='lines',
+            name='LTA BestFit',
+            line=dict(
+                color='#db2777',
+                width=style.get('line_width', 2),
+                dash='dash'
+            ),
+            hovertemplate='λ=%{x:.1f}nm<br>R=%{y:.4f}<br>LTA BestFit<extra></extra>'
+        ))
+    else:
+        # Show only LTA theoretical (default)
+        fig.add_trace(go.Scatter(
+            x=theoretical_wl,
+            y=theoretical_spec,
+            mode='lines',
+            name=f'Theoretical (L={lipid_val:.0f}, A={aqueous_val:.0f}, R={rough_val:.0f})',
+            line=dict(
+                color=style.get('theoretical_color', 'blue'),
+                width=style.get('line_width', 2)
+            ),
+            hovertemplate='λ=%{x:.1f}nm<br>R=%{y:.4f}<br>Theoretical<extra></extra>'
+        ))
     
     fig.update_layout(
         title=f"Measured vs Theoretical Reflectance Spectra ({wl_min:.0f}-{wl_max:.0f}nm)",
@@ -1068,6 +1157,53 @@ def main():
             st.sidebar.write(f"**{selected_file}**")
             st.sidebar.write(f"Data points: {len(selected_measurement)}")
             st.sidebar.write(f"Wavelength range: {selected_measurement['wavelength'].min():.1f} - {selected_measurement['wavelength'].max():.1f} nm")
+            
+            # Check for corresponding BestFit file
+            # Reconstruct file path from selected_file key
+            bestfit_file_path = None
+            exploration_dir = PROJECT_ROOT / "exploration" / "sample_data"
+            shlomo_dir = PROJECT_ROOT / "spectra_from_shlomo"
+            
+            # Construct the measurement file path from selected_file key
+            if selected_file.startswith("shlomo/"):
+                # Remove "shlomo/" prefix and add .txt
+                meas_file_path = shlomo_dir / (selected_file[7:] + ".txt")  # Remove "shlomo/" prefix (7 chars)
+            else:
+                # Add .txt to the selected_file key
+                meas_file_path = exploration_dir / (selected_file + ".txt")
+            
+            # Check if measurement file exists and find corresponding BestFit
+            if meas_file_path.exists():
+                bestfit_name = meas_file_path.name.replace('.txt', '_BestFit.txt')
+                bestfit_path = meas_file_path.parent / bestfit_name
+                if bestfit_path.exists():
+                    bestfit_file_path = bestfit_path
+            
+            # Toggle to show LTA BestFit
+            show_bestfit = False
+            show_both_theoretical = False
+            if bestfit_file_path:
+                st.sidebar.markdown("---")
+                st.sidebar.markdown("### 🔬 LTA BestFit Comparison")
+                view_mode = st.sidebar.radio(
+                    'Theoretical Spectrum View',
+                    ['LTA Theoretical Only', 'LTA BestFit Only', 'Both (LTA + BestFit)'],
+                    key='theoretical_view_mode',
+                    help='Compare LTA-generated theoretical spectra with LTA BestFit results'
+                )
+                show_bestfit = view_mode in ['LTA BestFit Only', 'Both (LTA + BestFit)']
+                show_both_theoretical = view_mode == 'Both (LTA + BestFit)'
+                st.session_state.show_bestfit = show_bestfit
+                st.session_state.show_both_theoretical = show_both_theoretical
+                st.session_state.bestfit_file_path = str(bestfit_file_path)
+            else:
+                st.session_state.show_bestfit = False
+                st.session_state.show_both_theoretical = False
+                st.session_state.bestfit_file_path = None
+        else:
+            st.session_state.show_bestfit = False
+            st.session_state.show_both_theoretical = False
+            st.session_state.bestfit_file_path = None
     
     st.sidebar.markdown("## Analysis Parameters")
     
@@ -1119,49 +1255,108 @@ def main():
         if measurements_enabled and selected_file and selected_file != "None":
             selected_measurement = measurements[selected_file]
             
+            # Load BestFit if available
+            bestfit_df = None
+            show_bestfit_tab = st.session_state.get('show_bestfit', False)
+            show_both_theoretical_tab = st.session_state.get('show_both_theoretical', False)
+            bestfit_file_path_str = st.session_state.get('bestfit_file_path', None)
+            
+            if bestfit_file_path_str and pathlib.Path(bestfit_file_path_str).exists():
+                try:
+                    bestfit_df = load_bestfit_spectrum(pathlib.Path(bestfit_file_path_str))
+                except Exception as e:
+                    st.warning(f"Could not load BestFit file: {e}")
+                    bestfit_df = None
+            
             # Create comparison plot
             fig = create_comparison_plot(
                 wavelengths, spectrum, selected_measurement,
-                lipid_val, aqueous_val, rough_val, config, selected_file
+                lipid_val, aqueous_val, rough_val, config, selected_file,
+                bestfit_df=bestfit_df,
+                show_bestfit=show_bestfit_tab,
+                show_both_theoretical=show_both_theoretical_tab
             )
             
             st.plotly_chart(fig, use_container_width=True)
             
             # Calculate and display fit metrics
             interpolated_measured = interpolate_measurement_to_theoretical(selected_measurement, wavelengths)
-            metrics = calculate_fit_metrics(interpolated_measured, spectrum)
             
-            st.markdown("## Goodness of Fit Metrics")
-            col1, col2, col3, col4 = st.columns(4)
+            # Determine which theoretical to use for metrics
+            if show_bestfit_tab and not show_both_theoretical_tab and bestfit_df is not None:
+                # Use BestFit for metrics
+                bestfit_interp = interpolate_measurement_to_theoretical(bestfit_df, wavelengths)
+                metrics = calculate_fit_metrics(interpolated_measured, bestfit_interp)
+                theoretical_for_residual = bestfit_interp
+                residual_label = 'Residuals (Measured - BestFit)'
+            else:
+                # Use LTA theoretical for metrics (or when showing both)
+                metrics = calculate_fit_metrics(interpolated_measured, spectrum)
+                theoretical_for_residual = spectrum
+                residual_label = 'Residuals (Measured - Theoretical)'
             
-            with col1:
-                st.metric("R²", f"{metrics['R²']:.4f}")
-            with col2:
-                st.metric("RMSE", f"{metrics['RMSE']:.6f}")
-            with col3:
-                st.metric("MAE", f"{metrics['MAE']:.6f}")
-            with col4:
-                st.metric("MAPE", f"{metrics['MAPE (%)']:.2f}%")
+            # Show metrics (both if showing both)
+            if show_both_theoretical_tab and bestfit_df is not None:
+                # Calculate metrics for both
+                metrics_lta = calculate_fit_metrics(interpolated_measured, spectrum)
+                bestfit_interp = interpolate_measurement_to_theoretical(bestfit_df, wavelengths)
+                metrics_bestfit = calculate_fit_metrics(interpolated_measured, bestfit_interp)
+                
+                st.markdown("## Goodness of Fit Metrics")
+                st.markdown("### LTA Theoretical")
+                col1, col2, col3, col4 = st.columns(4)
+                with col1:
+                    st.metric("R²", f"{metrics_lta['R²']:.4f}")
+                with col2:
+                    st.metric("RMSE", f"{metrics_lta['RMSE']:.6f}")
+                with col3:
+                    st.metric("MAE", f"{metrics_lta['MAE']:.6f}")
+                with col4:
+                    st.metric("MAPE", f"{metrics_lta['MAPE (%)']:.2f}%")
+                
+                st.markdown("### LTA BestFit")
+                col1, col2, col3, col4 = st.columns(4)
+                with col1:
+                    st.metric("R²", f"{metrics_bestfit['R²']:.4f}")
+                with col2:
+                    st.metric("RMSE", f"{metrics_bestfit['RMSE']:.6f}")
+                with col3:
+                    st.metric("MAE", f"{metrics_bestfit['MAE']:.6f}")
+                with col4:
+                    st.metric("MAPE", f"{metrics_bestfit['MAPE (%)']:.2f}%")
+            else:
+                st.markdown("## Goodness of Fit Metrics")
+                col1, col2, col3, col4 = st.columns(4)
+                with col1:
+                    st.metric("R²", f"{metrics['R²']:.4f}")
+                with col2:
+                    st.metric("RMSE", f"{metrics['RMSE']:.6f}")
+                with col3:
+                    st.metric("MAE", f"{metrics['MAE']:.6f}")
+                with col4:
+                    st.metric("MAPE", f"{metrics['MAPE (%)']:.2f}%")
             
             # Residuals plot
-            residuals = interpolated_measured - spectrum
-            fig_residuals = go.Figure()
-            fig_residuals.add_trace(go.Scatter(
-                x=wavelengths,
-                y=residuals,
-                mode='lines',
-                name='Residuals (Measured - Theoretical)',
-                line=dict(color='green', width=2)
-            ))
-            fig_residuals.add_hline(y=0, line_dash="dash", line_color="black", opacity=0.5)
-            fig_residuals.update_layout(
-                title="Residuals (Measured - Theoretical)",
-                xaxis_title="Wavelength (nm)",
-                yaxis_title="Residual Reflectance",
-                template="plotly_white",
-                height=400
-            )
-            st.plotly_chart(fig_residuals, use_container_width=True)
+            if not show_both_theoretical_tab:
+                interpolated_measured = interpolate_measurement_to_theoretical(selected_measurement, wavelengths)
+                residuals = interpolated_measured - theoretical_for_residual
+                fig_residuals = go.Figure()
+                fig_residuals.add_trace(go.Scatter(
+                    x=wavelengths,
+                    y=residuals,
+                    mode='lines',
+                    name=residual_label,
+                    line=dict(color='green', width=2)
+                ))
+                fig_residuals.add_hline(y=0, line_dash="dash", line_color="black", opacity=0.5)
+                fig_residuals.update_layout(
+                    title=residual_label,
+                    xaxis_title="Wavelength (nm)",
+                    yaxis_title="Residual Reflectance",
+                    template="plotly_white",
+                    height=400
+                )
+                st.plotly_chart(fig_residuals, use_container_width=True)
             
         else:
             # Show only theoretical spectrum
@@ -1196,6 +1391,19 @@ def main():
         if measurements_enabled and selected_file and selected_file != "None":
             selected_measurement = measurements[selected_file]
             
+            # Load BestFit if available
+            bestfit_df_tab2 = None
+            show_bestfit_tab2 = st.session_state.get('show_bestfit', False)
+            show_both_theoretical_tab2 = st.session_state.get('show_both_theoretical', False)
+            bestfit_file_path_str_tab2 = st.session_state.get('bestfit_file_path', None)
+            
+            if bestfit_file_path_str_tab2 and pathlib.Path(bestfit_file_path_str_tab2).exists():
+                try:
+                    bestfit_df_tab2 = load_bestfit_spectrum(pathlib.Path(bestfit_file_path_str_tab2))
+                except Exception as e:
+                    st.warning(f"Could not load BestFit file: {e}")
+                    bestfit_df_tab2 = None
+            
             # Filter to wavelength range of interest
             filter_order = config.get("analysis", {}).get("detrending", {}).get("filter_order", 3)
             
@@ -1211,20 +1419,46 @@ def main():
                 (selected_measurement['wavelength'] <= wl_max)
             ].reset_index(drop=True)
             
-            # Detrend both signals
-            theoretical_detrended = detrend_dataframe(theoretical_filtered, cutoff_freq, filter_order)
-            measured_detrended = detrend_dataframe(measured_filtered, cutoff_freq, filter_order)
+            # Filter BestFit if available
+            bestfit_filtered = None
+            if bestfit_df_tab2 is not None:
+                bestfit_filtered = bestfit_df_tab2[
+                    (bestfit_df_tab2['wavelength'] >= wl_min) & 
+                    (bestfit_df_tab2['wavelength'] <= wl_max)
+                ].reset_index(drop=True)
             
-            # Detect peaks and valleys in detrended signals
-            theo_peaks = detect_peaks_df(theoretical_detrended, 'detrended', peak_prominence)
+            # Detrend signals based on toggle selection
+            measured_detrended = detrend_dataframe(measured_filtered, cutoff_freq, filter_order)
             meas_peaks = detect_peaks_df(measured_detrended, 'detrended', peak_prominence)
-            theo_valleys = detect_valleys_df(theoretical_detrended, 'detrended', peak_prominence)
             meas_valleys = detect_valleys_df(measured_detrended, 'detrended', peak_prominence)
+            
+            if show_both_theoretical_tab2 and bestfit_filtered is not None:
+                # Detrend both LTA theoretical and BestFit
+                theoretical_detrended = detrend_dataframe(theoretical_filtered, cutoff_freq, filter_order)
+                bestfit_detrended = detrend_dataframe(bestfit_filtered, cutoff_freq, filter_order)
+                theo_peaks = detect_peaks_df(theoretical_detrended, 'detrended', peak_prominence)
+                theo_valleys = detect_valleys_df(theoretical_detrended, 'detrended', peak_prominence)
+                bestfit_peaks = detect_peaks_df(bestfit_detrended, 'detrended', peak_prominence)
+                bestfit_valleys = detect_valleys_df(bestfit_detrended, 'detrended', peak_prominence)
+            elif show_bestfit_tab2 and bestfit_filtered is not None:
+                # Use BestFit only
+                bestfit_detrended = detrend_dataframe(bestfit_filtered, cutoff_freq, filter_order)
+                bestfit_peaks = detect_peaks_df(bestfit_detrended, 'detrended', peak_prominence)
+                bestfit_valleys = detect_valleys_df(bestfit_detrended, 'detrended', peak_prominence)
+                # Use BestFit variables for display
+                theoretical_detrended = bestfit_detrended
+                theo_peaks = bestfit_peaks
+                theo_valleys = bestfit_valleys
+            else:
+                # Use LTA theoretical only (default)
+                theoretical_detrended = detrend_dataframe(theoretical_filtered, cutoff_freq, filter_order)
+                theo_peaks = detect_peaks_df(theoretical_detrended, 'detrended', peak_prominence)
+                theo_valleys = detect_valleys_df(theoretical_detrended, 'detrended', peak_prominence)
             
             # Create single zoomed plot showing detrended signals with peaks/valleys
             fig = go.Figure()
             
-            # Measured detrended signal (solid line)
+            # Measured detrended signal (always shown)
             fig.add_trace(go.Scatter(
                 x=measured_detrended['wavelength'],
                 y=measured_detrended['detrended'],
@@ -1232,13 +1466,31 @@ def main():
                 line=dict(color='blue', width=2)
             ))
             
-            # Theoretical detrended signal (dotted line)
-            fig.add_trace(go.Scatter(
-                x=theoretical_detrended['wavelength'],
-                y=theoretical_detrended['detrended'],
-                mode='lines', name='Best Fit (Theoretical)',
-                line=dict(color='red', width=2, dash='dot')
-            ))
+            # Theoretical detrended signal(s) based on toggle
+            if show_both_theoretical_tab2 and bestfit_filtered is not None:
+                # Show both LTA theoretical and BestFit
+                fig.add_trace(go.Scatter(
+                    x=theoretical_detrended['wavelength'],
+                    y=theoretical_detrended['detrended'],
+                    mode='lines', name='LTA Theoretical (Detrended)',
+                    line=dict(color='green', width=2, dash='dash')
+                ))
+                fig.add_trace(go.Scatter(
+                    x=bestfit_detrended['wavelength'],
+                    y=bestfit_detrended['detrended'],
+                    mode='lines', name='LTA BestFit (Detrended)',
+                    line=dict(color='#db2777', width=2, dash='dot')
+                ))
+            else:
+                # Show single theoretical (LTA or BestFit)
+                theo_name = 'LTA BestFit (Detrended)' if (show_bestfit_tab2 and bestfit_filtered is not None) else 'LTA Theoretical (Detrended)'
+                theo_color = '#db2777' if (show_bestfit_tab2 and bestfit_filtered is not None) else 'red'
+                fig.add_trace(go.Scatter(
+                    x=theoretical_detrended['wavelength'],
+                    y=theoretical_detrended['detrended'],
+                    mode='lines', name=theo_name,
+                    line=dict(color=theo_color, width=2, dash='dot')
+                ))
             
             # Measured peaks
             if len(meas_peaks) > 0:
@@ -1250,13 +1502,33 @@ def main():
                 ))
             
             # Theoretical peaks
-            if len(theo_peaks) > 0:
-                fig.add_trace(go.Scatter(
-                    x=theo_peaks['wavelength'],
-                    y=theo_peaks['detrended'],
-                    mode='markers', name='Best Fit Peaks',
-                    marker=dict(color='red', size=8, symbol='circle')
-                ))
+            if show_both_theoretical_tab2 and bestfit_filtered is not None:
+                # Show peaks for both
+                if len(theo_peaks) > 0:
+                    fig.add_trace(go.Scatter(
+                        x=theo_peaks['wavelength'],
+                        y=theo_peaks['detrended'],
+                        mode='markers', name='LTA Theoretical Peaks',
+                        marker=dict(color='green', size=8, symbol='circle')
+                    ))
+                if len(bestfit_peaks) > 0:
+                    fig.add_trace(go.Scatter(
+                        x=bestfit_peaks['wavelength'],
+                        y=bestfit_peaks['detrended'],
+                        mode='markers', name='BestFit Peaks',
+                        marker=dict(color='red', size=8, symbol='circle')
+                    ))
+            else:
+                # Show single theoretical peaks
+                if len(theo_peaks) > 0:
+                    peak_name = 'BestFit Peaks' if (show_bestfit_tab2 and bestfit_filtered is not None) else 'LTA Theoretical Peaks'
+                    peak_color = 'red' if (show_bestfit_tab2 and bestfit_filtered is not None) else 'red'
+                    fig.add_trace(go.Scatter(
+                        x=theo_peaks['wavelength'],
+                        y=theo_peaks['detrended'],
+                        mode='markers', name=peak_name,
+                        marker=dict(color=peak_color, size=8, symbol='circle')
+                    ))
             
             # Measured valleys
             if len(meas_valleys) > 0:
@@ -1268,13 +1540,33 @@ def main():
                 ))
             
             # Theoretical valleys
-            if len(theo_valleys) > 0:
-                fig.add_trace(go.Scatter(
-                    x=theo_valleys['wavelength'],
-                    y=theo_valleys['detrended'],
-                    mode='markers', name='Best Fit Valleys',
-                    marker=dict(color='pink', size=8, symbol='circle')
-                ))
+            if show_both_theoretical_tab2 and bestfit_filtered is not None:
+                # Show valleys for both
+                if len(theo_valleys) > 0:
+                    fig.add_trace(go.Scatter(
+                        x=theo_valleys['wavelength'],
+                        y=theo_valleys['detrended'],
+                        mode='markers', name='LTA Theoretical Valleys',
+                        marker=dict(color='lightgreen', size=8, symbol='circle')
+                    ))
+                if len(bestfit_valleys) > 0:
+                    fig.add_trace(go.Scatter(
+                        x=bestfit_valleys['wavelength'],
+                        y=bestfit_valleys['detrended'],
+                        mode='markers', name='BestFit Valleys',
+                        marker=dict(color='pink', size=8, symbol='circle')
+                    ))
+            else:
+                # Show single theoretical valleys
+                if len(theo_valleys) > 0:
+                    valley_name = 'BestFit Valleys' if (show_bestfit_tab2 and bestfit_filtered is not None) else 'LTA Theoretical Valleys'
+                    valley_color = 'pink' if (show_bestfit_tab2 and bestfit_filtered is not None) else 'pink'
+                    fig.add_trace(go.Scatter(
+                        x=theo_valleys['wavelength'],
+                        y=theo_valleys['detrended'],
+                        mode='markers', name=valley_name,
+                        marker=dict(color=valley_color, size=8, symbol='circle')
+                    ))
             
             fig.update_layout(
                 title=f"Peak and Valley Detection for {selected_file}",
@@ -1292,29 +1584,65 @@ def main():
             
             st.plotly_chart(fig, use_container_width=True)
             
-            # Peak analysis summary in two columns
-            col1, col2 = st.columns(2)
-            with col1:
-                st.markdown("### Measured Spectrum Analysis")
-                st.write(f"**Peaks detected:** {len(meas_peaks)}")
-                if len(meas_peaks) > 0:
-                    peak_wls = [f"{w:.1f}nm" for w in meas_peaks['wavelength']]
-                    st.write("Peak wavelengths:", peak_wls)
-                st.write(f"**Valleys detected:** {len(meas_valleys)}")
-                if len(meas_valleys) > 0:
-                    valley_wls = [f"{w:.1f}nm" for w in meas_valleys['wavelength']]
-                    st.write("Valley wavelengths:", valley_wls)
-            
-            with col2:
-                st.markdown("### Theoretical Spectrum Analysis")
-                st.write(f"**Peaks detected:** {len(theo_peaks)}")
-                if len(theo_peaks) > 0:
-                    peak_wls = [f"{w:.1f}nm" for w in theo_peaks['wavelength']]
-                    st.write("Peak wavelengths:", peak_wls)
-                st.write(f"**Valleys detected:** {len(theo_valleys)}")
-                if len(theo_valleys) > 0:
-                    valley_wls = [f"{w:.1f}nm" for w in theo_valleys['wavelength']]
-                    st.write("Valley wavelengths:", valley_wls)
+            # Peak analysis summary
+            if show_both_theoretical_tab2 and bestfit_filtered is not None:
+                # Show analysis for all three (measured, LTA theoretical, BestFit)
+                col1, col2, col3 = st.columns(3)
+                with col1:
+                    st.markdown("### Measured Spectrum")
+                    st.write(f"**Peaks:** {len(meas_peaks)}")
+                    if len(meas_peaks) > 0:
+                        peak_wls = [f"{w:.1f}nm" for w in meas_peaks['wavelength']]
+                        st.write("Wavelengths:", ", ".join(peak_wls[:5]) + ("..." if len(peak_wls) > 5 else ""))
+                    st.write(f"**Valleys:** {len(meas_valleys)}")
+                    if len(meas_valleys) > 0:
+                        valley_wls = [f"{w:.1f}nm" for w in meas_valleys['wavelength']]
+                        st.write("Wavelengths:", ", ".join(valley_wls[:5]) + ("..." if len(valley_wls) > 5 else ""))
+                with col2:
+                    st.markdown("### LTA Theoretical")
+                    st.write(f"**Peaks:** {len(theo_peaks)}")
+                    if len(theo_peaks) > 0:
+                        peak_wls = [f"{w:.1f}nm" for w in theo_peaks['wavelength']]
+                        st.write("Wavelengths:", ", ".join(peak_wls[:5]) + ("..." if len(peak_wls) > 5 else ""))
+                    st.write(f"**Valleys:** {len(theo_valleys)}")
+                    if len(theo_valleys) > 0:
+                        valley_wls = [f"{w:.1f}nm" for w in theo_valleys['wavelength']]
+                        st.write("Wavelengths:", ", ".join(valley_wls[:5]) + ("..." if len(valley_wls) > 5 else ""))
+                with col3:
+                    st.markdown("### LTA BestFit")
+                    st.write(f"**Peaks:** {len(bestfit_peaks)}")
+                    if len(bestfit_peaks) > 0:
+                        peak_wls = [f"{w:.1f}nm" for w in bestfit_peaks['wavelength']]
+                        st.write("Wavelengths:", ", ".join(peak_wls[:5]) + ("..." if len(peak_wls) > 5 else ""))
+                    st.write(f"**Valleys:** {len(bestfit_valleys)}")
+                    if len(bestfit_valleys) > 0:
+                        valley_wls = [f"{w:.1f}nm" for w in bestfit_valleys['wavelength']]
+                        st.write("Wavelengths:", ", ".join(valley_wls[:5]) + ("..." if len(valley_wls) > 5 else ""))
+            else:
+                # Show analysis for measured and single theoretical
+                col1, col2 = st.columns(2)
+                with col1:
+                    st.markdown("### Measured Spectrum Analysis")
+                    st.write(f"**Peaks detected:** {len(meas_peaks)}")
+                    if len(meas_peaks) > 0:
+                        peak_wls = [f"{w:.1f}nm" for w in meas_peaks['wavelength']]
+                        st.write("Peak wavelengths:", peak_wls)
+                    st.write(f"**Valleys detected:** {len(meas_valleys)}")
+                    if len(meas_valleys) > 0:
+                        valley_wls = [f"{w:.1f}nm" for w in meas_valleys['wavelength']]
+                        st.write("Valley wavelengths:", valley_wls)
+                
+                with col2:
+                    theo_label = "LTA BestFit" if (show_bestfit_tab2 and bestfit_filtered is not None) else "LTA Theoretical"
+                    st.markdown(f"### {theo_label} Analysis")
+                    st.write(f"**Peaks detected:** {len(theo_peaks)}")
+                    if len(theo_peaks) > 0:
+                        peak_wls = [f"{w:.1f}nm" for w in theo_peaks['wavelength']]
+                        st.write("Peak wavelengths:", peak_wls)
+                    st.write(f"**Valleys detected:** {len(theo_valleys)}")
+                    if len(theo_valleys) > 0:
+                        valley_wls = [f"{w:.1f}nm" for w in theo_valleys['wavelength']]
+                        st.write("Valley wavelengths:", valley_wls)
             
         else:
             # Show only theoretical detrended (filtered to wavelength range)
