@@ -16,3 +16,7 @@ streamlit>=1.20.0
 # Note: This is optional - the app will work with simplified TMM if not installed
 pyElli>=0.3.0
 
+# PDF report generation
+reportlab>=4.0.0
+kaleido==0.2.1  # Must use 0.2.1 for compatibility with Plotly 5.x
+

@@ -54,6 +54,8 @@ logging.getLogger('streamlit.runtime.scriptrunner_utils.script_run_context').set
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
+from src.pdf_report import generate_pyelli_pdf_report
+
 from exploration.pyelli_exploration.pyelli_utils import (
     load_measured_spectrum,
     load_bestfit_spectrum,
@@ -939,6 +941,68 @@ with tabs[0]:
         with mcols[5]:
             matched_peaks = int(computed_data['score_result'].get('matched_peaks', 0))
             st.metric('Matched Peaks', f'{matched_peaks}')
+        
+        # Show results table if grid search was run
+        if st.session_state.autofit_results:
+            st.markdown('---')
+            st.markdown('### 📊 Grid Search Results (Top 10)')
+            
+            def get_quality(score):
+                if score >= 0.7: return '🟢 Excellent'
+                elif score >= 0.5: return '🟡 Good'
+                elif score >= 0.3: return '🟠 Fair'
+                else: return '🔴 Poor'
+            
+            results_df = pd.DataFrame([{
+                'Rank': i+1,
+                'Lipid (nm)': r.lipid_nm,
+                'Aqueous (nm)': r.aqueous_nm,
+                'Roughness (Å)': r.mucus_nm,
+                'Score': f'{r.score:.3f}',
+                'Corr': f'{r.correlation:.3f}',
+                'Quality': get_quality(r.score)
+            } for i, r in enumerate(st.session_state.autofit_results)])
+            
+            st.dataframe(results_df, use_container_width=True, hide_index=True)
+            
+            # PDF Export button
+            st.markdown('---')
+            pdf_cols = st.columns([2, 1])
+            with pdf_cols[0]:
+                pdf_top_n = st.number_input(
+                    'Top N for PDF', min_value=1, max_value=10, value=10, step=1,
+                    help='Number of top fits to include in PDF report',
+                    key='pyelli_pdf_top_n'
+                )
+            with pdf_cols[1]:
+                if st.button('📄 Export PDF Report', key='pyelli_export_pdf', use_container_width=True):
+                    with st.spinner(f'Generating PDF report for top {pdf_top_n} fits...'):
+                        try:
+                            pdf_bytes = generate_pyelli_pdf_report(
+                                autofit_results=st.session_state.autofit_results,
+                                measurement_file=Path(selected_file).name,
+                                measured_wavelengths=computed_data['wavelengths'],
+                                measured_spectrum=computed_data['measured'],
+                                wl_min=wavelength_range[0],
+                                wl_max=wavelength_range[1],
+                                top_n=int(pdf_top_n),
+                            )
+                            
+                            timestamp = time.strftime('%Y%m%d_%H%M%S')
+                            pdf_filename = f'pyelli_report_{Path(selected_file).stem}_{timestamp}.pdf'
+                            
+                            st.download_button(
+                                label='⬇️ Download PDF Report',
+                                data=pdf_bytes,
+                                file_name=pdf_filename,
+                                mime='application/pdf',
+                                key='pyelli_download_pdf'
+                            )
+                            st.success('✅ PDF report generated! Click above to download.')
+                        except Exception as pdf_err:
+                            st.error(f'❌ Error generating PDF: {str(pdf_err)}')
+                            import traceback
+                            st.code(traceback.format_exc())
     else:
         st.info('👈 Please select a spectrum file from the sidebar')
 

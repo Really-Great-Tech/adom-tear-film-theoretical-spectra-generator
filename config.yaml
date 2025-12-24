@@ -70,7 +70,7 @@ analysis:
     threshold_high_score: 0.9    # Flag scores >= this as exceptional (algorithm outperforming)
     threshold_low_score: 0.3     # Flag scores <= this as poor fits
     threshold_no_fit: 0.4        # If best score <= this, flag as "no good fit found"
-    # Acceptable parameter ranges (wider than search ranges - these are physically/biologically feasible)
+    # Acceptable parameter ranges (match the search ranges - these are physically/biologically feasible)
     # If best fit is outside these, it's flagged as potentially invalid
     acceptable_ranges:
       lipid:
