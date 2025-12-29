@@ -916,12 +916,21 @@ def create_comparison_plot(theoretical_wl: np.ndarray, theoretical_spec: np.ndar
     wl_min = float(wavelength_range_cfg.get("min", 600))
     wl_max = float(wavelength_range_cfg.get("max", 1120))
     
+    # Filter data to wavelength range for proper y-axis auto-scaling
+    meas_mask = (measured_df['wavelength'] >= wl_min) & (measured_df['wavelength'] <= wl_max)
+    meas_wl_filtered = measured_df.loc[meas_mask, 'wavelength']
+    meas_refl_filtered = measured_df.loc[meas_mask, 'reflectance']
+    
+    theo_mask = (theoretical_wl >= wl_min) & (theoretical_wl <= wl_max)
+    theo_wl_filtered = theoretical_wl[theo_mask]
+    theo_spec_filtered = theoretical_spec[theo_mask]
+    
     fig = go.Figure()
     
-    # Add measured spectrum
+    # Add measured spectrum (filtered to wavelength range)
     fig.add_trace(go.Scatter(
-        x=measured_df['wavelength'],
-        y=measured_df['reflectance'],
+        x=meas_wl_filtered,
+        y=meas_refl_filtered,
         mode='lines',
         name=f'Measured ({selected_file})',
         line=dict(
@@ -933,10 +942,15 @@ def create_comparison_plot(theoretical_wl: np.ndarray, theoretical_spec: np.ndar
     
     # Add theoretical spectrum(s) based on toggle
     if show_both_theoretical and bestfit_df is not None:
+        # Filter bestfit data
+        bf_mask = (bestfit_df['wavelength'] >= wl_min) & (bestfit_df['wavelength'] <= wl_max)
+        bf_wl_filtered = bestfit_df.loc[bf_mask, 'wavelength']
+        bf_refl_filtered = bestfit_df.loc[bf_mask, 'reflectance']
+        
         # Show both LTA theoretical and BestFit
         fig.add_trace(go.Scatter(
-            x=theoretical_wl,
-            y=theoretical_spec,
+            x=theo_wl_filtered,
+            y=theo_spec_filtered,
             mode='lines',
             name=f'LTA Theoretical (L={lipid_val:.0f}, A={aqueous_val:.0f}, R={rough_val:.0f})',
             line=dict(
@@ -947,8 +961,8 @@ def create_comparison_plot(theoretical_wl: np.ndarray, theoretical_spec: np.ndar
             hovertemplate='λ=%{x:.1f}nm<br>R=%{y:.4f}<br>LTA Theoretical<extra></extra>'
         ))
         fig.add_trace(go.Scatter(
-            x=bestfit_df['wavelength'],
-            y=bestfit_df['reflectance'],
+            x=bf_wl_filtered,
+            y=bf_refl_filtered,
             mode='lines',
             name='LTA BestFit',
             line=dict(
@@ -959,10 +973,15 @@ def create_comparison_plot(theoretical_wl: np.ndarray, theoretical_spec: np.ndar
             hovertemplate='λ=%{x:.1f}nm<br>R=%{y:.4f}<br>LTA BestFit<extra></extra>'
         ))
     elif show_bestfit and bestfit_df is not None:
+        # Filter bestfit data
+        bf_mask = (bestfit_df['wavelength'] >= wl_min) & (bestfit_df['wavelength'] <= wl_max)
+        bf_wl_filtered = bestfit_df.loc[bf_mask, 'wavelength']
+        bf_refl_filtered = bestfit_df.loc[bf_mask, 'reflectance']
+        
         # Show only BestFit
         fig.add_trace(go.Scatter(
-            x=bestfit_df['wavelength'],
-            y=bestfit_df['reflectance'],
+            x=bf_wl_filtered,
+            y=bf_refl_filtered,
             mode='lines',
             name='LTA BestFit',
             line=dict(
@@ -975,8 +994,8 @@ def create_comparison_plot(theoretical_wl: np.ndarray, theoretical_spec: np.ndar
     else:
         # Show only LTA theoretical (default)
         fig.add_trace(go.Scatter(
-            x=theoretical_wl,
-            y=theoretical_spec,
+            x=theo_wl_filtered,
+            y=theo_spec_filtered,
             mode='lines',
             name=f'Theoretical (L={lipid_val:.0f}, A={aqueous_val:.0f}, R={rough_val:.0f})',
             line=dict(
