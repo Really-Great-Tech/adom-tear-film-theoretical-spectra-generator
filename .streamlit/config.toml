@@ -1,3 +1,18 @@
 [global]
-
 disableWidgetStateDuplicationWarning = true
+
+[ui]
+# Hide the hamburger menu and footer
+hideTopBar = false
+
+[client]
+# Disable toolbar mode
+showSidebarNavigation = true
+
+[theme]
+# Force light mode by default
+base = "light"
+primaryColor = "#1e40af"
+backgroundColor = "#ffffff"
+secondaryBackgroundColor = "#f8fafc"
+textColor = "#1e293b"
