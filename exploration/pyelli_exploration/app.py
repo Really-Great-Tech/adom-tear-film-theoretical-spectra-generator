@@ -123,8 +123,24 @@ st.markdown('''
     [data-testid="stSidebar"] button[aria-label*="Open"],
     [data-testid="stSidebar"] [class*="keyboard"],
     [data-testid="stSidebar"] [class*="double"],
-    [data-testid="stSidebar"] svg[viewBox*="24"] {
+    [data-testid="stSidebar"] svg[viewBox*="24"],
+    /* Hide the "key" tooltip/indicator that appears on sidebar hover */
+    [data-testid="stSidebar"] [data-testid*="key"],
+    [data-testid="stSidebar"] [title="key"],
+    .stTooltipIcon,
+    [data-testid="stSidebarCollapseButton"],
+    [data-testid="collapsedControl"],
+    /* Hide keyboard shortcut hints */
+    [data-testid="stSidebar"] > div:first-child > div:first-child > span,
+    [data-testid="stSidebar"] [data-testid="stMarkdownContainer"] + span,
+    section[data-testid="stSidebar"] > div > div > span:first-child {
         display: none !important;
+    }
+    
+    /* Hide the floating "key" text at top of sidebar */
+    section[data-testid="stSidebar"] > div:first-child > span {
+        display: none !important;
+        visibility: hidden !important;
     }
     
     /* Ensure regular buttons in sidebar are visible */
@@ -566,6 +582,31 @@ with st.sidebar:
         # Store in session state
         st.session_state.wavelength_range = wavelength_range
         
+        # Vertical stretch control to make waves more visible
+        zoom_percentage = st.slider(
+            'Zoom Level (%)',
+            0, 100,
+            0,  # Default to 0 (full view, no zoom)
+            step=1,
+            key='zoom_percentage_main',
+            help='Zoom in to make wave variations more visible. 0% = full view (no zoom), 100% = maximum zoom (waves most visible). Sliding right zooms in more.'
+        )
+        # Convert percentage to stretch factor: 0% = full view (1.2), 100% = max zoom
+        # Higher percentage = more zoom = smaller stretch factor
+        # We'll calculate the actual max zoom dynamically based on data, but use a very small
+        # minimum stretch to allow aggressive zooming
+        min_stretch = 0.001  # Very small stretch for maximum zoom (allows zoom to continue working)
+        vertical_stretch = 1.2 - (zoom_percentage / 100) * (1.2 - min_stretch)
+        st.session_state.vertical_stretch = vertical_stretch
+        st.session_state.zoom_percentage = zoom_percentage
+        # Display current zoom level
+        if zoom_percentage == 0:
+            st.caption(f'📊 **Full View** (no zoom)')
+        elif zoom_percentage == 100:
+            st.caption(f'🔍 **Maximum Zoom** (waves most visible)')
+        else:
+            st.caption(f'🔍 **Zoom: {zoom_percentage}%**')
+        
         show_residual = st.checkbox('Show Residual Plot', value=True, key='show_res_main')
         
         # Check for corresponding BestFit file
@@ -749,6 +790,14 @@ tabs = st.tabs([
     '📈 Amplitude Analysis',
 ])
 
+# Create placeholder INSIDE the first tab - this appears right below tab headers
+with tabs[0]:
+    progress_placeholder = st.empty()
+    # Show completion message if grid search was completed
+    if st.session_state.get('last_run_elapsed_s') is not None and not st.session_state.get('run_autofit', False):
+        mins, secs = divmod(int(st.session_state.last_run_elapsed_s), 60)
+        progress_placeholder.success(f'✅ Grid search completed in **{mins:02d}:{secs:02d}** ({st.session_state.last_run_elapsed_s:.1f}s)')
+
 # =============================================================================
 # Shared Data Loading and Processing (runs once, used by both tabs)
 # =============================================================================
@@ -789,8 +838,8 @@ if selected_file and Path(selected_file).exists():
                     fine_refinement_factor=0.2,  # 20% of coarse step size
                 )
 
-            # Show progress bar and timer BEFORE the plot
-            progress_bar = st.progress(0, text='⏳ Starting grid search...')
+            # Show progress in the placeholder above the tabs
+            progress_placeholder.progress(0, text='⏳ Starting grid search...')
             
             with ThreadPoolExecutor(max_workers=1) as executor:
                 future = executor.submit(_run_search)
@@ -800,19 +849,19 @@ if selected_file and Path(selected_file).exists():
                     mins, secs = divmod(int(elapsed), 60)
                     # Update progress bar (estimate ~5 min max)
                     progress_pct = min(0.99, elapsed / 300)
-                    progress_bar.progress(progress_pct, text=f'⏳ Running grid search... {mins:02d}:{secs:02d} elapsed')
+                    progress_placeholder.progress(progress_pct, text=f'⏳ Running grid search... {mins:02d}:{secs:02d} elapsed')
                     time.sleep(0.5)
                 try:
                     results = future.result()
                 except Exception as exc:
-                    progress_bar.empty()
+                    progress_placeholder.empty()
                     st.error(f'Grid search failed: {exc}')
                     raise
 
             elapsed = time.perf_counter() - start_time
             mins, secs = divmod(int(elapsed), 60)
             # Clear progress bar and show completion time
-            progress_bar.empty()
+            progress_placeholder.empty()
             st.session_state.last_run_elapsed_s = elapsed
 
             if results:
@@ -950,11 +999,6 @@ with tabs[0]:
         # Display filename at the top
         st.markdown(f'### 📈 `{Path(selected_file).name}`')
         
-        # Show timer BEFORE the plot - always visible when available
-        if st.session_state.get('last_run_elapsed_s') is not None:
-            mins, secs = divmod(int(st.session_state.last_run_elapsed_s), 60)
-            st.success(f'✅ Grid search completed in **{mins:02d}:{secs:02d}** ({st.session_state.last_run_elapsed_s:.1f}s)')
-        
         # Spectrum comparison plot (before metrics)
         has_bestfit_plot = computed_data.get('has_bestfit', False) and computed_data.get('bestfit_display') is not None
         show_both_plot = computed_data.get('show_both_theoretical', False) and has_bestfit_plot
@@ -1012,6 +1056,55 @@ with tabs[0]:
             fig.update_yaxes(title_text='Reflectance', row=1, col=1)
             fig.update_yaxes(title_text='Δ', row=2, col=1)
             height = 500
+            
+            # Apply vertical stretch to y-axis for main plot (row 1)
+            vertical_stretch = st.session_state.get('vertical_stretch', 1.2)  # Default to full view
+            if vertical_stretch != 1.2 and computed_data:
+                # Collect all y-values from visible traces
+                all_y_values = []
+                all_y_values.extend(computed_data['meas_display'])
+                if show_both_plot and has_bestfit_plot:
+                    all_y_values.extend(computed_data['theoretical_display'])
+                    all_y_values.extend(computed_data['bestfit_display'])
+                else:
+                    all_y_values.extend(computed_data['display_theoretical'])
+                
+                if len(all_y_values) > 0:
+                    y_min = np.min(all_y_values)
+                    y_max = np.max(all_y_values)
+                    y_center = (y_min + y_max) / 2
+                    y_range = y_max - y_min
+                    
+                    # Calculate the range based on zoom percentage
+                    # At 0%: full view with 20% padding (range = y_range * 1.2)
+                    # At 100%: maximum zoom (range = y_range * 1.002, just data + minimal padding)
+                    min_padding = y_range * 0.001  # 0.1% padding
+                    min_range = y_range * 1.002  # Minimum range (data + padding)
+                    max_range = y_range * 1.2    # Maximum range (full view)
+                    
+                    # Interpolate range based on zoom percentage (0% = max_range, 100% = min_range)
+                    # Higher percentage = smaller range = more zoom
+                    target_range = max_range - (zoom_percentage / 100) * (max_range - min_range)
+                    
+                    # Calculate centered range
+                    y_axis_min = y_center - target_range / 2
+                    y_axis_max = y_center + target_range / 2
+                    
+                    # Ensure all data is visible - only expand if we would cut off data
+                    # Check if we're cutting off data from below
+                    if y_axis_min > y_min - min_padding:
+                        # We need to expand downward
+                        y_axis_min = y_min - min_padding
+                    # Check if we're cutting off data from above
+                    if y_axis_max < y_max + min_padding:
+                        # We need to expand upward
+                        y_axis_max = y_max + min_padding
+                    
+                    # If we had to expand, the range is now larger than target
+                    # This is expected when zooming in - we can't zoom beyond the data bounds
+                    # The zoom will naturally stop when we hit the minimum range
+                    
+                    fig.update_yaxes(range=[y_axis_min, y_axis_max], row=1, col=1)
         else:
             fig = go.Figure()
             fig.add_trace(go.Scatter(
@@ -1044,6 +1137,59 @@ with tabs[0]:
             fig.update_xaxes(title_text='Wavelength (nm)')
             fig.update_yaxes(title_text='Reflectance')
             height = 350
+        
+        # Apply vertical stretch to y-axis to make waves more visible
+        vertical_stretch = st.session_state.get('vertical_stretch', 1.2)  # Default to full view
+        if vertical_stretch != 1.2 and computed_data:
+            # Collect all y-values from visible traces
+            all_y_values = []
+            all_y_values.extend(computed_data['meas_display'])
+            if show_both_plot and has_bestfit_plot:
+                all_y_values.extend(computed_data['theoretical_display'])
+                all_y_values.extend(computed_data['bestfit_display'])
+            else:
+                all_y_values.extend(computed_data['display_theoretical'])
+            
+            if len(all_y_values) > 0:
+                y_min = np.min(all_y_values)
+                y_max = np.max(all_y_values)
+                y_center = (y_min + y_max) / 2
+                y_range = y_max - y_min
+                
+                # Calculate the range based on zoom percentage
+                # At 0%: full view with 20% padding (range = y_range * 1.2)
+                # At 100%: maximum zoom (range = y_range * 1.002, just data + minimal padding)
+                min_padding = y_range * 0.001  # 0.1% padding
+                min_range = y_range * 1.002  # Minimum range (data + padding)
+                max_range = y_range * 1.2    # Maximum range (full view)
+                
+                # Interpolate range based on zoom percentage (0% = max_range, 100% = min_range)
+                # Higher percentage = smaller range = more zoom
+                target_range = max_range - (zoom_percentage / 100) * (max_range - min_range)
+                
+                # Calculate centered range
+                y_axis_min = y_center - target_range / 2
+                y_axis_max = y_center + target_range / 2
+                
+                # Ensure all data is visible - only expand if we would cut off data
+                # Check if we're cutting off data from below
+                if y_axis_min > y_min - min_padding:
+                    # We need to expand downward
+                    y_axis_min = y_min - min_padding
+                # Check if we're cutting off data from above
+                if y_axis_max < y_max + min_padding:
+                    # We need to expand upward
+                    y_axis_max = y_max + min_padding
+                
+                # If we had to expand, the range is now larger than target
+                # This is expected when zooming in - we can't zoom beyond the data bounds
+                # The zoom will naturally stop when we hit the minimum range
+                
+                # Update y-axis range for main plot
+                if show_residual:
+                    fig.update_yaxes(range=[y_axis_min, y_axis_max], row=1, col=1)
+                else:
+                    fig.update_yaxes(range=[y_axis_min, y_axis_max])
         
         fig.update_layout(
             height=height,
