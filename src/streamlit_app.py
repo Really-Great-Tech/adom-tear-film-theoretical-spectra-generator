@@ -603,10 +603,26 @@ def run_coarse_fine_grid_search(
                     roughness_A=float(rough),
                     measurement_quality=measurement_quality,
                 )
+                # Extract peak metrics for sorting
+                matched_peaks = 0
+                peak_count_delta = 0
+                
+                if "peak_delta" in diagnostics:
+                    peak_delta_diag = diagnostics["peak_delta"]
+                    matched_peaks = int(peak_delta_diag.get("matched_pairs", 0))
+                
+                if "peak_count" in diagnostics:
+                    peak_count_diag = diagnostics["peak_count"]
+                    meas_peaks = int(peak_count_diag.get("measurement_peaks", 0))
+                    theo_peaks = int(peak_count_diag.get("theoretical_peaks", 0))
+                    peak_count_delta = abs(meas_peaks - theo_peaks)
+                
                 record = {
                     "lipid_nm": float(lipid),
                     "aqueous_nm": float(aqueous),
                     "roughness_A": float(rough),
+                    "matched_peaks": matched_peaks,
+                    "peak_count_delta": peak_count_delta,
                 }
                 for key, value in scores.items():
                     record[f"score_{key}"] = float(value)
@@ -619,7 +635,11 @@ def run_coarse_fine_grid_search(
         return pd.DataFrame(), 0
     
     coarse_df = pd.DataFrame(coarse_records)
-    coarse_df = coarse_df.sort_values("score_composite", ascending=False).reset_index(drop=True)
+    # Sort by (score_composite, -peak_count_delta, matched_peaks)
+    coarse_df = coarse_df.sort_values(
+        by=["score_composite", "peak_count_delta", "matched_peaks"],
+        ascending=[False, True, False]
+    ).reset_index(drop=True)
     top_coarse = coarse_df.head(top_k_coarse)
     
     st.success(f"Stage 1 complete: Found {len(coarse_records)} candidates. Top {top_k_coarse} selected for refinement.")
@@ -701,10 +721,26 @@ def run_coarse_fine_grid_search(
                         roughness_A=float(rough),
                         measurement_quality=measurement_quality,
                     )
+                    # Extract peak metrics for sorting
+                    matched_peaks = 0
+                    peak_count_delta = 0
+                    
+                    if "peak_delta" in diagnostics:
+                        peak_delta_diag = diagnostics["peak_delta"]
+                        matched_peaks = int(peak_delta_diag.get("matched_pairs", 0))
+                    
+                    if "peak_count" in diagnostics:
+                        peak_count_diag = diagnostics["peak_count"]
+                        meas_peaks = int(peak_count_diag.get("measurement_peaks", 0))
+                        theo_peaks = int(peak_count_diag.get("theoretical_peaks", 0))
+                        peak_count_delta = abs(meas_peaks - theo_peaks)
+                    
                     record = {
                         "lipid_nm": float(lipid),
                         "aqueous_nm": float(aqueous),
                         "roughness_A": float(rough),
+                        "matched_peaks": matched_peaks,
+                        "peak_count_delta": peak_count_delta,
                     }
                     for key, value in scores.items():
                         record[f"score_{key}"] = float(value)
@@ -727,10 +763,367 @@ def run_coarse_fine_grid_search(
     results_df = pd.DataFrame(all_records)
     # Remove duplicates based on parameters (keep first occurrence)
     results_df = results_df.drop_duplicates(subset=["lipid_nm", "aqueous_nm", "roughness_A"], keep="first")
-    results_df = results_df.sort_values("score_composite", ascending=False).reset_index(drop=True)
+    # Sort by (score_composite, -peak_count_delta, matched_peaks)
+    if "peak_count_delta" in results_df.columns and "matched_peaks" in results_df.columns:
+        results_df = results_df.sort_values(
+            by=["score_composite", "peak_count_delta", "matched_peaks"],
+            ascending=[False, True, False]
+        ).reset_index(drop=True)
+    else:
+        results_df = results_df.sort_values("score_composite", ascending=False).reset_index(drop=True)
     
     total_evaluated = len(coarse_records) + len(refine_records)
     st.success(f"Stage 2 complete: Refined {len(refine_records)} additional candidates. Total: {total_evaluated} evaluated.")
+    
+    return results_df, total_evaluated
+
+
+def run_dynamic_grid_search(
+    single_spectrum,
+    wavelengths: np.ndarray,
+    measurement_features,
+    analysis_cfg: Dict[str, Any],
+    metrics_cfg: Dict[str, Any],
+    config: Dict[str, Any],
+    max_results: Optional[int],
+    *,
+    measurement_quality=None,
+) -> Tuple[pd.DataFrame, int]:
+    """
+    Dynamic grid search with adaptive step sizes (sequential processing).
+    
+    Based on PyElli's dynamic search algorithm:
+    - Stage 1: Coarse search (70% of budget) to identify promising regions
+    - Stage 2: Adaptive refinement (30% of budget) around top candidates
+    - Uses adaptive step sizes based on candidate rank
+    - Sequential processing (no parallelization for Windows VM compatibility)
+    - Sorts by (score, -peak_count_delta, matched_peaks)
+    """
+    import time as time_module
+    
+    search_start_time = time_module.time()
+    
+    # Get parameter ranges from config
+    lipid_cfg = config["parameters"]["lipid"]
+    aqueous_cfg = config["parameters"]["aqueous"]
+    roughness_cfg = config["parameters"]["roughness"]
+    
+    # Use stride=1 for coarse search (can be adjusted)
+    coarse_stride = 1
+    coarse_lipid_vals = generate_parameter_values(lipid_cfg, stride=coarse_stride)
+    coarse_aqueous_vals = generate_parameter_values(aqueous_cfg, stride=coarse_stride)
+    coarse_rough_vals = generate_parameter_values(roughness_cfg, stride=coarse_stride)
+    
+    coarse_total = len(coarse_lipid_vals) * len(coarse_aqueous_vals) * len(coarse_rough_vals)
+    
+    # Budget allocation: 70% for Stage 1, 30% for Stage 2
+    if max_results is not None:
+        stage1_budget = int(max_results * 0.7)
+        stage2_budget = max_results - stage1_budget
+    else:
+        stage1_budget = None
+        stage2_budget = None
+    
+    budget_str = f"{stage1_budget:,}" if stage1_budget else "unlimited"
+    st.info(f"🔍 Dynamic Search - Stage 1: Coarse search ({coarse_total:,} combinations, budget: {budget_str})")
+    
+    # Stage 1: Coarse search
+    stage1_start = time_module.time()
+    coarse_records: List[Dict[str, float]] = []
+    
+    # Sequential evaluation for Stage 1 (no parallel processing)
+    progress_bar = st.progress(0)
+    status_text = st.empty()
+    
+    # If coarse search exceeds budget, sample randomly
+    if stage1_budget is not None and coarse_total > stage1_budget:
+        st.warning(f"⚠️ Coarse search ({coarse_total:,} combinations) exceeds Stage 1 budget ({stage1_budget:,}). Sampling...")
+        # Generate all combinations and sample
+        all_coarse_combinations = list(itertools.product(coarse_lipid_vals, coarse_aqueous_vals, coarse_rough_vals))
+        random.seed(42)
+        sampled_combinations = random.sample(all_coarse_combinations, min(stage1_budget, len(all_coarse_combinations)))
+        coarse_combinations_to_eval = sampled_combinations
+        stage1_actual_used = len(sampled_combinations)
+    else:
+        coarse_combinations_to_eval = list(itertools.product(coarse_lipid_vals, coarse_aqueous_vals, coarse_rough_vals))
+        stage1_actual_used = len(coarse_combinations_to_eval)
+    
+    total = len(coarse_combinations_to_eval)
+    completed = 0
+    
+    for lipid, aqueous, rough in coarse_combinations_to_eval:
+        completed += 1
+        progress = completed / total
+        progress_bar.progress(progress)
+        status_text.text(f"Stage 1: {completed}/{total} ({100*progress:.1f}%)")
+        
+        spectrum = single_spectrum(float(lipid), float(aqueous), float(rough))
+        if spectrum is None or len(spectrum) == 0 or np.all(spectrum == 0):
+            continue
+        spectrum_std = np.std(spectrum)
+        if spectrum_std < 1e-6:
+            continue
+        
+        theoretical = prepare_theoretical_spectrum(
+            wavelengths,
+            spectrum,
+            measurement_features,
+            analysis_cfg,
+        )
+        scores, diagnostics = score_candidate(
+            measurement_features,
+            theoretical,
+            metrics_cfg,
+            lipid_nm=float(lipid),
+            aqueous_nm=float(aqueous),
+            roughness_A=float(rough),
+            measurement_quality=measurement_quality,
+        )
+        
+        # Extract peak metrics for sorting
+        matched_peaks = 0
+        peak_count_delta = 0
+        
+        if "peak_delta" in diagnostics:
+            peak_delta_diag = diagnostics["peak_delta"]
+            matched_peaks = int(peak_delta_diag.get("matched_pairs", 0))
+        
+        if "peak_count" in diagnostics:
+            peak_count_diag = diagnostics["peak_count"]
+            meas_peaks = int(peak_count_diag.get("measurement_peaks", 0))
+            theo_peaks = int(peak_count_diag.get("theoretical_peaks", 0))
+            peak_count_delta = abs(meas_peaks - theo_peaks)
+        
+        # Filter by correlation and RMSE (if available)
+        correlation = scores.get("correlation", scores.get("residual_correlation", 1.0))
+        rmse = scores.get("residual_rmse", scores.get("score_residual_rmse", 0.0))
+        
+        # Only keep good candidates
+        if correlation >= 0.85 and (rmse == 0.0 or rmse <= 0.002):
+            record = {
+                "lipid_nm": float(lipid),
+                "aqueous_nm": float(aqueous),
+                "roughness_A": float(rough),
+                "matched_peaks": matched_peaks,
+                "peak_count_delta": peak_count_delta,
+            }
+            for key, value in scores.items():
+                record[f"score_{key}"] = float(value)
+            for metric, diag in diagnostics.items():
+                for diag_key, diag_val in diag.items():
+                    record[f"{metric}_{diag_key}"] = float(diag_val)
+            coarse_records.append(record)
+    
+    progress_bar.empty()
+    status_text.empty()
+    
+    stage1_elapsed = time_module.time() - stage1_start
+    st.success(f"✅ Stage 1 complete: {len(coarse_records)} candidates found in {stage1_elapsed:.1f}s")
+    
+    if len(coarse_records) == 0:
+        st.warning("⚠️ No promising candidates found in Stage 1")
+        return pd.DataFrame(), 0
+    
+    # Sort Stage 1 results
+    coarse_df = pd.DataFrame(coarse_records)
+    coarse_df = coarse_df.sort_values(
+        by=["score_composite", "peak_count_delta", "matched_peaks"],
+        ascending=[False, True, False]
+    ).reset_index(drop=True)
+    
+    # Get top candidates for refinement (top 10)
+    top_candidates = coarse_df.head(min(10, len(coarse_df)))
+    st.info(f"🎯 Stage 2: Refining around top {len(top_candidates)} candidates...")
+    
+    # Stage 2: Dynamic refinement with adaptive step sizes
+    stage2_start = time_module.time()
+    
+    # Calculate unused Stage 1 budget
+    if max_results is not None:
+        unused_stage1_budget = stage1_budget - stage1_actual_used
+        remaining_budget = stage2_budget + unused_stage1_budget
+    else:
+        remaining_budget = None
+    
+    # Get coarse step sizes
+    coarse_lipid_step = lipid_cfg.get("step", 10.0)
+    coarse_aqueous_step = aqueous_cfg.get("step", 100.0)
+    coarse_roughness_step = roughness_cfg.get("step", 50.0)
+    
+    fine_combinations = []
+    combinations_per_candidate = []
+    
+    for rank, (_, candidate) in enumerate(top_candidates.iterrows()):
+        candidate_start_count = len(fine_combinations)
+        
+        # Adaptive step sizes based on rank
+        if rank == 0:
+            # Best candidate: fine refinement
+            lipid_window = 3.0 * coarse_lipid_step
+            aqueous_window = 3.0 * coarse_aqueous_step
+            roughness_window = 3.0 * coarse_roughness_step
+            fine_lipid_step = max(1.0, coarse_lipid_step * 0.15)
+            fine_aqueous_step = max(20.0, coarse_aqueous_step * 0.15)
+            fine_roughness_step = max(10.0, coarse_roughness_step * 0.15)
+        elif rank < 5:
+            # Top 5: medium refinement
+            lipid_window = 2.5 * coarse_lipid_step
+            aqueous_window = 2.5 * coarse_aqueous_step
+            roughness_window = 2.5 * coarse_roughness_step
+            fine_lipid_step = max(1.0, coarse_lipid_step * 0.25)
+            fine_aqueous_step = max(20.0, coarse_aqueous_step * 0.25)
+            fine_roughness_step = max(10.0, coarse_roughness_step * 0.25)
+        else:
+            # Lower-ranked: coarse refinement
+            lipid_window = 2.0 * coarse_lipid_step
+            aqueous_window = 2.0 * coarse_aqueous_step
+            roughness_window = 2.0 * coarse_roughness_step
+            fine_lipid_step = max(1.0, coarse_lipid_step * 0.4)
+            fine_aqueous_step = max(20.0, coarse_aqueous_step * 0.4)
+            fine_roughness_step = max(10.0, coarse_roughness_step * 0.4)
+        
+        # Generate fine grid around candidate
+        center_lipid = candidate["lipid_nm"]
+        center_aqueous = candidate["aqueous_nm"]
+        center_rough = candidate["roughness_A"]
+        
+        lipid_min = max(lipid_cfg["min"], center_lipid - lipid_window)
+        lipid_max = min(lipid_cfg["max"], center_lipid + lipid_window)
+        aqueous_min = max(aqueous_cfg["min"], center_aqueous - aqueous_window)
+        aqueous_max = min(aqueous_cfg["max"], center_aqueous + aqueous_window)
+        roughness_min = max(roughness_cfg["min"], center_rough - roughness_window)
+        roughness_max = min(roughness_cfg["max"], center_rough + roughness_window)
+        
+        fine_lipids = np.arange(lipid_min, lipid_max + fine_lipid_step, fine_lipid_step)
+        fine_aqueous = np.arange(aqueous_min, aqueous_max + fine_aqueous_step, fine_aqueous_step)
+        fine_roughness = np.arange(roughness_min, roughness_max + fine_roughness_step, fine_roughness_step)
+        
+        # Filter to valid ranges
+        fine_lipids = fine_lipids[(fine_lipids >= lipid_cfg["min"]) & (fine_lipids <= lipid_cfg["max"])]
+        fine_aqueous = fine_aqueous[(fine_aqueous >= aqueous_cfg["min"]) & (fine_aqueous <= aqueous_cfg["max"])]
+        fine_roughness = fine_roughness[(fine_roughness >= roughness_cfg["min"]) & (fine_roughness <= roughness_cfg["max"])]
+        
+        # Add combinations (skip if too close to original candidate)
+        for lipid in fine_lipids:
+            for aqueous in fine_aqueous:
+                for rough in fine_roughness:
+                    if (abs(lipid - center_lipid) < fine_lipid_step * 0.5 and
+                        abs(aqueous - center_aqueous) < fine_aqueous_step * 0.5 and
+                        abs(rough - center_rough) < fine_roughness_step * 0.5):
+                        continue
+                    fine_combinations.append((lipid, aqueous, rough))
+        
+        candidate_combinations = len(fine_combinations) - candidate_start_count
+        combinations_per_candidate.append(candidate_combinations)
+    
+    total_dynamic = len(fine_combinations)
+    
+    # Limit to budget if needed
+    if remaining_budget is not None and total_dynamic > remaining_budget:
+        st.warning(f"⚠️ Stage 2 combinations ({total_dynamic:,}) exceed budget ({remaining_budget:,}). Sampling...")
+        random.seed(42)
+        fine_combinations = random.sample(fine_combinations, remaining_budget)
+        total_dynamic = len(fine_combinations)
+    
+    # Sequential evaluation for Stage 2 (no parallel processing)
+    st.info(f"🔍 Evaluating {total_dynamic:,} Stage 2 combinations...")
+    
+    progress_bar = st.progress(0)
+    status_text = st.empty()
+    
+    refine_records: List[Dict[str, float]] = []
+    total = len(fine_combinations)
+    completed = 0
+    
+    for lipid, aqueous, rough in fine_combinations:
+        completed += 1
+        progress = completed / total
+        progress_bar.progress(progress)
+        status_text.text(f"Stage 2: {completed}/{total} ({100*progress:.1f}%)")
+        
+        spectrum = single_spectrum(float(lipid), float(aqueous), float(rough))
+        if spectrum is None or len(spectrum) == 0 or np.all(spectrum == 0):
+            continue
+        spectrum_std = np.std(spectrum)
+        if spectrum_std < 1e-6:
+            continue
+        
+        theoretical = prepare_theoretical_spectrum(
+            wavelengths,
+            spectrum,
+            measurement_features,
+            analysis_cfg,
+        )
+        scores, diagnostics = score_candidate(
+            measurement_features,
+            theoretical,
+            metrics_cfg,
+            lipid_nm=float(lipid),
+            aqueous_nm=float(aqueous),
+            roughness_A=float(rough),
+            measurement_quality=measurement_quality,
+        )
+        
+        # Extract peak metrics for sorting
+        matched_peaks = 0
+        peak_count_delta = 0
+        
+        if "peak_delta" in diagnostics:
+            peak_delta_diag = diagnostics["peak_delta"]
+            matched_peaks = int(peak_delta_diag.get("matched_pairs", 0))
+        
+        if "peak_count" in diagnostics:
+            peak_count_diag = diagnostics["peak_count"]
+            meas_peaks = int(peak_count_diag.get("measurement_peaks", 0))
+            theo_peaks = int(peak_count_diag.get("theoretical_peaks", 0))
+            peak_count_delta = abs(meas_peaks - theo_peaks)
+        
+        # Filter by correlation and RMSE
+        correlation = scores.get("correlation", scores.get("residual_correlation", 1.0))
+        rmse = scores.get("residual_rmse", scores.get("score_residual_rmse", 0.0))
+        
+        if correlation >= 0.85 and (rmse == 0.0 or rmse <= 0.002):
+            record = {
+                "lipid_nm": float(lipid),
+                "aqueous_nm": float(aqueous),
+                "roughness_A": float(rough),
+                "matched_peaks": matched_peaks,
+                "peak_count_delta": peak_count_delta,
+            }
+            for key, value in scores.items():
+                record[f"score_{key}"] = float(value)
+            for metric, diag in diagnostics.items():
+                for diag_key, diag_val in diag.items():
+                    record[f"{metric}_{diag_key}"] = float(diag_val)
+            refine_records.append(record)
+    
+    progress_bar.empty()
+    status_text.empty()
+    
+    stage2_elapsed = time_module.time() - stage2_start
+    st.success(f"✅ Stage 2 complete: {len(refine_records)} candidates found in {stage2_elapsed:.1f}s")
+    
+    # Combine results
+    all_records = coarse_records + refine_records
+    if not all_records:
+        return pd.DataFrame(), 0
+    
+    results_df = pd.DataFrame(all_records)
+    # Remove duplicates
+    results_df = results_df.drop_duplicates(
+        subset=["lipid_nm", "aqueous_nm", "roughness_A"], keep="first"
+    )
+    
+    # Sort by (score_composite, -peak_count_delta, matched_peaks)
+    results_df = results_df.sort_values(
+        by=["score_composite", "peak_count_delta", "matched_peaks"],
+        ascending=[False, True, False]
+    ).reset_index(drop=True)
+    
+    total_evaluated = stage1_actual_used + total_dynamic
+    total_elapsed = time_module.time() - search_start_time
+    
+    st.success(f"✅ Dynamic search complete: {len(results_df)} unique results in {total_elapsed:.1f}s ({total_elapsed/60:.1f} minutes)")
     
     return results_df, total_evaluated
 
@@ -791,10 +1184,26 @@ def run_inline_grid_search(
                 roughness_A=float(rough),
                 measurement_quality=measurement_quality,
             )
+            # Extract peak metrics for sorting
+            matched_peaks = 0
+            peak_count_delta = 0
+            
+            if "peak_delta" in diagnostics:
+                peak_delta_diag = diagnostics["peak_delta"]
+                matched_peaks = int(peak_delta_diag.get("matched_pairs", 0))
+            
+            if "peak_count" in diagnostics:
+                peak_count_diag = diagnostics["peak_count"]
+                meas_peaks = int(peak_count_diag.get("measurement_peaks", 0))
+                theo_peaks = int(peak_count_diag.get("theoretical_peaks", 0))
+                peak_count_delta = abs(meas_peaks - theo_peaks)
+            
             record = {
                 "lipid_nm": float(lipid),
                 "aqueous_nm": float(aqueous),
                 "roughness_A": float(rough),
+                "matched_peaks": matched_peaks,
+                "peak_count_delta": peak_count_delta,
             }
             for key, value in scores.items():
                 record[f"score_{key}"] = float(value)
@@ -856,7 +1265,14 @@ def run_inline_grid_search(
         return pd.DataFrame(), 0
 
     results_df = pd.DataFrame(records)
-    results_df = results_df.sort_values("score_composite", ascending=False).reset_index(drop=True)
+    # Sort by (score_composite, -peak_count_delta, matched_peaks)
+    if "peak_count_delta" in results_df.columns and "matched_peaks" in results_df.columns:
+        results_df = results_df.sort_values(
+            by=["score_composite", "peak_count_delta", "matched_peaks"],
+            ascending=[False, True, False]
+        ).reset_index(drop=True)
+    else:
+        results_df = results_df.sort_values("score_composite", ascending=False).reset_index(drop=True)
     return results_df, evaluated
 
 
@@ -2034,147 +2450,17 @@ def main():
                         aqueous_vals = None
                         rough_vals = None
                     elif search_strategy == "dynamic":
-                        # Dynamic search: quick coarse pass, then adaptive refinement
-                        st.info("Stage 1: Quick coarse scan to identify promising regions...")
-                        
-                        # Quick coarse pass with larger steps
-                        coarse_lipid_vals = generate_parameter_values(config["parameters"]["lipid"], stride=3)
-                        coarse_aqueous_vals = generate_parameter_values(config["parameters"]["aqueous"], stride=3)
-                        coarse_rough_vals = generate_parameter_values(config["parameters"]["roughness"], stride=3)
-                        
-                        # Limit coarse pass to reasonable size for speed
-                        max_coarse = min(500, len(coarse_lipid_vals) * len(coarse_aqueous_vals) * len(coarse_rough_vals))
-                        coarse_records = []
-                        coarse_count = 0
-                        
-                        for lipid in coarse_lipid_vals:
-                            for aqueous in coarse_aqueous_vals:
-                                for rough in coarse_rough_vals:
-                                    if coarse_count >= max_coarse:
-                                        break
-                                    spectrum = single_spectrum(float(lipid), float(aqueous), float(rough))
-                                    if spectrum is None or len(spectrum) == 0 or np.all(spectrum == 0):
-                                        continue
-                                    spectrum_std = np.std(spectrum)
-                                    if spectrum_std < 1e-6:
-                                        continue
-                                    theoretical = prepare_theoretical_spectrum(
-                                        wavelengths,
-                                        spectrum,
-                                        measurement_features,
-                                        analysis_cfg,
-                                    )
-                                    scores, _ = score_candidate(
-                                        measurement_features,
-                                        theoretical,
-                                        metrics_cfg,
-                                        lipid_nm=float(lipid),
-                                        aqueous_nm=float(aqueous),
-                                        roughness_A=float(rough),
-                                        measurement_quality=measurement_quality_result,
-                                    )
-                                    coarse_records.append({
-                                        "lipid_nm": float(lipid),
-                                        "aqueous_nm": float(aqueous),
-                                        "roughness_A": float(rough),
-                                        "score_composite": scores.get("composite", 0.0),
-                                    })
-                                    coarse_count += 1
-                        
-                        if len(coarse_records) == 0:
-                            st.warning("No valid spectra in coarse pass. Falling back to random search.")
-                            lipid_vals = generate_parameter_values(config["parameters"]["lipid"], stride)
-                            aqueous_vals = generate_parameter_values(config["parameters"]["aqueous"], stride)
-                            rough_vals = generate_parameter_values(config["parameters"]["roughness"], stride)
-                            results_df, evaluated = run_inline_grid_search(
-                                single_spectrum, wavelengths, measurement_features,
-                                analysis_cfg, metrics_cfg,
-                                lipid_vals, aqueous_vals, rough_vals,
-                                max_results, measurement_quality=measurement_quality_result,
-                            )
-                        else:
-                            # Get top promising results
-                            coarse_df = pd.DataFrame(coarse_records)
-                            top_k = min(10, len(coarse_df))
-                            top_coarse = coarse_df.nlargest(top_k, "score_composite")
-                            
-                            # Extract promising regions for each parameter
-                            lipid_promising = [(row["lipid_nm"], row["score_composite"]) for _, row in top_coarse.iterrows()]
-                            aqueous_promising = [(row["aqueous_nm"], row["score_composite"]) for _, row in top_coarse.iterrows()]
-                            rough_promising = [(row["roughness_A"], row["score_composite"]) for _, row in top_coarse.iterrows()]
-                            
-                            st.success(f"Stage 1 complete: Found {len(coarse_records)} candidates. Top {top_k} selected for adaptive refinement.")
-                            st.info("Stage 2: Adaptive refinement with dynamic step sizes...")
-                            
-                            # Generate dynamic parameter values
-                            max_per_param = int(np.sqrt(max_results)) if max_results else 50
-                            lipid_vals = generate_dynamic_parameter_values(
-                                config["parameters"]["lipid"],
-                                promising_regions=lipid_promising,
-                                max_evaluations=max_per_param,
-                            )
-                            aqueous_vals = generate_dynamic_parameter_values(
-                                config["parameters"]["aqueous"],
-                                promising_regions=aqueous_promising,
-                                max_evaluations=max_per_param,
-                            )
-                            rough_vals = generate_dynamic_parameter_values(
-                                config["parameters"]["roughness"],
-                                promising_regions=rough_promising,
-                                max_evaluations=max_per_param,
-                            )
-                            
-                            # Run full grid search with dynamic values
-                            results_df, evaluated = run_inline_grid_search(
-                                single_spectrum,
-                                wavelengths,
-                                measurement_features,
-                                analysis_cfg,
-                                metrics_cfg,
-                                lipid_vals,
-                                aqueous_vals,
-                                rough_vals,
-                                max_results,
-                                measurement_quality=measurement_quality_result,
-                            )
-                            
-                            # Combine coarse and refined results for completeness
-                            if not results_df.empty and len(coarse_records) > 0:
-                                coarse_full_records = []
-                                for record in coarse_records:
-                                    spectrum = single_spectrum(float(record["lipid_nm"]), float(record["aqueous_nm"]), float(record["roughness_A"]))
-                                    if spectrum is None or len(spectrum) == 0 or np.all(spectrum == 0):
-                                        continue
-                                    spectrum_std = np.std(spectrum)
-                                    if spectrum_std < 1e-6:
-                                        continue
-                                    theoretical = prepare_theoretical_spectrum(
-                                        wavelengths, spectrum, measurement_features, analysis_cfg,
-                                    )
-                                    scores, diagnostics = score_candidate(
-                                        measurement_features, theoretical, metrics_cfg,
-                                        lipid_nm=float(record["lipid_nm"]),
-                                        aqueous_nm=float(record["aqueous_nm"]),
-                                        roughness_A=float(record["roughness_A"]),
-                                        measurement_quality=measurement_quality_result,
-                                    )
-                                    full_record = {
-                                        "lipid_nm": record["lipid_nm"],
-                                        "aqueous_nm": record["aqueous_nm"],
-                                        "roughness_A": record["roughness_A"],
-                                        **{f"score_{k}": v for k, v in scores.items()},
-                                    }
-                                    coarse_full_records.append(full_record)
-                                
-                                if coarse_full_records:
-                                    coarse_full_df = pd.DataFrame(coarse_full_records)
-                                    results_df = pd.concat([results_df, coarse_full_df], ignore_index=True)
-                                    results_df = results_df.drop_duplicates(
-                                        subset=["lipid_nm", "aqueous_nm", "roughness_A"], keep="first"
-                                    )
-                                    results_df = results_df.sort_values("score_composite", ascending=False).reset_index(drop=True)
-                            
-                            evaluated = len(results_df)
+                        # Use improved dynamic search with PyElli-style optimizations
+                        results_df, evaluated = run_dynamic_grid_search(
+                            single_spectrum,
+                            wavelengths,
+                            measurement_features,
+                            analysis_cfg,
+                            metrics_cfg,
+                            config,
+                            max_results,
+                            measurement_quality=measurement_quality_result,
+                        )
                     else:
                         # Use random or systematic grid search
                         lipid_vals = generate_parameter_values(config["parameters"]["lipid"], stride)
@@ -2383,8 +2669,14 @@ def main():
                                 ref_record["_is_reference"] = True
                                 ref_df = pd.DataFrame([ref_record])
                                 
-                                # Sort results first (without reference)
-                                results_df = results_df.sort_values("score_composite", ascending=False).reset_index(drop=True)
+                                # Sort results first (without reference) by (score_composite, -peak_count_delta, matched_peaks)
+                                if "peak_count_delta" in results_df.columns and "matched_peaks" in results_df.columns:
+                                    results_df = results_df.sort_values(
+                                        by=["score_composite", "peak_count_delta", "matched_peaks"],
+                                        ascending=[False, True, False]
+                                    ).reset_index(drop=True)
+                                else:
+                                    results_df = results_df.sort_values("score_composite", ascending=False).reset_index(drop=True)
                                 
                                 # Insert reference at the top (always visible for comparison)
                                 results_df = pd.concat([ref_df, results_df], ignore_index=True)
