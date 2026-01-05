@@ -120,10 +120,10 @@ analysis:
       weights:
         # Balanced weights: peak matching is important for visual alignment
         # Based on notebook exploration: peaks/valleys alignment matters for fit quality
-        peak_count: 0.3         # Peak count matching (important for oscillation matching)
-        peak_delta: 0.3         # Peak position alignment (important for phase alignment)
+        peak_count: 0.10         # Peak count matching (important for oscillation matching)
+        peak_delta: 0.15         # Peak position alignment (important for phase alignment)
         phase_overlap: 0.2      # FFT-based phase coherence (reduced weight)
-        residual: 0.1           # RMSE/MAE fit quality
+        residual: 0.5           # RMSE/MAE fit quality
         quality: 0.1            # Measurement quality score
         temporal_continuity: 0.0  # Disabled for single measurements
 
