@@ -1435,7 +1435,14 @@ def main():
     # Tab 1: Spectrum Comparison
     with tab1:
         if measurements_enabled and selected_file and selected_file != "None":
-            selected_measurement = measurements[selected_file]
+            selected_measurement = measurements[selected_file].copy()
+            
+            # Apply smoothing to measured spectrum if enabled
+            if smoothing_type != "none":
+                selected_measurement = apply_smoothing(
+                    selected_measurement, smoothing_type,
+                    boxcar_width_nm, boxcar_passes, gaussian_kernel
+                )
             
             # Load BestFit if available
             bestfit_df = None
@@ -1609,8 +1616,28 @@ def main():
                     (bestfit_df_tab2['wavelength'] <= wl_max)
                 ].reset_index(drop=True)
             
-            # Detrend signals based on toggle selection
+            # Detrend and smooth signals based on toggle selection
+            # Order is configurable: apply_smoothing_after_detrend (from config)
+            if smoothing_type != "none" and not apply_smoothing_after_detrend:
+                # Smooth BEFORE detrending
+                measured_filtered = apply_smoothing(
+                    measured_filtered, smoothing_type,
+                    boxcar_width_nm, boxcar_passes, gaussian_kernel
+                )
+            
             measured_detrended = detrend_dataframe(measured_filtered, cutoff_freq, filter_order)
+            
+            if smoothing_type != "none" and apply_smoothing_after_detrend:
+                # Smooth AFTER detrending (default behavior)
+                wavelengths_arr = measured_detrended['wavelength'].to_numpy()
+                detrended_arr = measured_detrended['detrended'].to_numpy()
+                if smoothing_type == "boxcar":
+                    smoothed_detrended = boxcar_smooth(detrended_arr, wavelengths_arr, boxcar_width_nm, boxcar_passes)
+                else:  # gaussian
+                    smoothed_detrended = gaussian_smooth(detrended_arr, gaussian_kernel)
+                measured_detrended = measured_detrended.copy()
+                measured_detrended['detrended'] = smoothed_detrended
+            
             meas_peaks = detect_peaks_df(measured_detrended, 'detrended', peak_prominence)
             meas_valleys = detect_valleys_df(measured_detrended, 'detrended', peak_prominence)
             
