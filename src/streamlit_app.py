@@ -38,6 +38,8 @@ streamlit_logger.setLevel(logging.ERROR)  # Only show errors, not warnings
 from analysis import (
     load_measurement_spectrum,
     detrend_signal,
+    boxcar_smooth,
+    gaussian_smooth,
     detect_peaks,
     detect_valleys,
     prepare_measurement,
@@ -113,6 +115,46 @@ def detect_valleys_df(df: pd.DataFrame, column: str, prominence: float) -> pd.Da
         "valley_prominence": valleys["prominence"],
     })
     return result
+
+
+def apply_smoothing(
+    df: pd.DataFrame,
+    smoothing_type: str,
+    boxcar_width_nm: float = 17.0,
+    boxcar_passes: int = 1,
+    gaussian_kernel: int = 11,
+) -> pd.DataFrame:
+    """Apply smoothing to a spectrum DataFrame.
+
+    Args:
+        df: DataFrame with 'wavelength' and 'reflectance' columns.
+        smoothing_type: One of 'none', 'boxcar', or 'gaussian'.
+        boxcar_width_nm: Boxcar smoothing width in nanometers.
+        boxcar_passes: Number of boxcar smoothing passes.
+        gaussian_kernel: Gaussian kernel size in samples.
+
+    Returns:
+        DataFrame with smoothed 'reflectance' column (original preserved as 'reflectance_raw').
+    """
+    if smoothing_type == "none":
+        return df
+
+    df_result = df.copy()
+    wavelengths = df_result["wavelength"].to_numpy()
+    reflectance = df_result["reflectance"].to_numpy()
+
+    # Preserve original reflectance
+    df_result["reflectance_raw"] = reflectance
+
+    if smoothing_type == "boxcar":
+        smoothed = boxcar_smooth(reflectance, wavelengths, boxcar_width_nm, boxcar_passes)
+    elif smoothing_type == "gaussian":
+        smoothed = gaussian_smooth(reflectance, gaussian_kernel)
+    else:
+        smoothed = reflectance
+
+    df_result["reflectance"] = smoothed
+    return df_result
 
 
 def load_bestfit_spectrum(file_path: pathlib.Path) -> pd.DataFrame:
@@ -1147,14 +1189,28 @@ def main():
     # Detrending parameters - read defaults from config
     detrending_cfg = analysis_cfg.get("detrending", {})
     peak_detection_cfg = analysis_cfg.get("peak_detection", {})
+    smoothing_cfg = analysis_cfg.get("smoothing", {})
     default_cutoff = float(detrending_cfg.get("default_cutoff_frequency", 0.01))
     default_prominence = float(peak_detection_cfg.get("default_prominence", 0.005))
+    
+    # Smoothing defaults from config
+    default_smoothing_type = smoothing_cfg.get("default_type", "none")
+    boxcar_cfg = smoothing_cfg.get("boxcar", {})
+    gaussian_cfg = smoothing_cfg.get("gaussian", {})
+    default_boxcar_width = float(boxcar_cfg.get("default_width_nm", 17.0))
+    default_boxcar_passes = int(boxcar_cfg.get("default_passes", 1))
+    default_gaussian_kernel = int(gaussian_cfg.get("default_kernel_size", 11))
+    apply_smoothing_after_detrend = smoothing_cfg.get("apply_after_detrend", True)
     
     analysis_defaults = {
         "analysis_cutoff_freq": default_cutoff,
         "analysis_peak_prominence": default_prominence,
         "cutoff_freq_slider": default_cutoff,
         "peak_prominence_slider": default_prominence,
+        "smoothing_type": default_smoothing_type,
+        "boxcar_width_nm": default_boxcar_width,
+        "boxcar_passes": default_boxcar_passes,
+        "gaussian_kernel": default_gaussian_kernel,
     }
 
     # Initialize session state with config defaults if not set
@@ -1303,12 +1359,55 @@ def main():
         key="peak_prominence_slider"
     )
     
-    # Apply button to update both parameters at once
+    # Smoothing controls
+    st.sidebar.markdown("---")
+    smoothing_type_input = st.sidebar.radio(
+        "Smoothing Type",
+        options=["none", "boxcar", "gaussian"],
+        index=["none", "boxcar", "gaussian"].index(st.session_state.get("smoothing_type", "none")),
+        horizontal=True,
+        key="smoothing_type_radio"
+    )
+    
+    # Conditional smoothing parameters based on type
+    boxcar_width_input = default_boxcar_width
+    boxcar_passes_input = default_boxcar_passes
+    gaussian_kernel_input = default_gaussian_kernel
+    
+    if smoothing_type_input == "boxcar":
+        boxcar_width_input = st.sidebar.slider(
+            "Boxcar Width (nm)",
+            min_value=5.0,
+            max_value=50.0,
+            value=st.session_state.get("boxcar_width_nm", default_boxcar_width),
+            step=1.0,
+            format="%.0f",
+            key="boxcar_width_slider"
+        )
+        boxcar_passes_input = st.sidebar.selectbox(
+            "Boxcar Passes",
+            options=[1, 2, 3],
+            index=[1, 2, 3].index(st.session_state.get("boxcar_passes", default_boxcar_passes)),
+            key="boxcar_passes_select"
+        )
+    elif smoothing_type_input == "gaussian":
+        gaussian_kernel_input = st.sidebar.selectbox(
+            "Gaussian Kernel Size",
+            options=[7, 9, 11],
+            index=[7, 9, 11].index(st.session_state.get("gaussian_kernel", default_gaussian_kernel)),
+            key="gaussian_kernel_select"
+        )
+    
+    # Apply button to update all parameters at once
     apply_analysis_params = st.sidebar.button("Apply Analysis Parameters", type="primary", use_container_width=True)
     
     if apply_analysis_params:
         st.session_state["analysis_cutoff_freq"] = cutoff_freq_input
         st.session_state["analysis_peak_prominence"] = peak_prominence_input
+        st.session_state["smoothing_type"] = smoothing_type_input
+        st.session_state["boxcar_width_nm"] = boxcar_width_input
+        st.session_state["boxcar_passes"] = boxcar_passes_input
+        st.session_state["gaussian_kernel"] = gaussian_kernel_input
         # Update analysis_cfg dynamically for this session
         analysis_cfg["detrending"]["default_cutoff_frequency"] = cutoff_freq_input
         analysis_cfg["peak_detection"]["default_prominence"] = peak_prominence_input
@@ -1317,9 +1416,14 @@ def main():
     # Use session state values (these are the active values)
     cutoff_freq = st.session_state["analysis_cutoff_freq"]
     peak_prominence = st.session_state["analysis_peak_prominence"]
+    smoothing_type = st.session_state.get("smoothing_type", "none")
+    boxcar_width_nm = st.session_state.get("boxcar_width_nm", default_boxcar_width)
+    boxcar_passes = st.session_state.get("boxcar_passes", default_boxcar_passes)
+    gaussian_kernel = st.session_state.get("gaussian_kernel", default_gaussian_kernel)
     
     # Show current active values
-    st.sidebar.caption(f"Active: Cutoff={cutoff_freq:.3f}, Prominence={peak_prominence:.5f}")
+    smoothing_info = f", Smoothing={smoothing_type}" if smoothing_type != "none" else ""
+    st.sidebar.caption(f"Active: Cutoff={cutoff_freq:.3f}, Prominence={peak_prominence:.5f}{smoothing_info}")
 
     # Compute theoretical spectrum
     spectrum = single_spectrum(lipid_val, aqueous_val, rough_val)
