@@ -1193,13 +1193,16 @@ def main():
     default_cutoff = float(detrending_cfg.get("default_cutoff_frequency", 0.01))
     default_prominence = float(peak_detection_cfg.get("default_prominence", 0.005))
     
-    # Smoothing defaults from config
-    default_smoothing_type = smoothing_cfg.get("default_type", "none")
+    # Smoothing defaults from config (with validation)
+    raw_smoothing_type = smoothing_cfg.get("default_type", "none")
+    default_smoothing_type = raw_smoothing_type if raw_smoothing_type in ["none", "boxcar", "gaussian"] else "none"
     boxcar_cfg = smoothing_cfg.get("boxcar", {})
     gaussian_cfg = smoothing_cfg.get("gaussian", {})
     default_boxcar_width = float(boxcar_cfg.get("default_width_nm", 17.0))
-    default_boxcar_passes = int(boxcar_cfg.get("default_passes", 1))
-    default_gaussian_kernel = int(gaussian_cfg.get("default_kernel_size", 11))
+    raw_boxcar_passes = int(boxcar_cfg.get("default_passes", 1))
+    default_boxcar_passes = raw_boxcar_passes if raw_boxcar_passes in [1, 2, 3] else 1
+    raw_gaussian_kernel = int(gaussian_cfg.get("default_kernel_size", 11))
+    default_gaussian_kernel = raw_gaussian_kernel if raw_gaussian_kernel in [7, 9, 11] else 11
     apply_smoothing_after_detrend = smoothing_cfg.get("apply_after_detrend", True)
     
     analysis_defaults = {
@@ -1361,10 +1364,19 @@ def main():
     
     # Smoothing controls
     st.sidebar.markdown("---")
+    
+    # Safe index lookup helper (returns 0 if value not in options)
+    def safe_index(options: list, value, default_idx: int = 0) -> int:
+        try:
+            return options.index(value)
+        except ValueError:
+            return default_idx
+    
+    smoothing_type_options = ["none", "boxcar", "gaussian"]
     smoothing_type_input = st.sidebar.radio(
         "Smoothing Type",
-        options=["none", "boxcar", "gaussian"],
-        index=["none", "boxcar", "gaussian"].index(st.session_state.get("smoothing_type", "none")),
+        options=smoothing_type_options,
+        index=safe_index(smoothing_type_options, st.session_state.get("smoothing_type", "none")),
         horizontal=True,
         key="smoothing_type_radio"
     )
@@ -1384,17 +1396,19 @@ def main():
             format="%.0f",
             key="boxcar_width_slider"
         )
+        boxcar_passes_options = [1, 2, 3]
         boxcar_passes_input = st.sidebar.selectbox(
             "Boxcar Passes",
-            options=[1, 2, 3],
-            index=[1, 2, 3].index(st.session_state.get("boxcar_passes", default_boxcar_passes)),
+            options=boxcar_passes_options,
+            index=safe_index(boxcar_passes_options, st.session_state.get("boxcar_passes", default_boxcar_passes)),
             key="boxcar_passes_select"
         )
     elif smoothing_type_input == "gaussian":
+        gaussian_kernel_options = [7, 9, 11]
         gaussian_kernel_input = st.sidebar.selectbox(
             "Gaussian Kernel Size",
-            options=[7, 9, 11],
-            index=[7, 9, 11].index(st.session_state.get("gaussian_kernel", default_gaussian_kernel)),
+            options=gaussian_kernel_options,
+            index=safe_index(gaussian_kernel_options, st.session_state.get("gaussian_kernel", default_gaussian_kernel)),
             key="gaussian_kernel_select"
         )
     
