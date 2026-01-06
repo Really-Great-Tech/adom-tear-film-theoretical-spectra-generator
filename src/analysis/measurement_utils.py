@@ -297,7 +297,10 @@ def gaussian_smooth(
     Returns:
         Smoothed intensity values.
     """
-    sigma = kernel_size / 6.0  # ~3 sigma coverage within kernel
+    # gaussian_filter1d uses kernel length = 2 * truncate * sigma + 1 (truncate defaults to 4)
+    # Solve for sigma to get exact kernel_size: sigma = (kernel_size - 1) / (2 * truncate)
+    truncate = 4.0  # scipy default
+    sigma = (kernel_size - 1) / (2 * truncate)
     return gaussian_filter1d(intensity.copy(), sigma=sigma, mode='nearest')
 
 
