@@ -10,6 +10,7 @@ from typing import Any, Callable, Dict, Iterable, Optional, Tuple
 
 import numpy as np
 import pandas as pd
+from scipy.ndimage import gaussian_filter1d, uniform_filter1d
 from scipy.signal import butter, filtfilt, find_peaks, get_window
 
 WarnFn = Callable[[str], None]
@@ -258,6 +259,51 @@ def detrend_signal(
         return reflectance.copy()
 
 
+def boxcar_smooth(
+    intensity: np.ndarray,
+    wavelengths_nm: np.ndarray,
+    width_nm: float = 17.0,
+    repeats: int = 1,
+) -> np.ndarray:
+    """Apply boxcar (uniform/moving average) smoothing matching TFI/LTA system.
+
+    Args:
+        intensity: Intensity/reflectance values to smooth.
+        wavelengths_nm: Wavelength array in nanometers.
+        width_nm: Smoothing width in nanometers (default 17.0 from TFI config).
+        repeats: Number of smoothing passes (default 1; use 2 for peak detection).
+
+    Returns:
+        Smoothed intensity values.
+    """
+    step_nm = float(np.median(np.diff(wavelengths_nm)))
+    window_size = max(1, int(round(width_nm / step_nm)))
+    smoothed = intensity.copy()
+    for _ in range(repeats):
+        smoothed = uniform_filter1d(smoothed, size=window_size, mode='nearest')
+    return smoothed
+
+
+def gaussian_smooth(
+    intensity: np.ndarray,
+    kernel_size: int = 11,
+) -> np.ndarray:
+    """Apply Gaussian smoothing with sample-based kernel size.
+
+    Args:
+        intensity: Intensity/reflectance values to smooth.
+        kernel_size: Gaussian kernel size in samples (7, 9, or 11).
+
+    Returns:
+        Smoothed intensity values.
+    """
+    # gaussian_filter1d uses kernel length = 2 * truncate * sigma + 1 (truncate defaults to 4)
+    # Solve for sigma to get exact kernel_size: sigma = (kernel_size - 1) / (2 * truncate)
+    truncate = 4.0  # scipy default
+    sigma = (kernel_size - 1) / (2 * truncate)
+    return gaussian_filter1d(intensity.copy(), sigma=sigma, mode='nearest')
+
+
 def detect_peaks(
     wavelengths: np.ndarray,
     signal: np.ndarray,
@@ -502,6 +548,8 @@ __all__ = [
     "interpolate_measurement_to_theoretical",
     "calculate_fit_metrics",
     "detrend_signal",
+    "boxcar_smooth",
+    "gaussian_smooth",
     "detect_peaks",
     "detect_valleys",
     "resample_uniform_grid",
