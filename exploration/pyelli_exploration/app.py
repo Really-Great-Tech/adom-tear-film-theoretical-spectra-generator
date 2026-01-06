@@ -16,6 +16,7 @@ from pathlib import Path
 import time
 from concurrent.futures import ThreadPoolExecutor
 import warnings
+import re
 
 import numpy as np
 import pandas as pd
@@ -61,6 +62,7 @@ from exploration.pyelli_exploration.pyelli_utils import (
     load_bestfit_spectrum,
     load_material_data,
     get_sample_data_paths,
+    get_new_spectra_paths,
     get_available_materials,
     calculate_residual,
     calculate_correlation,
@@ -499,12 +501,14 @@ with st.sidebar:
     # Check data availability
     samples = get_sample_data_paths(SAMPLE_DATA_PATH)
     materials = get_available_materials(MATERIALS_PATH)
+    new_spectra_path = PROJECT_ROOT / 'new spectra'
+    new_spectra = get_new_spectra_paths(new_spectra_path) if new_spectra_path.exists() else {}
     
     st.markdown('''
     <p style="color: #1e40af; font-weight: 600; margin-bottom: 10px; font-size: 0.8rem;">📂 DATA STATUS</p>
     ''', unsafe_allow_html=True)
     
-    col1, col2, col3 = st.columns(3)
+    col1, col2, col3, col4 = st.columns(4)
     with col1:
         st.markdown('''
         <div style="background: #f0fdf4; border: 1px solid #bbf7d0; border-radius: 8px; padding: 10px; text-align: center;">
@@ -524,8 +528,15 @@ with st.sidebar:
         <div style="background: #eff6ff; border: 1px solid #bfdbfe; border-radius: 8px; padding: 10px; text-align: center;">
             <div style="font-size: 1.3rem; font-weight: 700; color: #1e40af;">170</div>
             <div style="color: #64748b; font-size: 0.65rem; text-transform: uppercase;">Shlomo Spectra</div>
-    </div>
-    ''', unsafe_allow_html=True)
+        </div>
+        ''', unsafe_allow_html=True)
+    with col4:
+        st.markdown(f'''
+        <div style="background: #fef3c7; border: 1px solid #fde68a; border-radius: 8px; padding: 10px; text-align: center;">
+            <div style="font-size: 1.3rem; font-weight: 700; color: #d97706;">{len(new_spectra)}</div>
+            <div style="color: #64748b; font-size: 0.65rem; text-transform: uppercase;">New Spectra</div>
+        </div>
+        ''', unsafe_allow_html=True)
     
     st.markdown('<hr style="margin: 12px 0; border-color: #e2e8f0;">', unsafe_allow_html=True)
     
@@ -540,6 +551,7 @@ with st.sidebar:
         'Shlomo Raw Spectra': PROJECT_ROOT / 'spectra_from_shlomo',
         'Sample Data (Good Fit)': PROJECT_ROOT / 'exploration' / 'sample_data' / 'good_fit',
         'Sample Data (Bad Fit)': PROJECT_ROOT / 'exploration' / 'sample_data' / 'bad_fit',
+        'New Spectra': PROJECT_ROOT / 'new spectra',
         'Exploration Measurements': PROJECT_ROOT / 'exploration' / 'measurements',
     }
     
@@ -553,6 +565,14 @@ with st.sidebar:
     
     if source_path.exists():
         if selected_source in ['Sample Data (Good Fit)', 'Sample Data (Bad Fit)']:
+            spectrum_files = []
+            for subdir in sorted(source_path.iterdir()):
+                if subdir.is_dir():
+                    for f in subdir.glob('(Run)spectra_*.txt'):
+                        if '_BestFit' not in f.name:
+                            spectrum_files.append(f)
+        elif selected_source == 'New Spectra':
+            # New spectra are organized in subfolders, similar to good/bad fit
             spectrum_files = []
             for subdir in sorted(source_path.iterdir()):
                 if subdir.is_dir():
@@ -631,6 +651,20 @@ with st.sidebar:
             if bestfit_path.exists():
                 bestfit_file = bestfit_path
                 st.session_state.bestfit_file = str(bestfit_file)
+            # Also check if we're in a new spectra folder - BestFit might have slightly different naming
+            elif selected_source == 'New Spectra':
+                # Try alternative patterns for BestFit files
+                for alt_file in selected_path.parent.glob('*_BestFit.txt'):
+                    # Check if the base name matches (before timestamp)
+                    base_name = selected_path.stem
+                    alt_base = alt_file.stem.replace('_BestFit', '')
+                    # Extract the timestamp part (e.g., "21-47-05-763")
+                    base_match = re.search(r'(\d{2}-\d{2}-\d{2}-\d+)', base_name)
+                    alt_match = re.search(r'(\d{2}-\d{2}-\d{2}-\d+)', alt_base)
+                    if base_match and alt_match and base_match.group(1) == alt_match.group(1):
+                        bestfit_file = alt_file
+                        st.session_state.bestfit_file = str(bestfit_file)
+                        break
         
         # Toggle to show LTA BestFit
         show_bestfit = False
@@ -1426,8 +1460,35 @@ with tabs[1]:
         st.markdown('<p style="color: #94a3b8; margin-bottom: 1rem;">Detrended amplitude signals with peak alignment to verify fit quality</p>', unsafe_allow_html=True)
         
         # Get default values for settings (will be used for initial plot)
-        cutoff_freq = st.session_state.get('cutoff_freq_amp', 0.008)
-        peak_prominence = st.session_state.get('peak_prom_amp', 0.0001)
+        # Use correct defaults: cutoff_frequency=0.008, peak_prominence=0.0001
+        # Only migrate old defaults (0.01 for cutoff), allow other values to persist
+        
+        # Check if keys exist in session state
+        cutoff_freq_key_exists = 'cutoff_freq_amp' in st.session_state
+        peak_prom_key_exists = 'peak_prom_amp' in st.session_state
+        
+        # Get current values (use defaults if keys don't exist)
+        cutoff_freq_raw = st.session_state.get('cutoff_freq_amp', 0.008)
+        peak_prominence_raw = st.session_state.get('peak_prom_amp', 0.0001)
+        
+        # Migrate cutoff frequency: only reset if it's the old default (0.01) or key doesn't exist
+        if not cutoff_freq_key_exists:
+            # Key doesn't exist, use default
+            cutoff_freq = 0.008
+            st.session_state.cutoff_freq_amp = 0.008
+        elif abs(cutoff_freq_raw - 0.01) < 0.0001:  # Only migrate old default 0.01
+            cutoff_freq = 0.008
+            st.session_state.cutoff_freq_amp = 0.008
+        else:
+            cutoff_freq = cutoff_freq_raw  # Allow any other value (including user-selected)
+            
+        # Peak prominence: use default if key doesn't exist, otherwise use stored value
+        if not peak_prom_key_exists:
+            # Key doesn't exist, use default
+            peak_prominence = 0.0001
+            st.session_state.peak_prom_amp = 0.0001
+        else:
+            peak_prominence = peak_prominence_raw  # Allow any value (including user-selected)
         
         # Get toggle state from session state
         show_bestfit_amp = computed_data.get('show_bestfit', False)
@@ -1639,20 +1700,34 @@ with tabs[1]:
             st.markdown('---')
             st.markdown('### ⚙️ Analysis Settings')
             
+            # Add reset button to restore defaults
+            if st.button('🔄 Reset to Defaults', help='Reset cutoff frequency to 0.008 and peak prominence to 0.0001'):
+                # Delete keys first to ensure clean reset
+                if 'cutoff_freq_amp' in st.session_state:
+                    del st.session_state.cutoff_freq_amp
+                if 'peak_prom_amp' in st.session_state:
+                    del st.session_state.peak_prom_amp
+                # Set correct defaults
+                st.session_state.cutoff_freq_amp = 0.008
+                st.session_state.peak_prom_amp = 0.0001
+                st.rerun()
+            
             # Amplitude analysis settings
             col_amp_settings = st.columns(2)
             with col_amp_settings[0]:
+                # Use the value from session state (already migrated above if needed)
                 cutoff_freq_new = st.slider(
                     'Detrending Cutoff Frequency',
                     0.001, 0.02,
                     value=cutoff_freq,
                     step=0.001,
+                    format='%.3f',  # Show 3 decimal places to see 0.008 clearly
                     key='cutoff_freq_amp'
                 )
             with col_amp_settings[1]:
                 peak_prominence_new = st.slider(
                     'Peak Prominence',
-                    0.00001, 0.001,
+                    0.00001, 0.01,
                     value=peak_prominence,
                     step=0.00001,
                     format='%.5f',

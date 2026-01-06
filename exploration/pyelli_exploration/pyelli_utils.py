@@ -177,6 +177,45 @@ def get_sample_data_paths(base_path: Path) -> Dict[str, Dict[str, Path]]:
     return samples
 
 
+def get_new_spectra_paths(base_path: Path) -> Dict[str, Dict[str, Path]]:
+    """
+    Discover all new spectra files in the new spectra directory.
+    Each subfolder contains a measured file and a BestFit file.
+    
+    Args:
+        base_path: Base path to new spectra directory
+        
+    Returns:
+        Dictionary with structure: {sample_id: {measured: path, bestfit: path}}
+    """
+    logger.info(f'🔍 Discovering new spectra in {base_path}')
+    
+    new_spectra = {}
+    
+    if not base_path.exists():
+        logger.warning(f'⚠️ New spectra directory not found: {base_path}')
+        return new_spectra
+    
+    for sample_dir in sorted(base_path.iterdir()):
+        if sample_dir.is_dir():
+            sample_id = sample_dir.name
+            new_spectra[sample_id] = {
+                'measured': None,
+                'bestfit': None,
+                'dir': sample_dir
+            }
+            
+            for file in sample_dir.iterdir():
+                if file.suffix == '.txt':
+                    if '_BestFit' in file.name:
+                        new_spectra[sample_id]['bestfit'] = file
+                    elif file.name.startswith('(Run)spectra_') and '_BestFit' not in file.name:
+                        new_spectra[sample_id]['measured'] = file
+    
+    logger.debug(f'✅ Found {len(new_spectra)} new spectra')
+    return new_spectra
+
+
 def get_available_materials(materials_path: Path) -> Dict[str, Path]:
     """
     Get available material files from the Materials directory.
