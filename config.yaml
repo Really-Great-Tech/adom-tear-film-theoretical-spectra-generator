@@ -59,6 +59,16 @@ analysis:
   peak_detection:
     default_prominence: 0.0001  # Default peak prominence threshold
     min_height: null  # Minimum peak height (null for no limit)
+  
+  # Smoothing configuration (matches TFI/LTA system)
+  smoothing:
+    default_type: "none"  # Options: none, boxcar, gaussian
+    apply_after_detrend: true  # If true, smooth after detrending; if false, smooth before
+    boxcar:
+      default_width_nm: 17.0  # Smoothing width in nanometers (TFI default: 17nm)
+      default_passes: 1  # Number of smoothing passes (use 2 for peak detection)
+    gaussian:
+      default_kernel_size: 11  # Kernel size in samples (options: 7, 9, 11)
   quality_gates:
     enabled: true
     min_quality_score: 0.5
