@@ -72,6 +72,8 @@ from exploration.pyelli_exploration.pyelli_grid_search import (
 )
 from src.analysis.measurement_utils import (
     detrend_signal,
+    boxcar_smooth,
+    gaussian_smooth,
     detect_peaks,
     detect_valleys,
 )
@@ -110,6 +112,48 @@ if 'forced_aqueous' not in st.session_state:
     st.session_state.forced_aqueous = None
 if 'forced_mucus' not in st.session_state:
     st.session_state.forced_mucus = None
+# Smoothing parameters
+if 'smoothing_type' not in st.session_state:
+    st.session_state.smoothing_type = 'none'
+if 'boxcar_width_nm' not in st.session_state:
+    st.session_state.boxcar_width_nm = 17.0
+if 'boxcar_passes' not in st.session_state:
+    st.session_state.boxcar_passes = 1
+if 'gaussian_kernel' not in st.session_state:
+    st.session_state.gaussian_kernel = 11
+
+
+def apply_smoothing_to_signal(
+    signal: np.ndarray,
+    wavelengths: np.ndarray,
+    smoothing_type: str,
+    boxcar_width_nm: float = 17.0,
+    boxcar_passes: int = 1,
+    gaussian_kernel: int = 11,
+) -> np.ndarray:
+    """Apply smoothing to a signal array.
+
+    Args:
+        signal: Signal values to smooth.
+        wavelengths: Wavelength array in nanometers.
+        smoothing_type: One of 'none', 'boxcar', or 'gaussian'.
+        boxcar_width_nm: Boxcar smoothing width in nanometers.
+        boxcar_passes: Number of boxcar smoothing passes.
+        gaussian_kernel: Gaussian kernel size in samples.
+
+    Returns:
+        Smoothed signal values.
+    """
+    if smoothing_type == 'none':
+        return signal
+
+    if smoothing_type == 'boxcar':
+        return boxcar_smooth(signal, wavelengths, boxcar_width_nm, boxcar_passes)
+    elif smoothing_type == 'gaussian':
+        return gaussian_smooth(signal, gaussian_kernel)
+    else:
+        return signal
+
 
 # Clean Light Theme CSS
 st.markdown('''
@@ -715,6 +759,59 @@ with st.sidebar:
         st.session_state.current_lipid = current_lipid
         st.session_state.current_aqueous = current_aqueous
         st.session_state.current_mucus = current_mucus
+        
+        st.markdown('---')
+        st.markdown('<p class="section-header">📊 Analysis Parameters</p>', unsafe_allow_html=True)
+        st.caption('Signal processing for spectrum analysis')
+        
+        # Safe index lookup helper (returns 0 if value not in options)
+        def safe_index(options: list, value, default_idx: int = 0) -> int:
+            try:
+                return options.index(value)
+            except ValueError:
+                return default_idx
+        
+        # Smoothing controls
+        smoothing_type_options = ['none', 'boxcar', 'gaussian']
+        smoothing_type = st.radio(
+            'Smoothing Type',
+            options=smoothing_type_options,
+            index=safe_index(smoothing_type_options, st.session_state.get('smoothing_type', 'none')),
+            horizontal=True,
+            key='smoothing_type_radio'
+        )
+        st.session_state.smoothing_type = smoothing_type
+        
+        # Conditional smoothing parameters based on type
+        if smoothing_type == 'boxcar':
+            boxcar_width_nm = st.slider(
+                'Boxcar Width (nm)',
+                min_value=5.0,
+                max_value=50.0,
+                value=st.session_state.get('boxcar_width_nm', 17.0),
+                step=1.0,
+                format='%.0f',
+                key='boxcar_width_slider'
+            )
+            st.session_state.boxcar_width_nm = boxcar_width_nm
+            
+            boxcar_passes_options = [1, 2, 3]
+            boxcar_passes = st.selectbox(
+                'Boxcar Passes',
+                options=boxcar_passes_options,
+                index=safe_index(boxcar_passes_options, st.session_state.get('boxcar_passes', 1)),
+                key='boxcar_passes_select'
+            )
+            st.session_state.boxcar_passes = boxcar_passes
+        elif smoothing_type == 'gaussian':
+            gaussian_kernel_options = [7, 9, 11]
+            gaussian_kernel = st.selectbox(
+                'Gaussian Kernel Size',
+                options=gaussian_kernel_options,
+                index=safe_index(gaussian_kernel_options, st.session_state.get('gaussian_kernel', 11)),
+                key='gaussian_kernel_select'
+            )
+            st.session_state.gaussian_kernel = gaussian_kernel
         
         st.markdown('---')
         st.markdown('<p class="section-header">⚙️ Search Range Settings</p>', unsafe_allow_html=True)
@@ -1429,20 +1526,38 @@ with tabs[1]:
         cutoff_freq = st.session_state.get('cutoff_freq_amp', 0.008)
         peak_prominence = st.session_state.get('peak_prom_amp', 0.0001)
         
+        # Get smoothing parameters from session state
+        smoothing_type = st.session_state.get('smoothing_type', 'none')
+        boxcar_width_nm = st.session_state.get('boxcar_width_nm', 17.0)
+        boxcar_passes = st.session_state.get('boxcar_passes', 1)
+        gaussian_kernel = st.session_state.get('gaussian_kernel', 11)
+        
         # Get toggle state from session state
         show_bestfit_amp = computed_data.get('show_bestfit', False)
         show_both_amp = computed_data.get('show_both_theoretical', False)
         has_bestfit_amp = computed_data.get('has_bestfit', False) and computed_data.get('bestfit_display') is not None
         
         try:
-            # Detrend measured signal
+            # Detrend measured signal, then apply smoothing
             meas_detrended = detrend_signal(computed_data['wl_display'], computed_data['meas_display'], cutoff_freq, filter_order=3)
+            meas_detrended = apply_smoothing_to_signal(
+                meas_detrended, computed_data['wl_display'], smoothing_type,
+                boxcar_width_nm, boxcar_passes, gaussian_kernel
+            )
             
             # Determine which theoretical(s) to analyze based on toggle
             if show_both_amp and has_bestfit_amp:
-                # Detrend both PyElli and BestFit
+                # Detrend both PyElli and BestFit, then apply smoothing
                 theo_pyelli_detrended = detrend_signal(computed_data['wl_display'], computed_data['theoretical_display'], cutoff_freq, filter_order=3)
+                theo_pyelli_detrended = apply_smoothing_to_signal(
+                    theo_pyelli_detrended, computed_data['wl_display'], smoothing_type,
+                    boxcar_width_nm, boxcar_passes, gaussian_kernel
+                )
                 theo_bestfit_detrended = detrend_signal(computed_data['wl_display'], computed_data['bestfit_display'], cutoff_freq, filter_order=3)
+                theo_bestfit_detrended = apply_smoothing_to_signal(
+                    theo_bestfit_detrended, computed_data['wl_display'], smoothing_type,
+                    boxcar_width_nm, boxcar_passes, gaussian_kernel
+                )
                 
                 # Detect peaks and valleys for both
                 meas_peaks_df = detect_peaks(computed_data['wl_display'], meas_detrended, prominence=peak_prominence)
@@ -1466,8 +1581,12 @@ with tabs[1]:
                 )
                 score_result_amp = score_result_pyelli  # Use PyElli for main display
             elif show_bestfit_amp and has_bestfit_amp:
-                # Use BestFit only
+                # Use BestFit only - detrend then smooth
                 theo_detrended = detrend_signal(computed_data['wl_display'], computed_data['bestfit_display'], cutoff_freq, filter_order=3)
+                theo_detrended = apply_smoothing_to_signal(
+                    theo_detrended, computed_data['wl_display'], smoothing_type,
+                    boxcar_width_nm, boxcar_passes, gaussian_kernel
+                )
                 
                 meas_peaks_df = detect_peaks(computed_data['wl_display'], meas_detrended, prominence=peak_prominence)
                 theo_peaks_df = detect_peaks(computed_data['wl_display'], theo_detrended, prominence=peak_prominence)
@@ -1481,8 +1600,12 @@ with tabs[1]:
                     peak_prominence=peak_prominence
                 )
             else:
-                # Use PyElli only (default)
+                # Use PyElli only (default) - detrend then smooth
                 theo_detrended = detrend_signal(computed_data['wl_display'], computed_data['theoretical_display'], cutoff_freq, filter_order=3)
+                theo_detrended = apply_smoothing_to_signal(
+                    theo_detrended, computed_data['wl_display'], smoothing_type,
+                    boxcar_width_nm, boxcar_passes, gaussian_kernel
+                )
                 
                 meas_peaks_df = detect_peaks(computed_data['wl_display'], meas_detrended, prominence=peak_prominence)
                 theo_peaks_df = detect_peaks(computed_data['wl_display'], theo_detrended, prominence=peak_prominence)
