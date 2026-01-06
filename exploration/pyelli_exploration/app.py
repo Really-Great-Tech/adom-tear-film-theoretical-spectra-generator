@@ -1546,18 +1546,11 @@ with tabs[1]:
             )
             
             # Determine which theoretical(s) to analyze based on toggle
+            # Note: Smoothing is only applied to measured spectrum, not theoretical
             if show_both_amp and has_bestfit_amp:
-                # Detrend both PyElli and BestFit, then apply smoothing
+                # Detrend both PyElli and BestFit (no smoothing for theoretical)
                 theo_pyelli_detrended = detrend_signal(computed_data['wl_display'], computed_data['theoretical_display'], cutoff_freq, filter_order=3)
-                theo_pyelli_detrended = apply_smoothing_to_signal(
-                    theo_pyelli_detrended, computed_data['wl_display'], smoothing_type,
-                    boxcar_width_nm, boxcar_passes, gaussian_kernel
-                )
                 theo_bestfit_detrended = detrend_signal(computed_data['wl_display'], computed_data['bestfit_display'], cutoff_freq, filter_order=3)
-                theo_bestfit_detrended = apply_smoothing_to_signal(
-                    theo_bestfit_detrended, computed_data['wl_display'], smoothing_type,
-                    boxcar_width_nm, boxcar_passes, gaussian_kernel
-                )
                 
                 # Detect peaks and valleys for both
                 meas_peaks_df = detect_peaks(computed_data['wl_display'], meas_detrended, prominence=peak_prominence)
@@ -1581,12 +1574,8 @@ with tabs[1]:
                 )
                 score_result_amp = score_result_pyelli  # Use PyElli for main display
             elif show_bestfit_amp and has_bestfit_amp:
-                # Use BestFit only - detrend then smooth
+                # Use BestFit only - detrend only (no smoothing for theoretical)
                 theo_detrended = detrend_signal(computed_data['wl_display'], computed_data['bestfit_display'], cutoff_freq, filter_order=3)
-                theo_detrended = apply_smoothing_to_signal(
-                    theo_detrended, computed_data['wl_display'], smoothing_type,
-                    boxcar_width_nm, boxcar_passes, gaussian_kernel
-                )
                 
                 meas_peaks_df = detect_peaks(computed_data['wl_display'], meas_detrended, prominence=peak_prominence)
                 theo_peaks_df = detect_peaks(computed_data['wl_display'], theo_detrended, prominence=peak_prominence)
@@ -1600,12 +1589,8 @@ with tabs[1]:
                     peak_prominence=peak_prominence
                 )
             else:
-                # Use PyElli only (default) - detrend then smooth
+                # Use PyElli only (default) - detrend only (no smoothing for theoretical)
                 theo_detrended = detrend_signal(computed_data['wl_display'], computed_data['theoretical_display'], cutoff_freq, filter_order=3)
-                theo_detrended = apply_smoothing_to_signal(
-                    theo_detrended, computed_data['wl_display'], smoothing_type,
-                    boxcar_width_nm, boxcar_passes, gaussian_kernel
-                )
                 
                 meas_peaks_df = detect_peaks(computed_data['wl_display'], meas_detrended, prominence=peak_prominence)
                 theo_peaks_df = detect_peaks(computed_data['wl_display'], theo_detrended, prominence=peak_prominence)
