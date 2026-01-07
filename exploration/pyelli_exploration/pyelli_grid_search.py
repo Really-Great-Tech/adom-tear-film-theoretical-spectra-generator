@@ -1097,7 +1097,7 @@ class PyElliGridSearch:
         measured: np.ndarray,
         lipid_range: Tuple[float, float, float] = (9, 250, 10),  # Standard range: 9-250 nm
         aqueous_range: Tuple[float, float, float] = (800, 12000, 200),  # Standard range: 800-12000 nm
-        roughness_range: Tuple[float, float, float] = (600, 7000, 100),  # Standard range: 600-7000 Å, larger step for speed
+        roughness_range: Tuple[float, float, float] = (600, 2750, 100),  # Accepted range: 600-2750 Å
         top_k: int = 20,  # Increased to explore more candidates
         enable_roughness: bool = True,
         fine_search: bool = True,  
