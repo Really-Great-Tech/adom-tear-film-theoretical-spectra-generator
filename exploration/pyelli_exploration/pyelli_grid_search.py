@@ -525,10 +525,16 @@ def calculate_peak_based_score(
     total_unmatched = unmatched_measurement + unmatched_theoretical
     
     if deltas.size == 0:
-        mean_delta = 0.0
+        # No matched peaks - use sentinel value to prevent selection over candidates with real matches
+        # Only use 0.0 if there are truly no peaks at all (both measured and theoretical have 0 peaks)
         if unmatched_measurement == 0 and unmatched_theoretical == 0:
+            # No peaks at all - this is valid, mean_delta = 0.0 is appropriate
+            mean_delta = 0.0
             peak_delta_score = 1.0
         else:
+            # Peaks exist but none matched - use sentinel value (1000.0) so this candidate
+            # is filtered out by mean_delta_nm < 1000.0 and not selected over candidates with real matches
+            mean_delta = 1000.0  # Sentinel value - indicates no peak alignment
             # If no matches but similar peak counts, give small score
             total_peaks = len(meas_peaks) + len(theo_peaks)
             if total_peaks > 0:
