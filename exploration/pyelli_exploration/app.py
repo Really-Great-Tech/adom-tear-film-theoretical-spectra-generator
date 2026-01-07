@@ -16,6 +16,7 @@ from pathlib import Path
 import time
 from concurrent.futures import ThreadPoolExecutor
 import warnings
+import re
 
 import numpy as np
 import pandas as pd
@@ -61,6 +62,7 @@ from exploration.pyelli_exploration.pyelli_utils import (
     load_bestfit_spectrum,
     load_material_data,
     get_sample_data_paths,
+    get_new_spectra_paths,
     get_available_materials,
     calculate_residual,
     calculate_correlation,
@@ -98,6 +100,18 @@ if 'autofit_results' not in st.session_state:
     st.session_state.autofit_results = None
 if 'last_run_elapsed_s' not in st.session_state:
     st.session_state.last_run_elapsed_s = None
+if 'selected_rank' not in st.session_state:
+    st.session_state.selected_rank = 1  # Default to rank 1
+# Widget key version - increment to force slider reset
+if 'widget_key_version' not in st.session_state:
+    st.session_state.widget_key_version = 0
+# Forced parameter values from grid search or rank selection
+if 'forced_lipid' not in st.session_state:
+    st.session_state.forced_lipid = None
+if 'forced_aqueous' not in st.session_state:
+    st.session_state.forced_aqueous = None
+if 'forced_mucus' not in st.session_state:
+    st.session_state.forced_mucus = None
 
 # Clean Light Theme CSS
 st.markdown('''
@@ -487,12 +501,14 @@ with st.sidebar:
     # Check data availability
     samples = get_sample_data_paths(SAMPLE_DATA_PATH)
     materials = get_available_materials(MATERIALS_PATH)
+    new_spectra_path = PROJECT_ROOT / 'new spectra'
+    new_spectra = get_new_spectra_paths(new_spectra_path) if new_spectra_path.exists() else {}
     
     st.markdown('''
     <p style="color: #1e40af; font-weight: 600; margin-bottom: 10px; font-size: 0.8rem;">📂 DATA STATUS</p>
     ''', unsafe_allow_html=True)
     
-    col1, col2, col3 = st.columns(3)
+    col1, col2, col3, col4 = st.columns(4)
     with col1:
         st.markdown('''
         <div style="background: #f0fdf4; border: 1px solid #bbf7d0; border-radius: 8px; padding: 10px; text-align: center;">
@@ -512,8 +528,15 @@ with st.sidebar:
         <div style="background: #eff6ff; border: 1px solid #bfdbfe; border-radius: 8px; padding: 10px; text-align: center;">
             <div style="font-size: 1.3rem; font-weight: 700; color: #1e40af;">170</div>
             <div style="color: #64748b; font-size: 0.65rem; text-transform: uppercase;">Shlomo Spectra</div>
-    </div>
-    ''', unsafe_allow_html=True)
+        </div>
+        ''', unsafe_allow_html=True)
+    with col4:
+        st.markdown(f'''
+        <div style="background: #fef3c7; border: 1px solid #fde68a; border-radius: 8px; padding: 10px; text-align: center;">
+            <div style="font-size: 1.3rem; font-weight: 700; color: #d97706;">{len(new_spectra)}</div>
+            <div style="color: #64748b; font-size: 0.65rem; text-transform: uppercase;">New Spectra</div>
+        </div>
+        ''', unsafe_allow_html=True)
     
     st.markdown('<hr style="margin: 12px 0; border-color: #e2e8f0;">', unsafe_allow_html=True)
     
@@ -528,6 +551,7 @@ with st.sidebar:
         'Shlomo Raw Spectra': PROJECT_ROOT / 'spectra_from_shlomo',
         'Sample Data (Good Fit)': PROJECT_ROOT / 'exploration' / 'sample_data' / 'good_fit',
         'Sample Data (Bad Fit)': PROJECT_ROOT / 'exploration' / 'sample_data' / 'bad_fit',
+        'New Spectra': PROJECT_ROOT / 'new spectra',
         'Exploration Measurements': PROJECT_ROOT / 'exploration' / 'measurements',
     }
     
@@ -541,6 +565,14 @@ with st.sidebar:
     
     if source_path.exists():
         if selected_source in ['Sample Data (Good Fit)', 'Sample Data (Bad Fit)']:
+            spectrum_files = []
+            for subdir in sorted(source_path.iterdir()):
+                if subdir.is_dir():
+                    for f in subdir.glob('(Run)spectra_*.txt'):
+                        if '_BestFit' not in f.name:
+                            spectrum_files.append(f)
+        elif selected_source == 'New Spectra':
+            # New spectra are organized in subfolders, similar to good/bad fit
             spectrum_files = []
             for subdir in sorted(source_path.iterdir()):
                 if subdir.is_dir():
@@ -619,6 +651,20 @@ with st.sidebar:
             if bestfit_path.exists():
                 bestfit_file = bestfit_path
                 st.session_state.bestfit_file = str(bestfit_file)
+            # Also check if we're in a new spectra folder - BestFit might have slightly different naming
+            elif selected_source == 'New Spectra':
+                # Try alternative patterns for BestFit files
+                for alt_file in selected_path.parent.glob('*_BestFit.txt'):
+                    # Check if the base name matches (before timestamp)
+                    base_name = selected_path.stem
+                    alt_base = alt_file.stem.replace('_BestFit', '')
+                    # Extract the timestamp part (e.g., "21-47-05-763")
+                    base_match = re.search(r'(\d{2}-\d{2}-\d{2}-\d+)', base_name)
+                    alt_match = re.search(r'(\d{2}-\d{2}-\d{2}-\d+)', alt_base)
+                    if base_match and alt_match and base_match.group(1) == alt_match.group(1):
+                        bestfit_file = alt_file
+                        st.session_state.bestfit_file = str(bestfit_file)
+                        break
         
         # Toggle to show LTA BestFit
         show_bestfit = False
@@ -645,73 +691,90 @@ with st.sidebar:
         st.markdown('### 🔧 Parameters')
         st.caption('Adjust manually or use Grid Search to find best values')
         
-        # Handle pending_update: update session state before creating widgets
+        # Handle pending_update: set forced values and increment widget key version
         if st.session_state.pending_update is not None:
-            # Update session state with best fit values before creating widgets
-            st.session_state._pending_lipid = float(st.session_state.pending_update['lipid'])
-            st.session_state._pending_aqueous = float(st.session_state.pending_update['aqueous'])
-            st.session_state._pending_mucus = float(st.session_state.pending_update['mucus'])
+            # Set forced values from grid search
+            st.session_state.forced_lipid = float(st.session_state.pending_update['lipid'])
+            st.session_state.forced_aqueous = float(st.session_state.pending_update['aqueous'])
+            st.session_state.forced_mucus = float(st.session_state.pending_update['mucus'])
             st.session_state.autofit_results = st.session_state.pending_update['results']
+            # Increment widget key version to force sliders to reset
+            st.session_state.widget_key_version += 1
             # Clear pending_update
             st.session_state.pending_update = None
         
-        # Create sliders - Streamlit will use session state values if keys exist
-        # Use pending values if available from grid search results
-        lipid_init = st.session_state.get('_pending_lipid', st.session_state.get('param_lipid', 150))
-        if '_pending_lipid' in st.session_state:
-            del st.session_state._pending_lipid  # Clear after use
+        # Get slider initial values - use forced values if set, otherwise use defaults
+        # Defaults match standard ADOM ranges
+        if st.session_state.forced_lipid is not None:
+            lipid_init = int(round(np.clip(st.session_state.forced_lipid, 9, 250)))
+        else:
+            lipid_init = 150  # Default within 9-250 range
         
-        aqueous_init = st.session_state.get('_pending_aqueous', st.session_state.get('param_aqueous', 850))
-        if '_pending_aqueous' in st.session_state:
-            del st.session_state._pending_aqueous  # Clear after use
+        if st.session_state.forced_aqueous is not None:
+            aqueous_init = int(round(np.clip(st.session_state.forced_aqueous, 800, 12000)))
+        else:
+            aqueous_init = 2000  # Default within 800-12000 range
         
-        mucus_init = st.session_state.get('_pending_mucus', st.session_state.get('param_mucus', 2000))
-        if '_pending_mucus' in st.session_state:
-            del st.session_state._pending_mucus  # Clear after use
+        if st.session_state.forced_mucus is not None:
+            mucus_init = int(round(np.clip(st.session_state.forced_mucus, 600, 7000)))
+        else:
+            mucus_init = 2000  # Default within 600-7000 range
         
+        # Use versioned keys so Streamlit treats these as new widgets when version changes
+        # This forces the slider to use the value parameter instead of cached session state
+        key_version = st.session_state.widget_key_version
+        
+        # Slider ranges match standard ADOM ranges
         current_lipid = st.slider(
             'Lipid (nm)', 9, 250,
-            value=int(round(lipid_init)),
-            key='param_lipid',
+            value=lipid_init,
+            key=f'param_lipid_v{key_version}',
             step=5
         )
         current_aqueous = st.slider(
             'Aqueous (nm)', 800, 12000,
-            value=int(round(aqueous_init)),
-            key='param_aqueous',
+            value=aqueous_init,
+            key=f'param_aqueous_v{key_version}',
             step=50
         )
-        # Interface roughness in Angstroms (mucus thickness is fixed at 500nm)
-        # Accepted range: 600-2750 Å, default: 2000 Å
+        # Interface roughness in Angstroms (extended range: 600-7000)
         current_mucus = st.slider(
-            'Interface Roughness (Å)', 600, 2750,
-            value=int(round(mucus_init)),
-            key='param_mucus',
+            'Interface Roughness (Å)', 600, 7000,
+            value=mucus_init,
+            key=f'param_mucus_v{key_version}',
             step=50
         )
+        
+        # Store current slider values in session state for access elsewhere
+        st.session_state.current_lipid = current_lipid
+        st.session_state.current_aqueous = current_aqueous
+        st.session_state.current_mucus = current_mucus
         
         st.markdown('---')
         st.markdown('<p class="section-header">⚙️ Search Range Settings</p>', unsafe_allow_html=True)
+        st.caption('Optimized ranges based on reverse engineering analysis')
         
         col_a, col_b, col_c = st.columns(3)
         with col_a:
+            # Lipid: Standard range 9-250nm
             lipid_min = st.number_input('Lipid Min', value=9, key='grid_lipid_min')
             lipid_max = st.number_input('Lipid Max', value=250, key='grid_lipid_max')
-            lipid_step = st.number_input('Lipid Step', value=20, key='grid_lipid_step')
+            lipid_step = st.number_input('Lipid Step', value=5, key='grid_lipid_step')
         with col_b:
+            # Aqueous: Standard range 800-12000nm
             aqueous_min = st.number_input('Aqueous Min', value=800, key='grid_aq_min')
             aqueous_max = st.number_input('Aqueous Max', value=12000, key='grid_aq_max')
             aqueous_step = st.number_input('Aqueous Step', value=200, key='grid_aq_step')
         with col_c:
-            # Interface roughness range in Angstroms (mucus thickness is fixed at 500nm)
-            # Accepted range: 600-2750 Å
+            # Interface roughness in Angstroms: Standard range 600-7000 Å
             mucus_min = st.number_input('Roughness Min (Å)', value=600, key='grid_mu_min')
-            mucus_max = st.number_input('Roughness Max (Å)', value=2750, key='grid_mu_max')
-            mucus_step = st.number_input('Roughness Step (Å)', value=300, key='grid_mu_step')
+            mucus_max = st.number_input('Roughness Max (Å)', value=7000, key='grid_mu_max')
+            mucus_step = st.number_input('Roughness Step (Å)', value=100, key='grid_mu_step')
         
-        # Grid Search button right below search range settings
+        # Grid Search settings and button
         st.markdown('---')
         st.markdown('### 🔍 Grid Search')
+        
         run_autofit = st.button('🚀 Run Grid Search', width='stretch', type='primary', key='run_grid_search_btn')
         # Store button state in session state
         if run_autofit:
@@ -777,9 +840,10 @@ COLORS = {
 selected_file = st.session_state.get('selected_file', None)
 run_autofit = st.session_state.get('run_autofit', False)
 wavelength_range = st.session_state.get('wavelength_range', (600, 1120))
-current_lipid = st.session_state.get('param_lipid', 150)
-current_aqueous = st.session_state.get('param_aqueous', 850)
-current_mucus = st.session_state.get('param_mucus', 2000)
+# Get current parameter values from the sliders (stored in session state by sidebar)
+current_lipid = st.session_state.get('current_lipid', 150)
+current_aqueous = st.session_state.get('current_aqueous', 2000)
+current_mucus = st.session_state.get('current_mucus', 2000)
 show_residual = st.session_state.get('show_res_main', True)
 show_bestfit = st.session_state.get('show_bestfit', False)
 show_both_theoretical = st.session_state.get('show_both_theoretical', False)
@@ -817,15 +881,20 @@ if selected_file and Path(selected_file).exists():
             start_time = time.perf_counter()
 
             def _run_search():
-                lipid_min = st.session_state.get('grid_lipid_min', 0)
-                lipid_max = st.session_state.get('grid_lipid_max', 400)
-                lipid_step = st.session_state.get('grid_lipid_step', 20)
-                aqueous_min = st.session_state.get('grid_aq_min', -20)
-                aqueous_max = st.session_state.get('grid_aq_max', 6000)
+                # Use UI values with correct standard ADOM defaults
+                lipid_min = st.session_state.get('grid_lipid_min', 9)
+                lipid_max = st.session_state.get('grid_lipid_max', 250)
+                lipid_step = st.session_state.get('grid_lipid_step', 5)
+                aqueous_min = st.session_state.get('grid_aq_min', 800)
+                aqueous_max = st.session_state.get('grid_aq_max', 12000)
                 aqueous_step = st.session_state.get('grid_aq_step', 200)
-                mucus_min = st.session_state.get('grid_mu_min', 300)
-                mucus_max = st.session_state.get('grid_mu_max', 3000)
-                mucus_step = st.session_state.get('grid_mu_step', 300)
+                mucus_min = st.session_state.get('grid_mu_min', 600)
+                mucus_max = st.session_state.get('grid_mu_max', 7000)  # Updated to 7000
+                mucus_step = st.session_state.get('grid_mu_step', 100)  # Use 100 as default
+                
+                # Always use Dynamic Search with 10,000 max combinations
+                strategy = 'Dynamic Search'
+                max_combinations = 10000
                 
                 return grid_search.run_grid_search(
                     wavelengths, measured,
@@ -834,8 +903,8 @@ if selected_file and Path(selected_file).exists():
                     roughness_range=(mucus_min, mucus_max, mucus_step),
                     top_k=10,
                     enable_roughness=True,
-                    fine_search=True,  # Enable fine refinement for better peak alignment
-                    fine_refinement_factor=0.2,  # 20% of coarse step size
+                    search_strategy=strategy,  # Always Dynamic Search
+                    max_combinations=max_combinations,  # Fixed at 10,000
                 )
 
             # Show progress in the placeholder above the tabs
@@ -866,6 +935,10 @@ if selected_file and Path(selected_file).exists():
 
             if results:
                 best = results[0]
+                # Store results immediately so plots can use them
+                st.session_state.autofit_results = results
+                # Set selected rank to 1 (best result) when grid search completes
+                st.session_state.selected_rank = 1
                 # Store the update to be applied before widgets are created on next run
                 st.session_state.pending_update = {
                     'lipid': best.lipid_nm,
@@ -873,12 +946,13 @@ if selected_file and Path(selected_file).exists():
                     'mucus': best.mucus_nm,
                     'results': results
                 }
-                # Rerun to update sliders
+                # Rerun to update sliders and plots
                 st.rerun()
             else:
                 st.warning('⚠️ No valid fits found')
         
         # Use current slider values for display
+        # The sliders are now set from forced values when grid search completes or rank changes
         display_lipid = current_lipid
         display_aqueous = current_aqueous
         display_mucus = current_mucus  # Already in Angstroms from slider
@@ -926,19 +1000,31 @@ if selected_file and Path(selected_file).exists():
         theoretical = grid_search.calculate_theoretical_spectrum(
             wavelengths, display_lipid, display_aqueous, roughness_nm
         )
-        theoretical_aligned = grid_search._align_spectra(
-            measured, theoretical,
-            focus_min=600.0, focus_max=1120.0,
-            wavelengths=wavelengths
-        )
+        
+        # Use simple proportional scaling for alignment (same as grid search worker)
+        # Align using the wavelength range from the slider
+        wl_min, wl_max = wavelength_range
+        focus_mask = (wavelengths >= wl_min) & (wavelengths <= wl_max)
+        if focus_mask.sum() > 0:
+            meas_focus = measured[focus_mask]
+            theo_focus = theoretical[focus_mask]
+            if np.std(theo_focus) > 1e-10:
+                # Simple proportional scaling (same as grid search worker)
+                scale = np.dot(meas_focus, theo_focus) / np.dot(theo_focus, theo_focus)
+                theoretical_aligned = theoretical * scale
+            else:
+                theoretical_aligned = theoretical
+        else:
+            theoretical_aligned = theoretical
+        
         theoretical_display = theoretical_aligned[wl_mask]
         
-        # Calculate metrics using peak-based scoring
+        # Score on the SLIDER wavelength range (600-1120 nm by default)
         score_result = calculate_peak_based_score(
             wl_display, meas_display, theoretical_display
         )
         
-        # Calculate correlation separately for display
+        # Calculate correlation on the slider wavelength range
         if np.std(meas_display) > 1e-10 and np.std(theoretical_display) > 1e-10:
             correlation = float(np.corrcoef(meas_display, theoretical_display)[0, 1])
             if np.isnan(correlation):
@@ -1212,31 +1298,37 @@ with tabs[0]:
         if show_both_metrics:
             # Show both PyElli and BestFit metrics side by side
             st.markdown('#### PyElli Theoretical')
-            mcols_pyelli = st.columns(4)
+            mcols_pyelli = st.columns(5)
             with mcols_pyelli[0]:
                 score_icon = '🟢' if computed_data['pyelli_score_result']['score'] >= 0.7 else ('🟡' if computed_data['pyelli_score_result']['score'] >= 0.5 else '🔴')
                 st.metric('Score', f'{score_icon} {computed_data["pyelli_score_result"]["score"]:.3f}')
             with mcols_pyelli[1]:
                 st.metric('Correlation', f'{computed_data["pyelli_correlation"]:.3f}')
             with mcols_pyelli[2]:
+                rmse_val = computed_data['pyelli_score_result'].get('rmse', 0.0)
+                st.metric('RMSE', f'{rmse_val:.5f}')
+            with mcols_pyelli[3]:
                 matched_peaks = int(computed_data['pyelli_score_result'].get('matched_peaks', 0))
                 st.metric('Matched Peaks', f'{matched_peaks}')
-            with mcols_pyelli[3]:
+            with mcols_pyelli[4]:
                 st.metric('Parameters', f'L={computed_data["display_lipid"]}, A={computed_data["display_aqueous"]}, R={computed_data["display_mucus"]:.0f}Å')
             
             st.markdown('#### LTA BestFit')
-            mcols_bestfit = st.columns(3)
+            mcols_bestfit = st.columns(4)
             with mcols_bestfit[0]:
                 score_icon = '🟢' if computed_data['bestfit_score_result']['score'] >= 0.7 else ('🟡' if computed_data['bestfit_score_result']['score'] >= 0.5 else '🔴')
                 st.metric('Score', f'{score_icon} {computed_data["bestfit_score_result"]["score"]:.3f}')
             with mcols_bestfit[1]:
                 st.metric('Correlation', f'{computed_data["bestfit_correlation"]:.3f}')
             with mcols_bestfit[2]:
+                rmse_val = computed_data['bestfit_score_result'].get('rmse', 0.0)
+                st.metric('RMSE', f'{rmse_val:.5f}')
+            with mcols_bestfit[3]:
                 matched_peaks = int(computed_data['bestfit_score_result'].get('matched_peaks', 0))
                 st.metric('Matched Peaks', f'{matched_peaks}')
         else:
             # Show single set of metrics
-            mcols = st.columns(6)
+            mcols = st.columns(7)
             with mcols[0]:
                 st.metric('Lipid', f'{computed_data["display_lipid"]} nm')
             with mcols[1]:
@@ -1250,6 +1342,9 @@ with tabs[0]:
             with mcols[4]:
                 st.metric('Correlation', f'{computed_data["correlation"]:.3f}')
             with mcols[5]:
+                rmse_val = score_result.get('rmse', 0.0)
+                st.metric('RMSE', f'{rmse_val:.5f}')
+            with mcols[6]:
                 matched_peaks = int(score_result.get('matched_peaks', 0))
                 st.metric('Matched Peaks', f'{matched_peaks}')
         
@@ -1271,10 +1366,48 @@ with tabs[0]:
                 'Roughness (Å)': r.mucus_nm,
                 'Score': f'{r.score:.3f}',
                 'Corr': f'{r.correlation:.3f}',
+                'RMSE': f'{r.rmse:.5f}',
                 'Quality': get_quality(r.score)
             } for i, r in enumerate(st.session_state.autofit_results)])
             
             st.dataframe(results_df, use_container_width=True, hide_index=True)
+            
+            # Dropdown to select which rank to display in plots
+            st.markdown('---')
+            st.markdown('### 🎯 Select Result to Display')
+            
+            # Get current selected rank from session state, default to 1
+            current_selected_rank = st.session_state.get('selected_rank', 1)
+            max_rank = min(len(st.session_state.autofit_results), 10)
+            rank_options = list(range(1, max_rank + 1))
+            
+            # Find index for current selection (default to 0 if not in range)
+            default_index = min(current_selected_rank - 1, len(rank_options) - 1) if current_selected_rank in rank_options else 0
+            
+            selected_rank = st.selectbox(
+                'Choose a rank to display in plots:',
+                options=rank_options,
+                index=default_index,
+                key='selected_rank_dropdown',
+                help='Select which grid search result to display in the Spectrum Comparison and Amplitude Analysis plots. The parameter sliders and plots will update to match the selected rank.'
+            )
+            
+            # Update parameters when rank is selected
+            if 1 <= selected_rank <= len(st.session_state.autofit_results):
+                selected_result = st.session_state.autofit_results[selected_rank - 1]
+                
+                # Check if rank changed
+                if selected_rank != current_selected_rank:
+                    # Update selected rank in session state
+                    st.session_state.selected_rank = selected_rank
+                    # Set forced values for the sliders
+                    st.session_state.forced_lipid = float(selected_result.lipid_nm)
+                    st.session_state.forced_aqueous = float(selected_result.aqueous_nm)
+                    st.session_state.forced_mucus = float(selected_result.mucus_nm)
+                    # Increment widget key version to force sliders to reset
+                    st.session_state.widget_key_version += 1
+                    # Trigger rerun to update plots and sliders
+                    st.rerun()
             
             # PDF Export button
             st.markdown('---')
@@ -1327,8 +1460,35 @@ with tabs[1]:
         st.markdown('<p style="color: #94a3b8; margin-bottom: 1rem;">Detrended amplitude signals with peak alignment to verify fit quality</p>', unsafe_allow_html=True)
         
         # Get default values for settings (will be used for initial plot)
-        cutoff_freq = st.session_state.get('cutoff_freq_amp', 0.008)
-        peak_prominence = st.session_state.get('peak_prom_amp', 0.0001)
+        # Use correct defaults: cutoff_frequency=0.008, peak_prominence=0.0001
+        # Only migrate old defaults (0.01 for cutoff), allow other values to persist
+        
+        # Check if keys exist in session state
+        cutoff_freq_key_exists = 'cutoff_freq_amp' in st.session_state
+        peak_prom_key_exists = 'peak_prom_amp' in st.session_state
+        
+        # Get current values (use defaults if keys don't exist)
+        cutoff_freq_raw = st.session_state.get('cutoff_freq_amp', 0.008)
+        peak_prominence_raw = st.session_state.get('peak_prom_amp', 0.0001)
+        
+        # Migrate cutoff frequency: only reset if it's the old default (0.01) or key doesn't exist
+        if not cutoff_freq_key_exists:
+            # Key doesn't exist, use default
+            cutoff_freq = 0.008
+            st.session_state.cutoff_freq_amp = 0.008
+        elif abs(cutoff_freq_raw - 0.01) < 0.0001:  # Only migrate old default 0.01
+            cutoff_freq = 0.008
+            st.session_state.cutoff_freq_amp = 0.008
+        else:
+            cutoff_freq = cutoff_freq_raw  # Allow any other value (including user-selected)
+            
+        # Peak prominence: use default if key doesn't exist, otherwise use stored value
+        if not peak_prom_key_exists:
+            # Key doesn't exist, use default
+            peak_prominence = 0.0001
+            st.session_state.peak_prom_amp = 0.0001
+        else:
+            peak_prominence = peak_prominence_raw  # Allow any value (including user-selected)
         
         # Get toggle state from session state
         show_bestfit_amp = computed_data.get('show_bestfit', False)
@@ -1540,20 +1700,34 @@ with tabs[1]:
             st.markdown('---')
             st.markdown('### ⚙️ Analysis Settings')
             
+            # Add reset button to restore defaults
+            if st.button('🔄 Reset to Defaults', help='Reset cutoff frequency to 0.008 and peak prominence to 0.0001'):
+                # Delete keys first to ensure clean reset
+                if 'cutoff_freq_amp' in st.session_state:
+                    del st.session_state.cutoff_freq_amp
+                if 'peak_prom_amp' in st.session_state:
+                    del st.session_state.peak_prom_amp
+                # Set correct defaults
+                st.session_state.cutoff_freq_amp = 0.008
+                st.session_state.peak_prom_amp = 0.0001
+                st.rerun()
+            
             # Amplitude analysis settings
             col_amp_settings = st.columns(2)
             with col_amp_settings[0]:
+                # Use the value from session state (already migrated above if needed)
                 cutoff_freq_new = st.slider(
                     'Detrending Cutoff Frequency',
                     0.001, 0.02,
                     value=cutoff_freq,
                     step=0.001,
+                    format='%.3f',  # Show 3 decimal places to see 0.008 clearly
                     key='cutoff_freq_amp'
                 )
             with col_amp_settings[1]:
                 peak_prominence_new = st.slider(
                     'Peak Prominence',
-                    0.00001, 0.001,
+                    0.00001, 0.01,
                     value=peak_prominence,
                     step=0.00001,
                     format='%.5f',
