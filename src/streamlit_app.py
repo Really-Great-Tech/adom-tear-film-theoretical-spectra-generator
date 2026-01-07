@@ -210,6 +210,7 @@ def load_measurement_files(measurements_dir: pathlib.Path, config: Dict[str, Any
     # Search directories and their display prefixes
     exploration_dir = PROJECT_ROOT / "exploration" / "sample_data"
     shlomo_dir = PROJECT_ROOT / "spectra_from_shlomo"
+    new_spectra_dir = PROJECT_ROOT / "new spectra"
     search_dirs = []
     dir_prefixes: Dict[pathlib.Path, str] = {}
     
@@ -224,6 +225,11 @@ def load_measurement_files(measurements_dir: pathlib.Path, config: Dict[str, Any
     if shlomo_dir.exists() and shlomo_dir.is_dir():
         search_dirs.append(shlomo_dir)
         dir_prefixes[shlomo_dir] = "shlomo"  # Prefix with "shlomo/" for display
+
+    # Load from new spectra directory (tagged as "New")
+    if new_spectra_dir.exists() and new_spectra_dir.is_dir():
+        search_dirs.append(new_spectra_dir)
+        dir_prefixes[new_spectra_dir] = "New"  # Prefix with "New/" for display
     
     if not search_dirs:
         # Only show warning if neither directory exists
@@ -292,16 +298,22 @@ def load_measurement_files(measurements_dir: pathlib.Path, config: Dict[str, Any
             file_name = None
             base_dir_normalized = pathlib.Path(os.path.normpath(str(exploration_dir.resolve())))
             shlomo_dir_normalized = pathlib.Path(os.path.normpath(str(shlomo_dir.resolve())))
-            
-            try:
-                rel_path = file_path_obj.relative_to(base_dir_normalized)
-                file_name = str(rel_path.with_suffix(""))  # Remove .txt extension
-            except ValueError:
+            dir_candidates: List[Tuple[pathlib.Path, str]] = [
+                (base_dir_normalized, ""),
+                (shlomo_dir_normalized, "shlomo/"),
+            ]
+
+            if new_spectra_dir.exists():
+                new_spectra_dir_normalized = pathlib.Path(os.path.normpath(str(new_spectra_dir.resolve())))
+                dir_candidates.append((new_spectra_dir_normalized, "New/"))
+
+            for base_dir, prefix in dir_candidates:
                 try:
-                    rel_path = file_path_obj.relative_to(shlomo_dir_normalized)
-                    file_name = "shlomo/" + str(rel_path.with_suffix(""))  # Prefix with shlomo/
+                    rel_path = file_path_obj.relative_to(base_dir)
+                    file_name = f"{prefix}{rel_path.with_suffix('')}"  # Remove .txt extension
+                    break
                 except ValueError:
-                    continue  # File is not from either directory
+                    continue
 
             if file_name is None:
                 continue
@@ -1300,11 +1312,15 @@ def main():
             bestfit_file_path = None
             exploration_dir = PROJECT_ROOT / "exploration" / "sample_data"
             shlomo_dir = PROJECT_ROOT / "spectra_from_shlomo"
+            new_spectra_dir = PROJECT_ROOT / "new spectra"
             
             # Construct the measurement file path from selected_file key
             if selected_file.startswith("shlomo/"):
                 # Remove "shlomo/" prefix and add .txt
                 meas_file_path = shlomo_dir / (selected_file[7:] + ".txt")  # Remove "shlomo/" prefix (7 chars)
+            elif selected_file.startswith("New/"):
+                # Remove "New/" prefix and add .txt
+                meas_file_path = new_spectra_dir / (selected_file[4:] + ".txt")
             else:
                 # Add .txt to the selected_file key
                 meas_file_path = exploration_dir / (selected_file + ".txt")
