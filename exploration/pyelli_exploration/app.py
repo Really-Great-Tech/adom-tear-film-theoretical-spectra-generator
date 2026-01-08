@@ -124,6 +124,104 @@ if 'boxcar_passes' not in st.session_state:
 if 'gaussian_kernel' not in st.session_state:
     st.session_state.gaussian_kernel = 11
 
+# Material selection (defaults match LTA Stack XML configuration)
+if 'selected_lipid_material' not in st.session_state:
+    st.session_state.selected_lipid_material = 'lipid_05-02621extrapolated.csv'
+if 'selected_water_material' not in st.session_state:
+    st.session_state.selected_water_material = 'water_Bashkatov1353extrapolated.csv'
+if 'selected_mucus_material' not in st.session_state:
+    st.session_state.selected_mucus_material = 'water_Bashkatov1353extrapolated.csv'
+if 'selected_substratum_material' not in st.session_state:
+    st.session_state.selected_substratum_material = 'struma_Bashkatov140extrapolated.csv'
+# Custom uploaded materials: dict mapping filename -> DataFrame with wavelength_nm, n, k
+if 'custom_materials' not in st.session_state:
+    st.session_state.custom_materials = {}
+
+
+def validate_material_file(uploaded_file) -> tuple[bool, str, pd.DataFrame | None]:
+    """
+    Validate an uploaded material CSV file.
+    
+    Expected format: CSV with 3 columns (wavelength_nm, n, k)
+    - wavelength_nm: wavelength in nanometers (typically 200-2000 nm range)
+    - n: refractive index (typically 1.0-3.0)
+    - k: extinction coefficient (typically 0-1)
+    
+    Args:
+        uploaded_file: Streamlit UploadedFile object
+        
+    Returns:
+        Tuple of (is_valid, message, dataframe or None)
+    """
+    try:
+        # Read file content
+        content = uploaded_file.getvalue().decode('utf-8')
+        lines = content.strip().split('\n')
+        
+        if len(lines) < 3:
+            return False, '❌ File too short. Need at least a header + 2 data rows.', None
+        
+        # Parse data lines (skip potential header)
+        data_rows = []
+        for i, line in enumerate(lines):
+            line = line.strip()
+            if not line:
+                continue
+            parts = line.split(',')
+            if len(parts) >= 3:
+                try:
+                    wavelength = float(parts[0])
+                    n_value = float(parts[1])
+                    k_value = float(parts[2])
+                    data_rows.append((wavelength, n_value, k_value))
+                except ValueError:
+                    # Skip header or malformed rows
+                    continue
+        
+        if len(data_rows) < 2:
+            return False, '❌ Not enough valid data rows. Need at least 2 rows with 3 numeric columns.', None
+        
+        # Create DataFrame
+        df = pd.DataFrame(data_rows, columns=['wavelength_nm', 'n', 'k'])
+        
+        # Sanity checks
+        wavelength_min, wavelength_max = df['wavelength_nm'].min(), df['wavelength_nm'].max()
+        n_min, n_max = df['n'].min(), df['n'].max()
+        k_min, k_max = df['k'].min(), df['k'].max()
+        
+        warnings = []
+        
+        # Check wavelength range (should cover visible/NIR)
+        if wavelength_min > 400:
+            warnings.append(f'⚠️ Min wavelength ({wavelength_min:.0f} nm) > 400 nm')
+        if wavelength_max < 1000:
+            warnings.append(f'⚠️ Max wavelength ({wavelength_max:.0f} nm) < 1000 nm')
+        
+        # Check refractive index range
+        if n_min < 0.5 or n_max > 5.0:
+            warnings.append(f'⚠️ Unusual n range: {n_min:.3f} - {n_max:.3f} (expected 0.5-5.0)')
+        
+        # Check extinction coefficient
+        if k_min < 0:
+            return False, f'❌ Negative k values found (min: {k_min:.6f}). k must be >= 0.', None
+        if k_max > 10:
+            warnings.append(f'⚠️ High k values (max: {k_max:.3f})')
+        
+        # Check data is sorted by wavelength
+        if not df['wavelength_nm'].is_monotonic_increasing:
+            warnings.append('⚠️ Wavelengths not sorted. Will be sorted automatically.')
+            df = df.sort_values('wavelength_nm').reset_index(drop=True)
+        
+        # Build success message
+        msg = f'✅ Valid material file: {len(df)} points, λ: {wavelength_min:.0f}-{wavelength_max:.0f} nm'
+        if warnings:
+            msg += '\n' + '\n'.join(warnings)
+        
+        return True, msg, df
+        
+    except Exception as e:
+        return False, f'❌ Error parsing file: {str(e)}', None
+
 
 def apply_smoothing_to_signal(
     signal: np.ndarray,
@@ -197,6 +295,43 @@ st.markdown('''
     
     /* Hide the floating "key" text at top of sidebar */
     section[data-testid="stSidebar"] > div:first-child > span {
+        display: none !important;
+        visibility: hidden !important;
+    }
+    
+    /* Hide Material Icons text when font fails to load (shows "keyboard_arrow_right" etc.) */
+    /* Target the Material Icon element by its data-testid - hide it completely */
+    [data-testid="stIconMaterial"] {
+        position: absolute !important;
+        left: -9999px !important;
+        visibility: hidden !important;
+        width: 0 !important;
+        height: 0 !important;
+        overflow: hidden !important;
+        clip: rect(0,0,0,0) !important;
+    }
+    
+    /* Style the expander header container */
+    [data-testid="stExpander"] summary > span {
+        display: flex !important;
+        align-items: center !important;
+    }
+    
+    /* Add a CSS-based arrow icon before the expander label */
+    [data-testid="stExpander"] summary > span::before {
+        content: "▶" !important;
+        font-size: 12px !important;
+        margin-right: 6px !important;
+        font-family: sans-serif !important;
+    }
+    [data-testid="stExpander"][open] summary > span::before {
+        content: "▼" !important;
+    }
+    
+    /* Fallback: hide keyboard-related elements */
+    [data-testid="stSidebar"] span[class*="keyboard"],
+    [data-testid="stSidebar"] [class*="StyledKeyboardShortcut"],
+    [data-testid="stExpander"] [class*="StyledKeyboardShortcut"] {
         display: none !important;
         visibility: hidden !important;
     }
@@ -732,6 +867,172 @@ with st.sidebar:
             st.session_state.show_both_theoretical = False
         
         st.markdown('---')
+        st.markdown('### 🧪 Materials Configuration')
+        
+        # Get all available material files (CSV only) + custom uploaded materials
+        builtin_material_files = sorted([f.name for f in MATERIALS_PATH.glob('*.csv')])
+        custom_material_names = [f'📤 {name}' for name in st.session_state.custom_materials.keys()]
+        material_files = builtin_material_files + custom_material_names
+        
+        # Guard against empty material_files to prevent Streamlit crash
+        if not material_files:
+            st.warning(f'⚠️ No material files found in {MATERIALS_PATH}. Please upload a custom material file or ensure CSV files are present in the Materials directory.')
+            # Use defaults and allow file upload
+            st.session_state.selected_lipid_material = PyElliGridSearch.DEFAULT_LIPID_FILE
+            st.session_state.selected_water_material = PyElliGridSearch.DEFAULT_WATER_FILE
+            st.session_state.selected_mucus_material = PyElliGridSearch.DEFAULT_MUCUS_FILE
+            st.session_state.selected_substratum_material = PyElliGridSearch.DEFAULT_SUBSTRATUM_FILE
+            
+            # Still allow file upload even when directory is empty
+            st.markdown('**📤 Upload Custom Material**')
+            st.caption('CSV format: wavelength_nm, n (refractive index), k (extinction)')
+            
+            uploaded_file = st.file_uploader(
+                'Upload Material CSV',
+                type=['csv'],
+                key='material_file_upload',
+                help='Upload a CSV file with columns: wavelength (nm), n, k'
+            )
+            
+            if uploaded_file is not None:
+                is_valid, message, df = validate_material_file(uploaded_file)
+                
+                if is_valid:
+                    st.success(message)
+                    
+                    # Show preview
+                    with st.expander('Preview Data', expanded=False):
+                        st.dataframe(df.head(10), use_container_width=True)
+                        st.caption(f'Showing first 10 of {len(df)} rows')
+                    
+                    # Add to custom materials
+                    if st.button('✅ Add Material', key='add_custom_material_btn'):
+                        material_name = uploaded_file.name
+                        st.session_state.custom_materials[material_name] = df
+                        st.success(f'Added "{material_name}" to available materials!')
+                        st.rerun()
+                else:
+                    st.error(message)
+            
+            # Show currently loaded custom materials
+            if st.session_state.custom_materials:
+                st.markdown('---')
+                st.markdown('**Custom Materials Loaded:**')
+                for name in st.session_state.custom_materials.keys():
+                    col1, col2 = st.columns([3, 1])
+                    with col1:
+                        df = st.session_state.custom_materials[name]
+                        st.caption(f'📤 {name} ({len(df)} pts)')
+                    with col2:
+                        if st.button('🗑️', key=f'remove_{name}', help=f'Remove {name}'):
+                            del st.session_state.custom_materials[name]
+                            st.rerun()
+        else:
+            with st.expander('Configure Layer Materials', expanded=False):
+                st.caption('Select optical property files for each tear film layer')
+                
+                # Helper to get current selection index
+                def get_material_index(selected: str, options: list) -> int:
+                    if selected in options:
+                        return options.index(selected)
+                    # Check if it's a custom material
+                    custom_name = f'📤 {selected}'
+                    if custom_name in options:
+                        return options.index(custom_name)
+                    return 0
+                
+                # Lipid material selection
+                lipid_idx = get_material_index(st.session_state.selected_lipid_material, material_files)
+                selected_lipid = st.selectbox(
+                    'Lipid Layer',
+                    material_files,
+                    index=lipid_idx,
+                    key='material_lipid_select',
+                    help='Material for the outermost lipid layer'
+                )
+                # Strip emoji prefix for custom materials when storing
+                st.session_state.selected_lipid_material = selected_lipid.replace('📤 ', '') if selected_lipid.startswith('📤') else selected_lipid
+                
+                # Aqueous material selection
+                water_idx = get_material_index(st.session_state.selected_water_material, material_files)
+                selected_water = st.selectbox(
+                    'Aqueous Layer',
+                    material_files,
+                    index=water_idx,
+                    key='material_water_select',
+                    help='Material for the aqueous (water) layer'
+                )
+                st.session_state.selected_water_material = selected_water.replace('📤 ', '') if selected_water.startswith('📤') else selected_water
+                
+                # Mucus material selection
+                mucus_idx = get_material_index(st.session_state.selected_mucus_material, material_files)
+                selected_mucus = st.selectbox(
+                    'Mucus Layer',
+                    material_files,
+                    index=mucus_idx,
+                    key='material_mucus_select',
+                    help='Material for the mucus layer'
+                )
+                st.session_state.selected_mucus_material = selected_mucus.replace('📤 ', '') if selected_mucus.startswith('📤') else selected_mucus
+                
+                # Substratum material selection
+                substratum_idx = get_material_index(st.session_state.selected_substratum_material, material_files)
+                selected_substratum = st.selectbox(
+                    'Substratum (Cornea)',
+                    material_files,
+                    index=substratum_idx,
+                    key='material_substratum_select',
+                    help='Material for the corneal epithelium substrate'
+                )
+                st.session_state.selected_substratum_material = selected_substratum.replace('📤 ', '') if selected_substratum.startswith('📤') else selected_substratum
+                
+                # File upload section
+                st.markdown('---')
+                st.markdown('**📤 Upload Custom Material**')
+                st.caption('CSV format: wavelength_nm, n (refractive index), k (extinction)')
+                
+                uploaded_file = st.file_uploader(
+                    'Upload Material CSV',
+                    type=['csv'],
+                    key='material_file_upload',
+                    help='Upload a CSV file with columns: wavelength (nm), n, k'
+                )
+                
+                if uploaded_file is not None:
+                    is_valid, message, df = validate_material_file(uploaded_file)
+                    
+                    if is_valid:
+                        st.success(message)
+                        
+                        # Show preview
+                        with st.expander('Preview Data', expanded=False):
+                            st.dataframe(df.head(10), use_container_width=True)
+                            st.caption(f'Showing first 10 of {len(df)} rows')
+                        
+                        # Add to custom materials
+                        if st.button('✅ Add Material', key='add_custom_material_btn'):
+                            material_name = uploaded_file.name
+                            st.session_state.custom_materials[material_name] = df
+                            st.success(f'Added "{material_name}" to available materials!')
+                            st.rerun()
+                    else:
+                        st.error(message)
+                
+                # Show currently loaded custom materials
+                if st.session_state.custom_materials:
+                    st.markdown('---')
+                    st.markdown('**Custom Materials Loaded:**')
+                    for name in st.session_state.custom_materials.keys():
+                        col1, col2 = st.columns([3, 1])
+                        with col1:
+                            df = st.session_state.custom_materials[name]
+                            st.caption(f'📤 {name} ({len(df)} pts)')
+                        with col2:
+                            if st.button('🗑️', key=f'remove_{name}', help=f'Remove {name}'):
+                                del st.session_state.custom_materials[name]
+                                st.rerun()
+        
+        st.markdown('---')
         st.markdown('### 🔧 Parameters')
         st.caption('Adjust manually or use Grid Search to find best values')
         
@@ -971,7 +1272,14 @@ if selected_file and Path(selected_file).exists():
         wl_display = wavelengths[wl_mask]
         meas_display = measured[wl_mask]
         
-        grid_search = PyElliGridSearch(MATERIALS_PATH)
+        grid_search = PyElliGridSearch(
+            MATERIALS_PATH,
+            lipid_file=st.session_state.selected_lipid_material,
+            water_file=st.session_state.selected_water_material,
+            mucus_file=st.session_state.selected_mucus_material,
+            substratum_file=st.session_state.selected_substratum_material,
+            custom_materials=st.session_state.custom_materials,
+        )
         
         # Run grid search if button pressed
         if run_autofit:
