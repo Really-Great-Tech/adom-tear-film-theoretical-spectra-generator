@@ -124,6 +124,16 @@ if 'boxcar_passes' not in st.session_state:
 if 'gaussian_kernel' not in st.session_state:
     st.session_state.gaussian_kernel = 11
 
+# Material selection (defaults match LTA Stack XML configuration)
+if 'selected_lipid_material' not in st.session_state:
+    st.session_state.selected_lipid_material = 'lipid_05-02621extrapolated.csv'
+if 'selected_water_material' not in st.session_state:
+    st.session_state.selected_water_material = 'water_Bashkatov1353extrapolated.csv'
+if 'selected_mucus_material' not in st.session_state:
+    st.session_state.selected_mucus_material = 'water_Bashkatov1353extrapolated.csv'
+if 'selected_substratum_material' not in st.session_state:
+    st.session_state.selected_substratum_material = 'struma_Bashkatov140extrapolated.csv'
+
 
 def apply_smoothing_to_signal(
     signal: np.ndarray,
