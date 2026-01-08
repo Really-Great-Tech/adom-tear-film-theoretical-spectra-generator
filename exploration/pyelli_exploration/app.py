@@ -211,8 +211,36 @@ st.markdown('''
         visibility: hidden !important;
     }
     
-    /* Hide keyboard hints in expanders and all sidebar spans with keyboard text */
-    [data-testid="stExpander"] span[class*="keyboard"],
+    /* Hide Material Icons text when font fails to load (shows "keyboard_arrow_right" etc.) */
+    /* Target the Material Icon element by its data-testid - hide it completely */
+    [data-testid="stIconMaterial"] {
+        position: absolute !important;
+        left: -9999px !important;
+        visibility: hidden !important;
+        width: 0 !important;
+        height: 0 !important;
+        overflow: hidden !important;
+        clip: rect(0,0,0,0) !important;
+    }
+    
+    /* Style the expander header container */
+    [data-testid="stExpander"] summary > span {
+        display: flex !important;
+        align-items: center !important;
+    }
+    
+    /* Add a CSS-based arrow icon before the expander label */
+    [data-testid="stExpander"] summary > span::before {
+        content: "▶" !important;
+        font-size: 12px !important;
+        margin-right: 6px !important;
+        font-family: sans-serif !important;
+    }
+    [data-testid="stExpander"][open] summary > span::before {
+        content: "▼" !important;
+    }
+    
+    /* Fallback: hide keyboard-related elements */
     [data-testid="stSidebar"] span[class*="keyboard"],
     [data-testid="stSidebar"] [class*="StyledKeyboardShortcut"],
     [data-testid="stExpander"] [class*="StyledKeyboardShortcut"] {
