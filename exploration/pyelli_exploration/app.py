@@ -874,66 +874,16 @@ with st.sidebar:
         custom_material_names = [f'📤 {name}' for name in st.session_state.custom_materials.keys()]
         material_files = builtin_material_files + custom_material_names
         
-        with st.expander('Configure Layer Materials', expanded=False):
-            st.caption('Select optical property files for each tear film layer')
+        # Guard against empty material_files to prevent Streamlit crash
+        if not material_files:
+            st.warning(f'⚠️ No material files found in {MATERIALS_PATH}. Please upload a custom material file or ensure CSV files are present in the Materials directory.')
+            # Use defaults and allow file upload
+            st.session_state.selected_lipid_material = PyElliGridSearch.DEFAULT_LIPID_FILE
+            st.session_state.selected_water_material = PyElliGridSearch.DEFAULT_WATER_FILE
+            st.session_state.selected_mucus_material = PyElliGridSearch.DEFAULT_MUCUS_FILE
+            st.session_state.selected_substratum_material = PyElliGridSearch.DEFAULT_SUBSTRATUM_FILE
             
-            # Helper to get current selection index
-            def get_material_index(selected: str, options: list) -> int:
-                if selected in options:
-                    return options.index(selected)
-                # Check if it's a custom material
-                custom_name = f'📤 {selected}'
-                if custom_name in options:
-                    return options.index(custom_name)
-                return 0
-            
-            # Lipid material selection
-            lipid_idx = get_material_index(st.session_state.selected_lipid_material, material_files)
-            selected_lipid = st.selectbox(
-                'Lipid Layer',
-                material_files,
-                index=lipid_idx,
-                key='material_lipid_select',
-                help='Material for the outermost lipid layer'
-            )
-            # Strip emoji prefix for custom materials when storing
-            st.session_state.selected_lipid_material = selected_lipid.replace('📤 ', '') if selected_lipid.startswith('📤') else selected_lipid
-            
-            # Aqueous material selection
-            water_idx = get_material_index(st.session_state.selected_water_material, material_files)
-            selected_water = st.selectbox(
-                'Aqueous Layer',
-                material_files,
-                index=water_idx,
-                key='material_water_select',
-                help='Material for the aqueous (water) layer'
-            )
-            st.session_state.selected_water_material = selected_water.replace('📤 ', '') if selected_water.startswith('📤') else selected_water
-            
-            # Mucus material selection
-            mucus_idx = get_material_index(st.session_state.selected_mucus_material, material_files)
-            selected_mucus = st.selectbox(
-                'Mucus Layer',
-                material_files,
-                index=mucus_idx,
-                key='material_mucus_select',
-                help='Material for the mucus layer'
-            )
-            st.session_state.selected_mucus_material = selected_mucus.replace('📤 ', '') if selected_mucus.startswith('📤') else selected_mucus
-            
-            # Substratum material selection
-            substratum_idx = get_material_index(st.session_state.selected_substratum_material, material_files)
-            selected_substratum = st.selectbox(
-                'Substratum (Cornea)',
-                material_files,
-                index=substratum_idx,
-                key='material_substratum_select',
-                help='Material for the corneal epithelium substrate'
-            )
-            st.session_state.selected_substratum_material = selected_substratum.replace('📤 ', '') if selected_substratum.startswith('📤') else selected_substratum
-            
-            # File upload section
-            st.markdown('---')
+            # Still allow file upload even when directory is empty
             st.markdown('**📤 Upload Custom Material**')
             st.caption('CSV format: wavelength_nm, n (refractive index), k (extinction)')
             
@@ -977,6 +927,110 @@ with st.sidebar:
                         if st.button('🗑️', key=f'remove_{name}', help=f'Remove {name}'):
                             del st.session_state.custom_materials[name]
                             st.rerun()
+        else:
+            with st.expander('Configure Layer Materials', expanded=False):
+                st.caption('Select optical property files for each tear film layer')
+                
+                # Helper to get current selection index
+                def get_material_index(selected: str, options: list) -> int:
+                    if selected in options:
+                        return options.index(selected)
+                    # Check if it's a custom material
+                    custom_name = f'📤 {selected}'
+                    if custom_name in options:
+                        return options.index(custom_name)
+                    return 0
+                
+                # Lipid material selection
+                lipid_idx = get_material_index(st.session_state.selected_lipid_material, material_files)
+                selected_lipid = st.selectbox(
+                    'Lipid Layer',
+                    material_files,
+                    index=lipid_idx,
+                    key='material_lipid_select',
+                    help='Material for the outermost lipid layer'
+                )
+                # Strip emoji prefix for custom materials when storing
+                st.session_state.selected_lipid_material = selected_lipid.replace('📤 ', '') if selected_lipid.startswith('📤') else selected_lipid
+                
+                # Aqueous material selection
+                water_idx = get_material_index(st.session_state.selected_water_material, material_files)
+                selected_water = st.selectbox(
+                    'Aqueous Layer',
+                    material_files,
+                    index=water_idx,
+                    key='material_water_select',
+                    help='Material for the aqueous (water) layer'
+                )
+                st.session_state.selected_water_material = selected_water.replace('📤 ', '') if selected_water.startswith('📤') else selected_water
+                
+                # Mucus material selection
+                mucus_idx = get_material_index(st.session_state.selected_mucus_material, material_files)
+                selected_mucus = st.selectbox(
+                    'Mucus Layer',
+                    material_files,
+                    index=mucus_idx,
+                    key='material_mucus_select',
+                    help='Material for the mucus layer'
+                )
+                st.session_state.selected_mucus_material = selected_mucus.replace('📤 ', '') if selected_mucus.startswith('📤') else selected_mucus
+                
+                # Substratum material selection
+                substratum_idx = get_material_index(st.session_state.selected_substratum_material, material_files)
+                selected_substratum = st.selectbox(
+                    'Substratum (Cornea)',
+                    material_files,
+                    index=substratum_idx,
+                    key='material_substratum_select',
+                    help='Material for the corneal epithelium substrate'
+                )
+                st.session_state.selected_substratum_material = selected_substratum.replace('📤 ', '') if selected_substratum.startswith('📤') else selected_substratum
+                
+                # File upload section
+                st.markdown('---')
+                st.markdown('**📤 Upload Custom Material**')
+                st.caption('CSV format: wavelength_nm, n (refractive index), k (extinction)')
+                
+                uploaded_file = st.file_uploader(
+                    'Upload Material CSV',
+                    type=['csv'],
+                    key='material_file_upload',
+                    help='Upload a CSV file with columns: wavelength (nm), n, k'
+                )
+                
+                if uploaded_file is not None:
+                    is_valid, message, df = validate_material_file(uploaded_file)
+                    
+                    if is_valid:
+                        st.success(message)
+                        
+                        # Show preview
+                        with st.expander('Preview Data', expanded=False):
+                            st.dataframe(df.head(10), use_container_width=True)
+                            st.caption(f'Showing first 10 of {len(df)} rows')
+                        
+                        # Add to custom materials
+                        if st.button('✅ Add Material', key='add_custom_material_btn'):
+                            material_name = uploaded_file.name
+                            st.session_state.custom_materials[material_name] = df
+                            st.success(f'Added "{material_name}" to available materials!')
+                            st.rerun()
+                    else:
+                        st.error(message)
+                
+                # Show currently loaded custom materials
+                if st.session_state.custom_materials:
+                    st.markdown('---')
+                    st.markdown('**Custom Materials Loaded:**')
+                    for name in st.session_state.custom_materials.keys():
+                        col1, col2 = st.columns([3, 1])
+                        with col1:
+                            df = st.session_state.custom_materials[name]
+                            st.caption(f'📤 {name} ({len(df)} pts)')
+                        with col2:
+                            if st.button('🗑️', key=f'remove_{name}', help=f'Remove {name}'):
+                                del st.session_state.custom_materials[name]
+                                st.rerun()
         
         st.markdown('---')
         st.markdown('### 🔧 Parameters')
