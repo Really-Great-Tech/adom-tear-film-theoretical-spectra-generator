@@ -742,6 +742,59 @@ with st.sidebar:
             st.session_state.show_both_theoretical = False
         
         st.markdown('---')
+        st.markdown('### 🧪 Materials Configuration')
+        
+        # Get all available material files (CSV only)
+        material_files = sorted([f.name for f in MATERIALS_PATH.glob('*.csv')])
+        
+        with st.expander('Configure Layer Materials', expanded=False):
+            st.caption('Select optical property files for each tear film layer')
+            
+            # Lipid material selection
+            lipid_default_idx = material_files.index(st.session_state.selected_lipid_material) if st.session_state.selected_lipid_material in material_files else 0
+            selected_lipid = st.selectbox(
+                'Lipid Layer',
+                material_files,
+                index=lipid_default_idx,
+                key='material_lipid_select',
+                help='Material for the outermost lipid layer'
+            )
+            st.session_state.selected_lipid_material = selected_lipid
+            
+            # Aqueous material selection
+            water_default_idx = material_files.index(st.session_state.selected_water_material) if st.session_state.selected_water_material in material_files else 0
+            selected_water = st.selectbox(
+                'Aqueous Layer',
+                material_files,
+                index=water_default_idx,
+                key='material_water_select',
+                help='Material for the aqueous (water) layer'
+            )
+            st.session_state.selected_water_material = selected_water
+            
+            # Mucus material selection
+            mucus_default_idx = material_files.index(st.session_state.selected_mucus_material) if st.session_state.selected_mucus_material in material_files else 0
+            selected_mucus = st.selectbox(
+                'Mucus Layer',
+                material_files,
+                index=mucus_default_idx,
+                key='material_mucus_select',
+                help='Material for the mucus layer'
+            )
+            st.session_state.selected_mucus_material = selected_mucus
+            
+            # Substratum material selection
+            substratum_default_idx = material_files.index(st.session_state.selected_substratum_material) if st.session_state.selected_substratum_material in material_files else 0
+            selected_substratum = st.selectbox(
+                'Substratum (Cornea)',
+                material_files,
+                index=substratum_default_idx,
+                key='material_substratum_select',
+                help='Material for the corneal epithelium substrate'
+            )
+            st.session_state.selected_substratum_material = selected_substratum
+        
+        st.markdown('---')
         st.markdown('### 🔧 Parameters')
         st.caption('Adjust manually or use Grid Search to find best values')
         
