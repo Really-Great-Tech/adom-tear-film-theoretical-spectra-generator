@@ -52,6 +52,7 @@ from analysis import (
     measurement_quality_score,
     SpectrumScore,
 )
+from analysis.metrics import _match_peaks
 
 from tear_film_generator import (
     load_config,
@@ -1543,6 +1544,139 @@ def main():
                     st.metric("MAE", f"{metrics_bestfit['MAE']:.6f}")
                 with col4:
                     st.metric("MAPE", f"{metrics_bestfit['MAPE (%)']:.2f}%")
+                
+                # === DEVIATION SCORE: LTA Theoretical vs LTA BestFit ===
+                st.markdown('---')
+                st.markdown('#### 📐 LTA Theoretical vs BestFit Deviation Score')
+                
+                # Calculate deviation components
+                lta_theo = spectrum
+                lta_bestfit = bestfit_interp
+                
+                if len(lta_theo) > 0 and len(lta_bestfit) > 0:
+                    # Ensure same length
+                    min_len = min(len(lta_theo), len(lta_bestfit))
+                    lta_theo_aligned = lta_theo[:min_len]
+                    lta_bestfit_aligned = lta_bestfit[:min_len]
+                    
+                    # 1. MAPE between LTA Theoretical and BestFit spectra (avoid division by zero)
+                    bestfit_abs = np.abs(lta_bestfit_aligned)
+                    valid_mask = bestfit_abs > 1e-10
+                    if valid_mask.any():
+                        mape = float(np.mean(np.abs(lta_theo_aligned[valid_mask] - lta_bestfit_aligned[valid_mask]) / bestfit_abs[valid_mask])) * 100
+                    else:
+                        mape = 0.0
+                    
+                    # 2. Peak match rate deviation
+                    # Need to detect peaks in both spectra for comparison
+                    # Use the same detrending parameters from the app
+                    cutoff_freq = st.session_state.get('analysis_cutoff_freq', 0.008)
+                    peak_prominence = st.session_state.get('analysis_peak_prominence', 0.0001)
+                    
+                    try:
+                        # Detrend both for peak detection
+                        lta_theo_detrended = detrend_signal(wavelengths[:min_len], lta_theo_aligned, cutoff_freq, 3)
+                        lta_bestfit_detrended = detrend_signal(wavelengths[:min_len], lta_bestfit_aligned, cutoff_freq, 3)
+                        
+                        # Detect peaks
+                        lta_theo_peaks_df = detect_peaks_df(
+                            pd.DataFrame({'wavelength': wavelengths[:min_len], 'detrended': lta_theo_detrended}),
+                            'detrended', peak_prominence
+                        )
+                        lta_bestfit_peaks_df = detect_peaks_df(
+                            pd.DataFrame({'wavelength': wavelengths[:min_len], 'detrended': lta_bestfit_detrended}),
+                            'detrended', peak_prominence
+                        )
+                        
+                        lta_theo_peaks = lta_theo_peaks_df['wavelength'].to_numpy() if len(lta_theo_peaks_df) > 0 else np.array([], dtype=float)
+                        lta_bestfit_peaks = lta_bestfit_peaks_df['wavelength'].to_numpy() if len(lta_bestfit_peaks_df) > 0 else np.array([], dtype=float)
+                        
+                        # Match peaks
+                        matched_theo, matched_bestfit, deltas = _match_peaks(lta_theo_peaks, lta_bestfit_peaks, tolerance_nm=20.0)
+                        
+                        lta_theo_peaks_count = len(lta_theo_peaks)
+                        lta_bestfit_peaks_count = len(lta_bestfit_peaks)
+                        matched_peaks_count = len(matched_theo)
+                        
+                        if lta_bestfit_peaks_count > 0:
+                            peak_match_deviation = (1.0 - (matched_peaks_count / lta_bestfit_peaks_count)) * 100
+                            peak_match_deviation = max(0.0, peak_match_deviation)
+                        else:
+                            peak_match_deviation = 0.0
+                        
+                        # 3. Alignment deviation (mean_delta relative to typical peak spacing ~50nm)
+                        if len(deltas) > 0:
+                            mean_delta = float(np.mean(deltas))
+                        else:
+                            mean_delta = 0.0
+                        reference_spacing = 50.0  # Typical peak-to-peak spacing in nm
+                        alignment_deviation = (mean_delta / reference_spacing) * 100
+                        
+                    except Exception as e:
+                        # If peak detection fails, use defaults
+                        peak_match_deviation = 0.0
+                        alignment_deviation = 0.0
+                        matched_peaks_count = 0
+                        lta_bestfit_peaks_count = 0
+                    
+                    # Composite deviation score (weighted average)
+                    # MAPE: 40%, Peak Match: 30%, Alignment: 30%
+                    composite_deviation = 0.40 * mape + 0.30 * peak_match_deviation + 0.30 * alignment_deviation
+                    
+                    # Determine status icon and color
+                    if composite_deviation <= 10:
+                        status_icon = '🟢'
+                        status_color = '#16a34a'
+                        status_text = 'Excellent Match'
+                    elif composite_deviation <= 15:
+                        status_icon = '🟡'
+                        status_color = '#ca8a04'
+                        status_text = 'Good Match'
+                    elif composite_deviation <= 25:
+                        status_icon = '🟠'
+                        status_color = '#ea580c'
+                        status_text = 'Moderate Deviation'
+                    else:
+                        status_icon = '🔴'
+                        status_color = '#dc2626'
+                        status_text = 'High Deviation'
+                    
+                    # Display composite deviation prominently
+                    dev_cols = st.columns([2, 1, 1, 1])
+                    with dev_cols[0]:
+                        st.markdown(f'''
+                        <div style="background: linear-gradient(135deg, #f0f9ff 0%, #e0f2fe 100%); 
+                                    border: 2px solid {status_color}; 
+                                    border-radius: 12px; 
+                                    padding: 16px; 
+                                    text-align: center;">
+                            <div style="font-size: 0.75rem; color: #64748b; text-transform: uppercase; letter-spacing: 0.05em;">
+                                LTA Theoretical vs BestFit Deviation
+                            </div>
+                            <div style="font-size: 2.2rem; font-weight: 700; color: {status_color}; margin: 4px 0;">
+                                {status_icon} {composite_deviation:.1f}%
+                            </div>
+                            <div style="font-size: 0.85rem; color: {status_color}; font-weight: 500;">
+                                {status_text}
+                            </div>
+                        </div>
+                        ''', unsafe_allow_html=True)
+                    with dev_cols[1]:
+                        st.metric('MAPE', f'{mape:.1f}%', help='Mean Absolute Percentage Error between LTA Theoretical and BestFit spectra')
+                    with dev_cols[2]:
+                        st.metric('Peak Match Δ', f'{peak_match_deviation:.1f}%', help='Deviation in matched peak count vs BestFit')
+                    with dev_cols[3]:
+                        st.metric('Alignment Δ', f'{alignment_deviation:.1f}%', help='Peak alignment deviation (mean delta / 50nm reference)')
+                    
+                    # Explanation
+                    st.markdown(f'''
+                    <div style="background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 8px; padding: 12px; margin-top: 12px; font-size: 0.85rem; color: #64748b;">
+                        <strong>Target:</strong> ≤10% deviation indicates LTA Theoretical closely matches BestFit.<br>
+                        <strong>Formula:</strong> 40% × MAPE + 30% × Peak Match Δ + 30% × Alignment Δ
+                    </div>
+                    ''', unsafe_allow_html=True)
+                else:
+                    st.info('Deviation score requires both LTA Theoretical and BestFit spectra to be available.')
             else:
                 st.markdown("## Goodness of Fit Metrics")
                 col1, col2, col3, col4 = st.columns(4)
