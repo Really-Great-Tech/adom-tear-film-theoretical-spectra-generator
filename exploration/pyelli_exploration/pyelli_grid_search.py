@@ -570,25 +570,9 @@ def calculate_peak_based_score(
     mid_rmse = float(np.sqrt(np.mean(residual[mid_mask] ** 2))) if mid_mask.any() else rmse
     late_rmse = float(np.sqrt(np.mean(residual[late_mask] ** 2))) if late_mask.any() else rmse
     
-    # === START OFFSET PENALTY ===
-    # Specifically penalize systematic offset at the very start (600-680nm)
-    # This catches cases where theoretical is consistently above/below measured
-    if very_early_mask.any():
-        very_early_residual = residual[very_early_mask]
-        start_offset = float(np.mean(very_early_residual))  # Signed mean (positive = theo below meas)
-        start_offset_magnitude = abs(start_offset)
-        # Additional penalty for systematic offset (not just RMSE)
-        start_offset_penalty = start_offset_magnitude * 2.0  # Scale factor
-    else:
-        start_offset = 0.0
-        start_offset_penalty = 0.0
-    
     # Weighted RMSE: 30% very-early, 20% early, 25% mid, 25% late
-    # Extra weight on very-early to fix the 600-680nm offset
+    # Extra weight on early wavelengths to prioritize accuracy in this region
     weighted_rmse = 0.30 * very_early_rmse + 0.20 * early_rmse + 0.25 * mid_rmse + 0.25 * late_rmse
-    
-    # Add start offset penalty to weighted RMSE
-    weighted_rmse = weighted_rmse + start_offset_penalty
     
     # Normalize RMSE to a score (0-1) using weighted RMSE
     # EXTREMELY tight: LTA achieves RMSE ~0.0006, so we need to heavily penalize anything above 0.001
@@ -778,7 +762,7 @@ def calculate_peak_based_score(
         "unpaired_theoretical": float(unmatched_theoretical),
         "meas_oscillation": meas_oscillation,
         "theo_oscillation": theo_oscillation,
-        "start_offset": start_offset,  # Systematic offset at 600-680nm (positive = theo above measured)
+        "start_offset": 0.0,  # Removed start offset penalty - kept for compatibility
         "very_early_rmse": very_early_rmse,
     }
 
