@@ -1034,7 +1034,13 @@ if selected_file and Path(selected_file).exists():
         wl_display = wavelengths[wl_mask]
         meas_display = measured[wl_mask]
         
-        grid_search = PyElliGridSearch(MATERIALS_PATH)
+        grid_search = PyElliGridSearch(
+            MATERIALS_PATH,
+            lipid_file=st.session_state.selected_lipid_material,
+            water_file=st.session_state.selected_water_material,
+            mucus_file=st.session_state.selected_mucus_material,
+            substratum_file=st.session_state.selected_substratum_material,
+        )
         
         # Run grid search if button pressed
         if run_autofit:
