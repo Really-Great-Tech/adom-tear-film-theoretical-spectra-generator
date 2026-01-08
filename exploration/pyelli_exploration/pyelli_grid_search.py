@@ -998,15 +998,32 @@ def _evaluate_single_combination(
     # Suppress warnings in worker processes (multiprocessing workers don't have Streamlit context)
     import warnings
     import logging
-    import sys
     
     # Suppress all ScriptRunContext warnings
-    warnings.filterwarnings('ignore', message='.*ScriptRunContext.*')
-    warnings.filterwarnings('ignore', message='.*missing ScriptRunContext.*')
+    warnings.filterwarnings('ignore', message='.*ScriptRunContext.*', category=UserWarning)
+    warnings.filterwarnings('ignore', message='.*missing ScriptRunContext.*', category=UserWarning)
     
-    # Suppress Streamlit runtime warnings
-    streamlit_logger = logging.getLogger('streamlit')
-    streamlit_logger.setLevel(logging.ERROR)
+    # Suppress Streamlit runtime warnings at all levels
+    root_logger = logging.getLogger()
+    root_logger.setLevel(logging.ERROR)
+    
+    # Suppress all streamlit-related loggers
+    for logger_name in ['streamlit', 'streamlit.runtime', 'streamlit.runtime.scriptrunner', 
+                        'streamlit.runtime.scriptrunner.script_runner',
+                        'streamlit.runtime.scriptrunner_utils', 
+                        'streamlit.runtime.scriptrunner_utils.script_run_context']:
+        logger = logging.getLogger(logger_name)
+        logger.setLevel(logging.ERROR)
+    
+    # Add filter to suppress ScriptRunContext messages
+    class ScriptRunContextFilter(logging.Filter):
+        def filter(self, record):
+            msg = record.getMessage()
+            return 'ScriptRunContext' not in msg and 'missing ScriptRunContext' not in msg
+    
+    # Apply filter to all handlers
+    for handler in root_logger.handlers:
+        handler.addFilter(ScriptRunContextFilter())
     logging.getLogger('streamlit.runtime.scriptrunner_utils.script_run_context').setLevel(logging.CRITICAL)
     logging.getLogger('streamlit.runtime.scriptrunner_utils').setLevel(logging.CRITICAL)
     

@@ -48,8 +48,35 @@ streamlit_logger.setLevel(logging.ERROR)  # Only show errors, not warnings
 # Suppress ScriptRunContext warnings from streamlit runtime
 logging.getLogger('streamlit.runtime.scriptrunner_utils.script_run_context').setLevel(logging.ERROR)
 logging.getLogger('streamlit.runtime.scriptrunner_utils').setLevel(logging.ERROR)
-# Suppress ScriptRunContext warnings from streamlit runtime
-logging.getLogger('streamlit.runtime.scriptrunner_utils.script_run_context').setLevel(logging.ERROR)
+# Suppress all streamlit runtime loggers that might produce ScriptRunContext warnings
+logging.getLogger('streamlit.runtime').setLevel(logging.ERROR)
+logging.getLogger('streamlit.runtime.scriptrunner').setLevel(logging.ERROR)
+logging.getLogger('streamlit.runtime.scriptrunner.script_runner').setLevel(logging.ERROR)
+
+# Add a custom filter to suppress ScriptRunContext warnings at the handler level
+class ScriptRunContextFilter(logging.Filter):
+    def filter(self, record):
+        msg = record.getMessage()
+        return 'ScriptRunContext' not in msg and 'missing ScriptRunContext' not in msg
+
+# Apply filter to root logger and all streamlit loggers
+root_logger = logging.getLogger()
+root_logger.setLevel(logging.ERROR)  # Suppress all warnings at root level
+for handler in root_logger.handlers:
+    handler.addFilter(ScriptRunContextFilter())
+
+# Suppress all streamlit-related loggers
+for logger_name in ['streamlit', 'streamlit.runtime', 'streamlit.runtime.scriptrunner', 
+                    'streamlit.runtime.scriptrunner.script_runner',
+                    'streamlit.runtime.scriptrunner_utils', 
+                    'streamlit.runtime.scriptrunner_utils.script_run_context']:
+    logger = logging.getLogger(logger_name)
+    logger.setLevel(logging.ERROR)
+    for handler in logger.handlers:
+        handler.addFilter(ScriptRunContextFilter())
+    
+# Also add filter to any future handlers
+logging.getLogger().addFilter(ScriptRunContextFilter())
 
 # Add parent paths for imports
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
