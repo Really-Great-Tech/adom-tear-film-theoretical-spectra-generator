@@ -1202,33 +1202,73 @@ class PyElliGridSearch:
     3. Rejects criss-crossing fits automatically
     """
     
-    def __init__(self, materials_path: Path):
+    # Default material files (matching original LTA Stack XML configuration)
+    DEFAULT_LIPID_FILE = 'lipid_05-02621extrapolated.csv'
+    DEFAULT_WATER_FILE = 'water_Bashkatov1353extrapolated.csv'
+    DEFAULT_MUCUS_FILE = 'water_Bashkatov1353extrapolated.csv'
+    DEFAULT_SUBSTRATUM_FILE = 'struma_Bashkatov140extrapolated.csv'
+    
+    def __init__(
+        self,
+        materials_path: Path,
+        lipid_file: Optional[str] = None,
+        water_file: Optional[str] = None,
+        mucus_file: Optional[str] = None,
+        substratum_file: Optional[str] = None,
+        custom_materials: Optional[Dict[str, pd.DataFrame]] = None,
+    ):
         """
         Initialize with material data.
         
         Args:
             materials_path: Path to Materials directory with CSV files
+            lipid_file: Lipid layer material CSV filename (default: lipid_05-02621extrapolated.csv)
+            water_file: Aqueous layer material CSV filename (default: water_Bashkatov1353extrapolated.csv)
+            mucus_file: Mucus layer material CSV filename (default: water_Bashkatov1353extrapolated.csv)
+            substratum_file: Substratum material CSV filename (default: struma_Bashkatov140extrapolated.csv)
+            custom_materials: Optional dict of custom material DataFrames (filename -> DataFrame)
         """
         self.materials_path = materials_path
         self.materials = get_available_materials(materials_path)
+        self.custom_materials = custom_materials or {}
         
-        # Load tear film materials
-        self.lipid_df = load_material_data(
-            materials_path / "lipid_05-02621extrapolated.csv"
-        )
-        self.water_df = load_material_data(
-            materials_path / "water_Bashkatov1353extrapolated.csv"
-        )
-        # Mucus layer material (from LTA Stack XML: water_Bashkatov1353extrapolated)
-        self.mucus_df = load_material_data(
-            materials_path / "water_Bashkatov1353extrapolated.csv"
-        )
-        # Substrate material (from LTA Stack XML: struma_Bashkatov140extrapolated)
-        self.substratum_df = load_material_data(
-            materials_path / "struma_Bashkatov140extrapolated.csv"
-        )
+        # Use provided files or fall back to defaults
+        lipid_file = lipid_file or self.DEFAULT_LIPID_FILE
+        water_file = water_file or self.DEFAULT_WATER_FILE
+        mucus_file = mucus_file or self.DEFAULT_MUCUS_FILE
+        substratum_file = substratum_file or self.DEFAULT_SUBSTRATUM_FILE
         
-        logger.info("✅ Loaded tear film materials for PyElli")
+        # Store selected material filenames for reference
+        self.lipid_file = lipid_file
+        self.water_file = water_file
+        self.mucus_file = mucus_file
+        self.substratum_file = substratum_file
+        
+        # Load tear film materials (check custom materials first, then load from file)
+        self.lipid_df = self._load_material(lipid_file)
+        self.water_df = self._load_material(water_file)
+        self.mucus_df = self._load_material(mucus_file)
+        self.substratum_df = self._load_material(substratum_file)
+        
+        logger.info(f'✅ Loaded tear film materials: lipid={lipid_file}, water={water_file}, mucus={mucus_file}, substratum={substratum_file}')
+    
+    def _load_material(self, material_name: str) -> pd.DataFrame:
+        """
+        Load material data from custom materials dict or from file.
+        
+        Args:
+            material_name: Material filename or custom material name
+            
+        Returns:
+            DataFrame with wavelength_nm, n, k columns
+        """
+        # Check if it's a custom material
+        if material_name in self.custom_materials:
+            logger.info(f'📤 Using custom material: {material_name}')
+            return self.custom_materials[material_name]
+        
+        # Load from file
+        return load_material_data(self.materials_path / material_name)
     
     def _get_nk(self, mat_df: pd.DataFrame, wavelengths: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
         """Interpolate material n,k values to target wavelengths."""
