@@ -60,6 +60,9 @@ class PyElliResult:
     crossing_count: int
     matched_peaks: int = 0  # Number of matched peaks
     peak_count_delta: int = 0  # Absolute difference between measurement and theoretical peak counts
+    mean_delta_nm: float = 0.0  # Mean delta between matched peaks (alignment quality)
+    oscillation_ratio: float = 1.0  # Ratio of theoretical to measured oscillation amplitude
+    theoretical_peaks: int = 0  # Number of peaks detected in theoretical spectrum
     theoretical_spectrum: np.ndarray = None
     wavelengths: np.ndarray = None
 
@@ -464,39 +467,78 @@ def calculate_peak_based_score(
     # Match peaks
     matched_meas, matched_theo, deltas = _match_peaks(meas_peaks, theo_peaks, tolerance_nm)
     
-    # Peak count score - more lenient scoring
+    # Peak count score - CRITICAL for matching peak frequency
+    # We need theoretical spectra to have SIMILAR peak counts to measured
     meas_count = len(meas_peaks)
     theo_count = len(theo_peaks)
     matched_count = len(matched_meas)
     
     if meas_count == 0:
         peak_count_score = 1.0 if theo_count == 0 else 0.0
+        peak_count_ratio_score = 1.0
     elif matched_count == 0:
         # If no peaks match, give a small score based on how close the counts are
-        # This prevents all zero-match results from getting 0.0 score
         count_ratio = min(meas_count, theo_count) / max(meas_count, theo_count) if max(meas_count, theo_count) > 0 else 0.0
-        peak_count_score = 0.1 * count_ratio  # Small score for similar counts even if no matches
+        peak_count_score = 0.1 * count_ratio
+        peak_count_ratio_score = count_ratio
     else:
-        # Reward matching: matched/measured ratio, with bonus for matching most peaks
+        # CRITICAL: Reward matching most of the MEASURED peaks
+        # This is the key metric - we want to find all the peaks in the measured spectrum
         match_ratio = matched_count / float(meas_count)
-        # Also consider if we're matching a good fraction of theoretical peaks
-        theo_match_ratio = matched_count / float(theo_count) if theo_count > 0 else 0.0
-        peak_count_score = 0.7 * match_ratio + 0.3 * theo_match_ratio
+        
+        # Also reward having similar peak counts (theo should be close to meas)
+        # If theo_count << meas_count, we're not generating enough oscillations
+        if theo_count > 0:
+            count_similarity = min(theo_count, meas_count) / max(theo_count, meas_count)
+        else:
+            count_similarity = 0.0
+        
+        # Combined score: 60% match ratio (how many measured peaks we found) + 40% count similarity
+        peak_count_score = 0.6 * match_ratio + 0.4 * count_similarity
         peak_count_score = max(0.0, min(1.0, peak_count_score))
+        peak_count_ratio_score = count_similarity
+    
+    # CRITICAL: Penalize peak count mismatches
+    # We need theoretical peak count to be close to measured (within +2/-2)
+    max_allowed_excess = 2  # At most 2 more peaks than measured
+    
+    if meas_count > 0:
+        peak_excess = theo_count - meas_count
+        
+        # HARD CONSTRAINT: Too many theoretical peaks invalidates the fit
+        # Even if all measured peaks "match", having 13 peaks vs 7 measured is wrong
+        if peak_excess > max_allowed_excess:
+            # Severe penalty for too many theoretical peaks
+            excess_over_limit = peak_excess - max_allowed_excess
+            excess_penalty = 0.15 * excess_over_limit  # 0.15 per extra peak over limit
+            peak_count_score = max(0.0, peak_count_score - excess_penalty)
+        
+        # Also penalize too few theoretical peaks
+        if theo_count < meas_count * 0.6:
+            deficit_ratio = theo_count / float(meas_count)
+            peak_deficit_penalty = (0.6 - deficit_ratio) * 0.5
+            peak_count_score = max(0.0, peak_count_score - peak_deficit_penalty)
     
     # Peak delta score - more lenient
     unmatched_measurement = len(meas_peaks) - len(matched_meas)
     unmatched_theoretical = len(theo_peaks) - len(matched_theo)
+    total_unmatched = unmatched_measurement + unmatched_theoretical
     
     if deltas.size == 0:
-        mean_delta = 0.0
+        # No matched peaks - use sentinel value to prevent selection over candidates with real matches
+        # Only use 0.0 if there are truly no peaks at all (both measured and theoretical have 0 peaks)
         if unmatched_measurement == 0 and unmatched_theoretical == 0:
+            # No peaks at all - this is valid, mean_delta = 0.0 is appropriate
+            mean_delta = 0.0
             peak_delta_score = 1.0
         else:
+            # Peaks exist but none matched - use sentinel value (1000.0) so this candidate
+            # is filtered out by mean_delta_nm < 1000.0 and not selected over candidates with real matches
+            mean_delta = 1000.0  # Sentinel value - indicates no peak alignment
             # If no matches but similar peak counts, give small score
             total_peaks = len(meas_peaks) + len(theo_peaks)
             if total_peaks > 0:
-                unmatched_ratio = (unmatched_measurement + unmatched_theoretical) / float(total_peaks)
+                unmatched_ratio = total_unmatched / float(total_peaks)
                 peak_delta_score = 0.05 * (1.0 - unmatched_ratio)  # Small score for similar counts
             else:
                 peak_delta_score = 0.0
@@ -505,8 +547,8 @@ def calculate_peak_based_score(
         # More lenient scoring: use larger tau for exponential decay
         peak_delta_score = float(np.exp(-mean_delta / max(tau_nm, 1e-6)))
     
-    # Penalty for unpaired peaks
-    penalty = penalty_unpaired * float(unmatched_measurement + unmatched_theoretical)
+    # Apply penalty to peak_delta_score (for the 3% component)
+    penalty = penalty_unpaired * float(total_unmatched)
     peak_delta_score = max(0.0, min(1.0, peak_delta_score - penalty))
     
     # === CALCULATE RMSE SCORE ===
@@ -515,55 +557,146 @@ def calculate_peak_based_score(
     residual = measured - theoretical
     rmse = float(np.sqrt(np.mean(residual ** 2)))
     
-    # Normalize RMSE to a score (0-1)
+    # === REGIONAL RMSE SCORING ===
+    # Weight early wavelengths MORE heavily to fix the start mismatch
+    # Split early region into very-early (600-680nm) and early (680-750nm)
+    very_early_mask = wavelengths <= 680
+    early_mask = (wavelengths > 680) & (wavelengths <= 750)
+    mid_mask = (wavelengths > 750) & (wavelengths <= 950)
+    late_mask = wavelengths > 950
+    
+    very_early_rmse = float(np.sqrt(np.mean(residual[very_early_mask] ** 2))) if very_early_mask.any() else rmse
+    early_rmse = float(np.sqrt(np.mean(residual[early_mask] ** 2))) if early_mask.any() else rmse
+    mid_rmse = float(np.sqrt(np.mean(residual[mid_mask] ** 2))) if mid_mask.any() else rmse
+    late_rmse = float(np.sqrt(np.mean(residual[late_mask] ** 2))) if late_mask.any() else rmse
+    
+    # === START OFFSET PENALTY ===
+    # Specifically penalize systematic offset at the very start (600-680nm)
+    # This catches cases where theoretical is consistently above/below measured
+    if very_early_mask.any():
+        very_early_residual = residual[very_early_mask]
+        start_offset = float(np.mean(very_early_residual))  # Signed mean (positive = theo below meas)
+        start_offset_magnitude = abs(start_offset)
+        # Additional penalty for systematic offset (not just RMSE)
+        start_offset_penalty = start_offset_magnitude * 2.0  # Scale factor
+    else:
+        start_offset = 0.0
+        start_offset_penalty = 0.0
+    
+    # Weighted RMSE: 30% very-early, 20% early, 25% mid, 25% late
+    # Extra weight on very-early to fix the 600-680nm offset
+    weighted_rmse = 0.30 * very_early_rmse + 0.20 * early_rmse + 0.25 * mid_rmse + 0.25 * late_rmse
+    
+    # Add start offset penalty to weighted RMSE
+    weighted_rmse = weighted_rmse + start_offset_penalty
+    
+    # Normalize RMSE to a score (0-1) using weighted RMSE
     # EXTREMELY tight: LTA achieves RMSE ~0.0006, so we need to heavily penalize anything above 0.001
-    # RMSE of 0.0006 -> score ~0.67, RMSE of 0.001 -> score ~0.51, RMSE of 0.002 -> score ~0.26
+    # Using weighted_rmse gives more importance to early wavelengths (600-750nm)
     rmse_tau = 0.0008  # Much tighter - heavily penalizes RMSE > 0.001
-    rmse_score = float(np.exp(-rmse / rmse_tau))
+    rmse_score = float(np.exp(-weighted_rmse / rmse_tau))
+    
+    # Also track unweighted RMSE for reporting
+    rmse_unweighted = rmse
+    rmse = weighted_rmse  # Use weighted for all subsequent calculations
     
     # === OSCILLATION AMPLITUDE CHECK ===
-    # Penalize if theoretical has much less oscillation than measured
-    # This catches the "flat line" problem where correlation is high but fit is bad
+    # Penalize if theoretical oscillation amplitude doesn't match measured
+    # This catches both "flat line" (too little) and "excessive oscillation" (too much) problems
     meas_oscillation = float(np.std(meas_detrended))
     theo_oscillation = float(np.std(theo_detrended))
     
     # Initialize defaults to avoid NameError
     oscillation_penalty = 1.0
     oscillation_ratio = 1.0
+    amplitude_score = 1.0
     
     if meas_oscillation > 1e-8:
         oscillation_ratio = theo_oscillation / meas_oscillation
-        # If theoretical has < 50% of measured oscillation, penalize heavily
+        
+        # CRITICAL: Penalize BOTH too little AND too much oscillation
+        # Ideal ratio is 1.0 (theoretical matches measured amplitude)
+        # PyElli often produces 2-3x the oscillation amplitude - this is wrong physics!
+        
         if oscillation_ratio < 0.5:
-            oscillation_penalty = float(oscillation_ratio)
+            # Too little oscillation (flat line)
+            oscillation_penalty = oscillation_ratio * 2  # Scale 0-0.5 to 0-1
+            amplitude_score = oscillation_ratio * 2
+        elif oscillation_ratio > 2.0:
+            # Too much oscillation (excessive interference) - SEVERE penalty
+            # Ratio of 2.0 -> penalty 0.5, ratio of 3.0 -> penalty 0.33
+            oscillation_penalty = 1.0 / oscillation_ratio
+            amplitude_score = 1.0 / oscillation_ratio
+        elif oscillation_ratio > 1.5:
+            # Moderately too much oscillation - moderate penalty
+            # Ratio of 1.5 -> penalty 0.85, ratio of 2.0 -> penalty 0.5
+            excess = oscillation_ratio - 1.0
+            oscillation_penalty = max(0.5, 1.0 - excess)
+            amplitude_score = oscillation_penalty
         else:
-            oscillation_penalty = 1.0
+            # Good match (0.5 to 1.5) - mild penalty for deviation from 1.0
+            deviation = abs(oscillation_ratio - 1.0)
+            oscillation_penalty = 1.0 - 0.2 * deviation  # Up to 10% penalty
+            amplitude_score = oscillation_penalty
     else:
         oscillation_penalty = 1.0
         oscillation_ratio = 1.0
+        amplitude_score = 1.0
     
     # === IMPROVED COMPOSITE SCORE ===
-    # Weighting heavily towards RMSE and Correlation - these are the true indicators of fit quality
-    # Peak count is less important if RMSE and correlation are excellent
+    # Updated weighting to prioritize peak matching (finding all measured peaks)
     # 
     # Weighting:
-    # - 70% RMSE score (residual magnitude) - DOMINANT, ensures curves are physically close
-    # - 25% Correlation (shape similarity) - critical for visual fit quality
-    # - 3% Peak delta (alignment quality) - minor factor
-    # - 2% Peak count (matched peaks ratio) - very minor, don't penalize good fits for this
+    # - 25% RMSE score (residual magnitude) - ensures curves are physically close
+    # - 20% Amplitude score (oscillation matching) - prevents excessive/insufficient oscillations
+    # - 15% Correlation (shape similarity) - important for visual fit quality
+    # - 15% Peak delta (alignment quality) - peak positions should align
+    # - 25% Peak count (matched peaks ratio) - CRITICAL: ensures we match most measured peaks
     
     # Ensure all components are defined
     c_rmse = float(rmse_score)
     c_corr = float(correlation_score)
     c_delta = float(peak_delta_score)
     c_count = float(peak_count_score)
+    c_amplitude = float(amplitude_score)
     
     composite_score = (
-        0.70 * c_rmse +
-        0.25 * c_corr +
-        0.03 * c_delta +
-        0.02 * c_count
+        0.25 * c_rmse +
+        0.20 * c_amplitude +
+        0.15 * c_corr +
+        0.15 * c_delta +
+        0.25 * c_count     # INCREASED from 5% to 25% - finding peaks is critical
     )
+    
+    # CRITICAL: Penalty for peak count mismatch
+    # Theoretical peaks should be close to measured (within +2/-2)
+    max_allowed_excess = 2
+    if meas_count > 0:
+        peak_excess = theo_count - meas_count
+        
+        # HARD CONSTRAINT: Too many theoretical peaks is a deal-breaker
+        # E.g., 13 theoretical vs 7 measured = 6 excess -> SEVERE penalty
+        if peak_excess > max_allowed_excess:
+            excess_over_limit = peak_excess - max_allowed_excess
+            # Very severe penalty: 0.2 per extra peak over limit
+            # 6 excess - 2 allowed = 4 over limit -> 0.8 penalty (basically reject)
+            excess_penalty = 0.2 * excess_over_limit
+            composite_score = max(0.0, composite_score - excess_penalty)
+        
+        # Also penalize too few peaks
+        peak_coverage = theo_count / float(meas_count)
+        if peak_coverage < 0.7:
+            coverage_penalty = (0.7 - peak_coverage) * 0.5
+            composite_score = max(0.0, composite_score - coverage_penalty)
+    
+    # Additional penalty for unmatched peaks (both directions)
+    if total_unmatched > 0:
+        # Base penalty: 0.015 per unpaired peak
+        unpaired_penalty = 0.015 * float(total_unmatched)
+        # Extra penalty for unmatched MEASURED peaks (we failed to find them)
+        if unmatched_measurement > 0:
+            unpaired_penalty += 0.02 * float(unmatched_measurement)
+        composite_score = max(0.0, composite_score - unpaired_penalty)
     
     # Apply oscillation penalty (catches "flat line" theoretical)
     if 'oscillation_penalty' in locals():
@@ -600,14 +733,30 @@ def calculate_peak_based_score(
     elif rmse > 0.0015:  # RMSE > 0.0015
         composite_score = composite_score * 0.5  # 50% penalty
     
-    # Don't penalize for low peak count if RMSE and correlation are excellent
-    # Peak count is less reliable - some good fits naturally have fewer peaks
-    if matched_count < 3 and correlation >= 0.99 and rmse <= 0.0011:
-        # If correlation and RMSE are excellent, don't penalize low peak count
-        pass  # No penalty
+    # CRITICAL: Require minimum matched peaks based on measured peaks
+    # This ensures we select fits that actually align with the measured spectrum
+    if meas_count > 0:
+        match_ratio = matched_count / float(meas_count)
+        min_match_ratio = 0.5  # Require at least 50% of measured peaks to be matched
+        if match_ratio < min_match_ratio:
+            # Heavy penalty for insufficient peak matches
+            # Penalty scales with how far below the threshold we are
+            penalty_factor = 1.0 - (match_ratio / min_match_ratio)
+            composite_score = composite_score * (1.0 - 0.6 * penalty_factor)  # Up to 60% penalty
+        
+        # Bonus for matching most/all peaks with good alignment
+        if match_ratio >= 0.9 and matched_count >= 5:
+            # Excellent: matched 90%+ of peaks
+            composite_score = min(1.0, composite_score * 1.15)  # 15% bonus
+        elif match_ratio >= 0.7 and matched_count >= 5:
+            # Good: matched 70%+ of peaks
+            composite_score = min(1.0, composite_score * 1.08)  # 8% bonus
     elif matched_count >= 5 and correlation >= 0.95 and rmse <= 0.0011:
-        # Bonus for matching many peaks with excellent alignment and RMSE
-        composite_score = min(1.0, composite_score * 1.05)
+            # Moderate: at least 5 matches with excellent correlation/RMSE
+            composite_score = min(1.0, composite_score * 1.05)  # 5% bonus
+    
+    # Calculate peak coverage ratio for tracking
+    peak_coverage = theo_count / float(meas_count) if meas_count > 0 else 1.0
     
     return {
         "score": float(np.clip(composite_score, 0.0, 1.0)),
@@ -616,7 +765,10 @@ def calculate_peak_based_score(
         "rmse": rmse,
         "rmse_score": rmse_score,
         "oscillation_ratio": oscillation_ratio if meas_oscillation > 1e-8 else 1.0,
+        "amplitude_score": amplitude_score,
         "peak_count_score": peak_count_score,
+        "peak_count_ratio_score": peak_count_ratio_score,
+        "peak_coverage": peak_coverage,  # theo_count / meas_count - closer to 1.0 is better
         "peak_delta_score": peak_delta_score,
         "matched_peaks": float(matched_count),
         "mean_delta_nm": mean_delta,
@@ -624,6 +776,10 @@ def calculate_peak_based_score(
         "theoretical_peaks": float(len(theo_peaks)),
         "unpaired_measurement": float(unmatched_measurement),
         "unpaired_theoretical": float(unmatched_theoretical),
+        "meas_oscillation": meas_oscillation,
+        "theo_oscillation": theo_oscillation,
+        "start_offset": start_offset,  # Systematic offset at 600-680nm (positive = theo above measured)
+        "very_early_rmse": very_early_rmse,
     }
 
 
@@ -759,6 +915,73 @@ def calculate_monotonic_alignment_score(
 
 
 # =============================================================================
+# Helper Functions for Candidate Selection
+# =============================================================================
+
+def _get_candidate_sort_key(result: PyElliResult, min_matched_peaks: int = 0, meas_peaks_count: int = 0) -> tuple:
+    """
+    Sort key for candidate selection that prioritizes:
+    1. Score (adjusted for peak matching, amplitude, and excess peak penalties)
+    2. Matched peaks ratio (how many measured peaks we found)
+    3. Theoretical peak count (prefer closer to measured)
+    4. Oscillation ratio closeness to 1.0
+    
+    This ensures candidates that find peaks without generating excess are preferred.
+    """
+    # Base score with peak_count_delta penalty
+    adjusted_score = result.score - (result.peak_count_delta * 0.01)
+    
+    # CRITICAL: Heavy penalty for too many theoretical peaks
+    # Max allowed: measured + 2
+    if meas_peaks_count > 0:
+        max_allowed = meas_peaks_count + 2
+        if result.theoretical_peaks > max_allowed:
+            excess = result.theoretical_peaks - max_allowed
+            # 0.15 penalty per extra peak beyond the limit
+            adjusted_score -= excess * 0.15
+        
+        # Bonus for matching more peaks (relative to measured)
+        match_ratio = result.matched_peaks / float(meas_peaks_count)
+        adjusted_score += match_ratio * 0.3
+    
+    # CRITICAL: Heavy penalty for bad oscillation ratio (amplitude mismatch)
+    # Ideal ratio is 1.0, penalize both too low and too high
+    osc_ratio = result.oscillation_ratio
+    if osc_ratio > 2.0:
+        # Excessive oscillation - severe penalty (e.g., 3x amplitude -> 0.33 multiplier)
+        adjusted_score = adjusted_score * (1.0 / osc_ratio)
+    elif osc_ratio > 1.5:
+        # Moderately excessive oscillation - moderate penalty
+        adjusted_score = adjusted_score * (1.0 - (osc_ratio - 1.0) * 0.5)
+    elif osc_ratio < 0.5:
+        # Too little oscillation - penalty
+        adjusted_score = adjusted_score * osc_ratio * 2
+    
+    # Heavy penalty if below minimum matched peaks requirement
+    if min_matched_peaks > 0 and result.matched_peaks < min_matched_peaks:
+        # Reduce score significantly if below minimum
+        adjusted_score = adjusted_score * 0.3
+    
+    # Oscillation ratio penalty for sorting (how far from 1.0)
+    osc_deviation = abs(osc_ratio - 1.0)
+    
+    return (adjusted_score, -osc_deviation, -result.peak_count_delta, result.matched_peaks)
+
+
+def _get_measured_peaks_count(wavelengths: np.ndarray, measured: np.ndarray) -> int:
+    """
+    Get the number of peaks in the measured spectrum for minimum matching requirements.
+    """
+    try:
+        from src.analysis.measurement_utils import detrend_signal, detect_peaks
+        meas_detrended = detrend_signal(wavelengths, measured, cutoff_frequency=0.008, filter_order=3)
+        meas_peaks_df = detect_peaks(wavelengths, meas_detrended, prominence=0.0001)
+        return len(meas_peaks_df)
+    except Exception:
+        return 0
+
+
+# =============================================================================
 # Parallel Processing Worker Functions
 # =============================================================================
 
@@ -875,13 +1098,40 @@ def _evaluate_single_combination(
             residual = meas_focus_scaled - theo_focus_scaled
             rmse = float(np.sqrt(np.mean(residual ** 2)))
             
-            # Simple score based on RMSE and correlation only
+            # Simple score based on RMSE, correlation, AND amplitude matching
             rmse_tau = 0.0008
             rmse_score = float(np.exp(-rmse / rmse_tau))
             correlation_score = max(0.0, quick_corr) if quick_corr > 0 else 0.0
             
-            # Simple composite score (70% RMSE, 30% correlation)
-            simple_score = 0.70 * rmse_score + 0.30 * correlation_score
+            # CRITICAL: Calculate amplitude matching even in quick path
+            # This catches excessive oscillation early and prevents bad candidates from passing
+            try:
+                meas_detrended_quick = detrend_signal(wl_focus, meas_focus_scaled, 0.008, 3)
+                theo_detrended_quick = detrend_signal(wl_focus, theo_focus_scaled, 0.008, 3)
+                meas_osc = float(np.std(meas_detrended_quick))
+                theo_osc = float(np.std(theo_detrended_quick))
+                if meas_osc > 1e-8:
+                    osc_ratio = theo_osc / meas_osc
+                    # Calculate amplitude score (same logic as full path)
+                    if osc_ratio < 0.5:
+                        amplitude_score = osc_ratio * 2
+                    elif osc_ratio > 2.0:
+                        amplitude_score = 1.0 / osc_ratio
+                    elif osc_ratio > 1.5:
+                        excess = osc_ratio - 1.0
+                        amplitude_score = max(0.5, 1.0 - excess)
+                    else:
+                        deviation = abs(osc_ratio - 1.0)
+                        amplitude_score = 1.0 - 0.2 * deviation
+                else:
+                    osc_ratio = 1.0
+                    amplitude_score = 1.0
+            except Exception:
+                osc_ratio = 1.0
+                amplitude_score = 1.0
+            
+            # Simple composite score (35% RMSE, 35% amplitude, 30% correlation)
+            simple_score = 0.35 * rmse_score + 0.35 * amplitude_score + 0.30 * correlation_score
             
             # Apply penalties
             if rmse > 0.002:
@@ -890,6 +1140,11 @@ def _evaluate_single_combination(
                 simple_score *= 0.5
             if quick_corr < 0.5:
                 simple_score *= 0.2
+            # CRITICAL: Heavy penalty for excessive oscillation
+            if osc_ratio > 2.0:
+                simple_score *= 0.3  # 70% penalty for 2x+ amplitude
+            elif osc_ratio > 1.5:
+                simple_score *= 0.6  # 40% penalty for 1.5x+ amplitude
             
             score_result = {
                 "score": float(np.clip(simple_score, 0.0, 1.0)),
@@ -897,11 +1152,12 @@ def _evaluate_single_combination(
                 "correlation_score": correlation_score,
                 "rmse": rmse,
                 "rmse_score": rmse_score,
-                "oscillation_ratio": 1.0,
+                "oscillation_ratio": osc_ratio,
+                "amplitude_score": amplitude_score,
                 "peak_count_score": 0.0,
                 "peak_delta_score": 0.0,
                 "matched_peaks": 0,
-                "mean_delta_nm": 0.0,
+                "mean_delta_nm": 1000.0,  # Use large number so these are sorted last (no peak alignment data)
                 "measurement_peaks": 0.0,
                 "theoretical_peaks": 0.0,
                 "unpaired_measurement": 0.0,
@@ -925,6 +1181,7 @@ def _evaluate_single_combination(
         meas_peaks_count = int(score_result.get('measurement_peaks', 0))
         theo_peaks_count = int(score_result.get('theoretical_peaks', 0))
         peak_count_delta = abs(meas_peaks_count - theo_peaks_count)
+        mean_delta_nm = float(score_result.get('mean_delta_nm', 0.0))
         
         return PyElliResult(
             lipid_nm=float(lipid),
@@ -936,6 +1193,9 @@ def _evaluate_single_combination(
             crossing_count=0,
             matched_peaks=int(score_result.get('matched_peaks', 0)),
             peak_count_delta=peak_count_delta,
+            mean_delta_nm=mean_delta_nm,
+            oscillation_ratio=float(score_result.get('oscillation_ratio', 1.0)),
+            theoretical_peaks=theo_peaks_count,
             theoretical_spectrum=theoretical_scaled,
             wavelengths=wavelengths,
         )
@@ -1323,7 +1583,9 @@ class PyElliGridSearch:
             return []
         
         # Sort by score first, then by smallest peak_count_delta, then matched_peaks (score and matched_peaks descending, delta ascending)
-        results.sort(key=lambda x: (x.score, -x.peak_count_delta, x.matched_peaks), reverse=True)
+        # Note: min_matched_peaks=0 for intermediate sorting (filtering happens later)
+        # Note: meas_peaks_count=0 for intermediate sorting (will be calculated in final selection)
+        results.sort(key=lambda r: _get_candidate_sort_key(r, 0, 0), reverse=True)
         
         # Fine refinement around top candidates (parallel processing)
         logger.info('')
@@ -1497,7 +1759,9 @@ class PyElliGridSearch:
             logger.info('')
             logger.info('🔄 Combining Stage 1 and Stage 2 results...')
             all_results = results + refined_results
-            all_results.sort(key=lambda x: (x.score, -x.peak_count_delta, x.matched_peaks), reverse=True)
+            # Note: min_matched_peaks=0 for intermediate sorting (filtering happens later)
+            # Note: meas_peaks_count=0 for intermediate sorting
+            all_results.sort(key=lambda r: _get_candidate_sort_key(r, 0, 0), reverse=True)
             
             # Remove duplicates (keep best score for same parameters)
             seen = set()
@@ -1529,8 +1793,85 @@ class PyElliGridSearch:
                            f'A={unique_results[0].aqueous_nm:.1f}nm, R={unique_results[0].mucus_nm:.1f}Å')
             logger.info('=' * 80)
             
-            results = unique_results[:top_k]
-            logger.info(f'✅ Fine search completed. Best refined score: {results[0].score:.4f}')
+            # Get measured peaks count for minimum matching requirement
+            wl_mask = (wavelengths >= 600) & (wavelengths <= 1120)
+            wl_focus = wavelengths[wl_mask] if wl_mask.any() else wavelengths
+            meas_focus = measured[wl_mask] if wl_mask.any() else measured
+            meas_peaks_count = _get_measured_peaks_count(wl_focus, meas_focus)
+            min_matched_peaks = max(1, int(meas_peaks_count * 0.5))  # Require at least 50% of measured peaks
+            
+            # Stage 1: Identify top candidates using score, peak_count_delta, and matched_peaks
+            # Sort by score (descending), peak_count_delta (ascending), matched_peaks (descending)
+            sort_key_func = lambda r: _get_candidate_sort_key(r, min_matched_peaks, meas_peaks_count)
+            unique_results.sort(key=sort_key_func, reverse=True)
+            
+            # Filter candidates that meet minimum matched peaks requirement
+            candidates_meeting_min = [r for r in unique_results if r.matched_peaks >= min_matched_peaks]
+            
+            # Select top candidates (top 20% or at least top 10, whichever is larger)
+            # Prefer candidates meeting minimum, but include others if not enough
+            if len(candidates_meeting_min) >= 10:
+                candidate_pool = candidates_meeting_min
+                logger.info(f'📊 Filtering: {len(candidates_meeting_min)} candidates meet minimum matched peaks requirement ({min_matched_peaks} of {meas_peaks_count} measured peaks)')
+            else:
+                candidate_pool = unique_results
+                logger.warning(f'⚠️ Only {len(candidates_meeting_min)} candidates meet minimum matched peaks ({min_matched_peaks} of {meas_peaks_count}), using all candidates')
+            
+            num_candidates = max(10, len(candidate_pool) // 5)
+            top_candidates = candidate_pool[:num_candidates]
+            
+            # Stage 2: From top candidates, apply strict filters
+            # Filter out candidates without peak alignment data (mean_delta_nm >= 1000.0)
+            candidates_with_peaks = [r for r in top_candidates if r.mean_delta_nm < 1000.0]
+            
+            # CRITICAL: Filter by oscillation ratio (prefer 0.7 to 1.5 range)
+            candidates_good_amplitude = [r for r in candidates_with_peaks if 0.7 <= r.oscillation_ratio <= 1.5]
+            
+            # CRITICAL: Filter out candidates with too many theoretical peaks
+            # Max allowed: measured peaks + 2
+            max_theo_peaks = meas_peaks_count + 2
+            candidates_valid_peak_count = [r for r in candidates_good_amplitude if r.theoretical_peaks <= max_theo_peaks]
+            
+            if not candidates_valid_peak_count and candidates_good_amplitude:
+                # Fallback: relax peak count constraint if no candidates pass
+                logger.warning(f'⚠️ No candidates with theo_peaks <= {max_theo_peaks}, relaxing constraint')
+                candidates_valid_peak_count = candidates_good_amplitude
+            
+            if candidates_valid_peak_count:
+                # Best case: good peaks, good amplitude, valid peak count
+                candidates_meeting_all = [r for r in candidates_valid_peak_count if r.matched_peaks >= min_matched_peaks]
+                if candidates_meeting_all:
+                    # Find max matched peaks among candidates
+                    max_matched = max(c.matched_peaks for c in candidates_meeting_all)
+                    # Get all candidates within 1 of the max (to allow for tie-breaking)
+                    top_matched = [c for c in candidates_meeting_all if c.matched_peaks >= max_matched - 1]
+                    # Among those with similar matched peaks, select by SMALLEST mean_delta (best alignment)
+                    best_candidate = min(top_matched, key=lambda x: x.mean_delta_nm)
+                else:
+                    max_matched = max(c.matched_peaks for c in candidates_valid_peak_count)
+                    top_matched = [c for c in candidates_valid_peak_count if c.matched_peaks >= max_matched - 1]
+                    best_candidate = min(top_matched, key=lambda x: x.mean_delta_nm)
+                logger.info(f'✅ Found {len(candidates_valid_peak_count)} candidates with good amplitude AND valid peak count (theo <= {max_theo_peaks})')
+            elif candidates_with_peaks:
+                # Fallback: has peaks but other filters not met
+                # Still try to filter by peak count
+                candidates_valid_in_fallback = [r for r in candidates_with_peaks if r.theoretical_peaks <= max_theo_peaks]
+                if candidates_valid_in_fallback:
+                    best_candidate = max(candidates_valid_in_fallback, key=lambda x: (x.matched_peaks, -x.mean_delta_nm))
+                else:
+                    best_candidate = max(candidates_with_peaks, key=lambda x: (x.matched_peaks, -x.mean_delta_nm))
+                logger.warning(f'⚠️ No candidates with good amplitude, using best peak match (osc_ratio={best_candidate.oscillation_ratio:.2f}, theo_peaks={best_candidate.theoretical_peaks})')
+            else:
+                # No candidates with peak data
+                results = candidate_pool[:top_k]
+                logger.info(f'✅ Fine search completed. Best refined score: {results[0].score:.4f} (no peak alignment data available)')
+            # Note: If we found candidates with peaks/good amplitude, we'll process them below
+            
+            if candidates_with_peaks or candidates_good_amplitude:
+                # Reorder results to put best candidate first
+                results = [best_candidate] + [r for r in candidate_pool if r != best_candidate]
+                results = results[:top_k]
+                logger.info(f'✅ Fine search completed. Selected best candidate: Score={best_candidate.score:.4f}, Peak Count Delta={best_candidate.peak_count_delta}, Matched Peaks={best_candidate.matched_peaks}, Mean Delta={best_candidate.mean_delta_nm:.2f}nm, Osc Ratio={best_candidate.oscillation_ratio:.2f} (from {len(candidates_with_peaks)} candidates)')
         
         if results:
             best = results[0]
@@ -1542,19 +1883,18 @@ class PyElliGridSearch:
             logger.info(
                 f'✅ Best fit: Lipid={best.lipid_nm:.1f}nm, '
                 f'Aqueous={best.aqueous_nm:.1f}nm, Roughness={best.mucus_nm:.0f}Å, '
-                f'Score={best.score:.4f}, Matched Peaks={best_score_result.get("matched_peaks", 0):.0f}, '
-                f'Mean Delta={best_score_result.get("mean_delta_nm", 0):.2f}nm, '
+                f'Score={best.score:.4f}, Matched Peaks={best.matched_peaks:.0f}, '
+                f'Mean Delta={best.mean_delta_nm:.2f}nm, '
                 f'Meas Peaks={best_score_result.get("measurement_peaks", 0):.0f}, '
                 f'Theo Peaks={best_score_result.get("theoretical_peaks", 0):.0f}, '
                 f'Correlation={best.correlation:.3f}'
             )
             # Log top 3 results for debugging
             for i, r in enumerate(results[:min(3, len(results))]):
-                r_score = calculate_peak_based_score(wavelengths, measured, r.theoretical_spectrum)
                 logger.debug(
                     f'  Rank {i+1}: L={r.lipid_nm:.1f}, A={r.aqueous_nm:.1f}, R={r.mucus_nm:.0f}Å, '
-                    f'Score={r.score:.4f}, Matched={r_score.get("matched_peaks", 0):.0f}, '
-                    f'Delta={r_score.get("mean_delta_nm", 0):.2f}nm'
+                    f'Score={r.score:.4f}, Matched={r.matched_peaks:.0f}, '
+                    f'Delta={r.mean_delta_nm:.2f}nm'
             )
         
         return results[:top_k]
@@ -1648,9 +1988,57 @@ class PyElliGridSearch:
         logger.info('-' * 80)
         stage1_start = time_module.time()
         
+        # For dynamic search, reserve 30% budget for Stage 2 refinement
+        # Stage 1 gets 70% of max_combinations
+        if max_combinations is not None:
+            stage1_budget = int(max_combinations * 0.7)  # 70% for Stage 1
+        else:
+            stage1_budget = None
+        
+        # Calculate optimal step sizes to utilize the full Stage 1 budget
+        # Target: generate approximately stage1_budget combinations
         coarse_lipid_step = lipid_range[2]
         coarse_aqueous_step = aqueous_range[2]
         coarse_roughness_step = roughness_range[2]
+        
+        # Calculate ranges
+        lipid_span = min(lipid_range[1], 250) - max(lipid_range[0], 9)
+        aqueous_span = min(aqueous_range[1], 12000) - max(aqueous_range[0], 800)
+        roughness_span = min(roughness_range[1], 7000) - max(roughness_range[0], 600)
+        
+        # If we have a budget, optimize step sizes to utilize it
+        if stage1_budget is not None and stage1_budget > 0:
+            # Calculate how many combinations current steps would generate
+            lipid_count_initial = max(1, int(lipid_span / coarse_lipid_step) + 1)
+            aqueous_count_initial = max(1, int(aqueous_span / coarse_aqueous_step) + 1)
+            roughness_count_initial = max(1, int(roughness_span / coarse_roughness_step) + 1)
+            initial_total = lipid_count_initial * aqueous_count_initial * roughness_count_initial
+            
+            # Target: 90% of budget (leave some headroom for filtering)
+            target_combinations = int(stage1_budget * 0.9)
+            
+            # Optimize steps if we're significantly off target (either too many or too few)
+            # Threshold: if we're more than 20% away from target, optimize
+            if abs(initial_total - target_combinations) > target_combinations * 0.2:
+                # Calculate optimal step sizes to reach target
+                # Cube root approach: each dimension gets roughly cube_root(target) values
+                target_per_dim = int(np.ceil(target_combinations ** (1/3)))
+                
+                # Calculate optimal steps (ensure minimum reasonable steps)
+                optimal_lipid_step = max(1.0, lipid_span / max(1, target_per_dim))
+                optimal_aqueous_step = max(10.0, aqueous_span / max(1, target_per_dim))
+                optimal_roughness_step = max(5.0, roughness_span / max(1, target_per_dim))
+                
+                # Use optimal steps (they will be smaller if initial_total > target, larger if initial_total < target)
+                coarse_lipid_step = optimal_lipid_step
+                coarse_aqueous_step = optimal_aqueous_step
+                coarse_roughness_step = optimal_roughness_step
+                
+                logger.info(f'📊 Optimized step sizes to utilize Stage 1 budget ({stage1_budget:,} combinations):')
+                logger.info(f'   - Initial combinations: {initial_total:,} (target: {target_combinations:,})')
+                logger.info(f'   - Lipid step: {coarse_lipid_step:.1f} nm (was {lipid_range[2]:.1f} nm)')
+                logger.info(f'   - Aqueous step: {coarse_aqueous_step:.1f} nm (was {aqueous_range[2]:.1f} nm)')
+                logger.info(f'   - Roughness step: {coarse_roughness_step:.1f} Å (was {roughness_range[2]:.1f} Å)')
         
         logger.info(f'🔧 Coarse Step Sizes:')
         logger.info(f'   - Lipid: {coarse_lipid_step:.1f} nm')
@@ -1673,14 +2061,7 @@ class PyElliGridSearch:
         logger.info(f'   - Roughness values: {len(roughness_values_coarse)} ({roughness_values_coarse[0]:.1f} to {roughness_values_coarse[-1]:.1f} Å)')
         logger.info(f'   - Total combinations: {coarse_total:,}')
         
-        # For dynamic search, reserve 30% budget for Stage 2 refinement
-        # Stage 1 gets 70% of max_combinations
-        if max_combinations is not None:
-            stage1_budget = int(max_combinations * 0.7)  # 70% for Stage 1
-        else:
-            stage1_budget = None
-        
-        # Check if coarse search exceeds Stage 1 budget
+        # Check if coarse search exceeds Stage 1 budget (should be rare now with optimization)
         if stage1_budget is not None and coarse_total > stage1_budget:
             logger.warning(f'⚠️ Coarse search ({coarse_total:,} combinations) exceeds Stage 1 budget ({stage1_budget:,})')
             logger.warning(f'   Limiting coarse search to {stage1_budget:,} combinations (70% of {max_combinations:,} total)...')
@@ -2012,15 +2393,18 @@ class PyElliGridSearch:
         logger.info(f'   Passed filters: {len(dynamic_results):,}')
         logger.info(f'   Filtered out: {filtered_out:,} (correlation < {min_correlation_filter} or RMSE > 0.002)')
         
-        # Sort by score first, then by smallest peak_count_delta, then matched_peaks (score and matched_peaks descending, delta ascending)
-        dynamic_results.sort(key=lambda x: (x.score, -x.peak_count_delta, x.matched_peaks), reverse=True)
+        # Sort by score first, then peak_count_delta, then matched_peaks (for candidate identification)
+        # Note: min_matched_peaks=0 for intermediate sorting (filtering happens later)
+        # Note: meas_peaks_count=0 for intermediate sorting
+        dynamic_results.sort(key=lambda r: _get_candidate_sort_key(r, 0, 0), reverse=True)
         
         # Combine coarse and dynamic results, remove duplicates
         logger.info('')
         logger.info('🔄 Combining Stage 1 and Stage 2 results...')
         all_results = coarse_results + dynamic_results
-        # Sort by score first, then by smallest peak_count_delta, then matched_peaks
-        all_results.sort(key=lambda x: (x.score, -x.peak_count_delta, x.matched_peaks), reverse=True)
+        # Sort by score first, then peak_count_delta, then matched_peaks (for candidate identification)
+        # Note: min_matched_peaks=0 for intermediate sorting (filtering happens later)
+        all_results.sort(key=lambda r: _get_candidate_sort_key(r, 0), reverse=True)
         
         # Remove duplicates
         seen = set()
@@ -2045,15 +2429,152 @@ class PyElliGridSearch:
         logger.info(f'   - Stage 2 candidates: {len(dynamic_results)}')
         logger.info(f'   - Duplicates removed: {duplicates_removed}')
         logger.info(f'   - Unique results: {len(unique_results)}')
+        # Get measured peaks count for minimum matching requirement
+        wl_mask = (wavelengths >= 600) & (wavelengths <= 1120)
+        wl_focus = wavelengths[wl_mask] if wl_mask.any() else wavelengths
+        meas_focus = measured[wl_mask] if wl_mask.any() else measured
+        meas_peaks_count = _get_measured_peaks_count(wl_focus, meas_focus)
+        min_matched_peaks = max(1, int(meas_peaks_count * 0.5))  # Require at least 50% of measured peaks
+        
+        # Stage 1: Identify top candidates using score, peak_count_delta, and matched_peaks
+        # Sort by score (descending), peak_count_delta (ascending), matched_peaks (descending)
+        sort_key_func = lambda r: _get_candidate_sort_key(r, min_matched_peaks)
+        unique_results.sort(key=sort_key_func, reverse=True)
+        
+        # Filter candidates that meet minimum matched peaks requirement
+        candidates_meeting_min = [r for r in unique_results if r.matched_peaks >= min_matched_peaks]
+        
+        # Select top candidates (top 20% or at least top 10, whichever is larger)
+        # Prefer candidates meeting minimum, but include others if not enough
+        if len(candidates_meeting_min) >= 10:
+            candidate_pool = candidates_meeting_min
+            logger.info(f'📊 Filtering: {len(candidates_meeting_min)} candidates meet minimum matched peaks requirement ({min_matched_peaks} of {meas_peaks_count} measured peaks)')
+        else:
+            candidate_pool = unique_results
+            logger.warning(f'⚠️ Only {len(candidates_meeting_min)} candidates meet minimum matched peaks ({min_matched_peaks} of {meas_peaks_count}), using all candidates')
+        
+        num_candidates = max(10, len(candidate_pool) // 5)
+        top_candidates = candidate_pool[:num_candidates]
+        
+        # Stage 2: From top candidates, select the one with smallest mean_delta_nm (best peak alignment)
+        # Filter out candidates without peak alignment data (mean_delta_nm >= 1000.0)
+        # AND filter out candidates with bad oscillation ratio (amplitude mismatch)
+        candidates_with_peaks = [r for r in top_candidates if r.mean_delta_nm < 1000.0]
+        # CRITICAL: Also filter by oscillation ratio (prefer 0.7 to 1.5 range)
+        candidates_good_amplitude = [r for r in candidates_with_peaks if 0.7 <= r.oscillation_ratio <= 1.5]
+        
+        # CRITICAL: Filter out candidates with too many theoretical peaks
+        # Max allowed: measured peaks + 2
+        max_theo_peaks = meas_peaks_count + 2
+        candidates_valid_peak_count = [r for r in candidates_good_amplitude if r.theoretical_peaks <= max_theo_peaks]
+        
+        if not candidates_valid_peak_count and candidates_good_amplitude:
+            logger.warning(f'⚠️ No candidates with theo_peaks <= {max_theo_peaks}, relaxing constraint')
+            candidates_valid_peak_count = candidates_good_amplitude
+        
+        if candidates_valid_peak_count:
+            # Best case: good peaks, good amplitude, valid peak count
+            candidates_meeting_all = [r for r in candidates_valid_peak_count if r.matched_peaks >= min_matched_peaks]
+            if candidates_meeting_all:
+                # Find max matched peaks, then select by smallest mean_delta among top matches
+                max_matched = max(c.matched_peaks for c in candidates_meeting_all)
+                top_matched = [c for c in candidates_meeting_all if c.matched_peaks >= max_matched - 1]
+                best_candidate = min(top_matched, key=lambda x: x.mean_delta_nm)
+            else:
+                max_matched = max(c.matched_peaks for c in candidates_valid_peak_count)
+                top_matched = [c for c in candidates_valid_peak_count if c.matched_peaks >= max_matched - 1]
+                best_candidate = min(top_matched, key=lambda x: x.mean_delta_nm)
+            logger.info(f'✅ Found {len(candidates_valid_peak_count)} candidates with good amplitude AND valid peak count (theo <= {max_theo_peaks})')
+            # Reorder results to put best candidate first
+            final_results = [best_candidate] + [r for r in candidate_pool if r != best_candidate]
+            final_results = final_results[:top_k]
+            logger.info(f'✅ Selected best candidate: Score={best_candidate.score:.4f}, Theo Peaks={best_candidate.theoretical_peaks}, Matched Peaks={best_candidate.matched_peaks}, Mean Delta={best_candidate.mean_delta_nm:.2f}nm, Osc Ratio={best_candidate.oscillation_ratio:.2f}')
+        elif candidates_with_peaks:
+            # Fallback: has peaks but other filters not met
+            candidates_valid_in_fallback = [r for r in candidates_with_peaks if r.theoretical_peaks <= max_theo_peaks]
+            if candidates_valid_in_fallback:
+                best_candidate = max(candidates_valid_in_fallback, key=lambda x: (x.matched_peaks, -x.mean_delta_nm))
+            else:
+                best_candidate = max(candidates_with_peaks, key=lambda x: (x.matched_peaks, -x.mean_delta_nm))
+            logger.warning(f'⚠️ No candidates with good amplitude, using best peak match (theo_peaks={best_candidate.theoretical_peaks}, osc_ratio={best_candidate.oscillation_ratio:.2f})')
+            # Reorder results to put best candidate first
+            final_results = [best_candidate] + [r for r in candidate_pool if r != best_candidate]
+            final_results = final_results[:top_k]
+            logger.info(f'✅ Selected best candidate: Score={best_candidate.score:.4f}, Theo Peaks={best_candidate.theoretical_peaks}, Matched Peaks={best_candidate.matched_peaks}, Mean Delta={best_candidate.mean_delta_nm:.2f}nm')
+        else:
+            # Fallback: use top by score if no candidates have peak data
+            final_results = candidate_pool[:top_k]
+            logger.info(f'⚠️ No candidates with peak alignment data, using top by score')
+        
         logger.info(f'   - Returning top {top_k} results')
-        if unique_results:
-            logger.info(f'🏆 Best result: Score={unique_results[0].score:.4f}, Corr={unique_results[0].correlation:.3f}, '
-                       f'RMSE={unique_results[0].rmse:.5f}, Matched Peaks={unique_results[0].matched_peaks}, '
-                       f'Peak Count Delta={unique_results[0].peak_count_delta}, '
-                       f'L={unique_results[0].lipid_nm:.1f}nm, A={unique_results[0].aqueous_nm:.1f}nm, R={unique_results[0].mucus_nm:.1f}Å')
+        if final_results:
+            logger.info(f'🏆 Best result: Score={final_results[0].score:.4f}, Corr={final_results[0].correlation:.3f}, '
+                       f'RMSE={final_results[0].rmse:.5f}, Matched Peaks={final_results[0].matched_peaks}, '
+                       f'Mean Delta={final_results[0].mean_delta_nm:.2f}nm, '
+                       f'L={final_results[0].lipid_nm:.1f}nm, A={final_results[0].aqueous_nm:.1f}nm, R={final_results[0].mucus_nm:.1f}Å')
         logger.info('=' * 80)
         
-        return unique_results[:top_k]
+        # =====================================================================
+        # STAGE 3: Ultra-Fine Refinement for better peak alignment
+        # =====================================================================
+        if final_results and final_results[0].mean_delta_nm > 2.5:
+            logger.info('')
+            logger.info('🔬 STAGE 3: Ultra-Fine Refinement (improving peak alignment)')
+            logger.info('-' * 80)
+            
+            best = final_results[0]
+            # Very small search window with tiny steps
+            ultra_fine_lipid = np.arange(
+                max(9, best.lipid_nm - 10), 
+                min(250, best.lipid_nm + 10) + 1, 
+                2.0  # 2nm step
+            )
+            ultra_fine_aqueous = np.arange(
+                max(800, best.aqueous_nm - 200),
+                min(12000, best.aqueous_nm + 200) + 1,
+                20.0  # 20nm step
+            )
+            ultra_fine_roughness = np.arange(
+                max(600, best.mucus_nm - 200),
+                min(7000, best.mucus_nm + 200) + 1,
+                50.0  # 50Å step
+            )
+            
+            ultra_fine_total = len(ultra_fine_lipid) * len(ultra_fine_aqueous) * len(ultra_fine_roughness)
+            logger.info(f'📊 Ultra-fine grid: {ultra_fine_total:,} combinations')
+            logger.info(f'   - Lipid: {len(ultra_fine_lipid)} values ({ultra_fine_lipid[0]:.1f} to {ultra_fine_lipid[-1]:.1f} nm, step 2nm)')
+            logger.info(f'   - Aqueous: {len(ultra_fine_aqueous)} values ({ultra_fine_aqueous[0]:.1f} to {ultra_fine_aqueous[-1]:.1f} nm, step 20nm)')
+            logger.info(f'   - Roughness: {len(ultra_fine_roughness)} values ({ultra_fine_roughness[0]:.1f} to {ultra_fine_roughness[-1]:.1f} Å, step 50Å)')
+            
+            ultra_fine_results = self._evaluate_parameter_grid(
+                wavelengths, measured,
+                ultra_fine_lipid, ultra_fine_aqueous, ultra_fine_roughness,
+                top_k, enable_roughness, min_correlation_filter
+            )
+            
+            if ultra_fine_results:
+                # Combine and select best
+                all_results = final_results + ultra_fine_results
+                
+                # Filter by valid peak count and good amplitude
+                valid_results = [r for r in all_results 
+                                if r.theoretical_peaks <= meas_peaks_count + 2 
+                                and 0.7 <= r.oscillation_ratio <= 1.5
+                                and r.mean_delta_nm < 1000.0]
+                
+                if valid_results:
+                    # Select by most matched peaks, then smallest mean_delta
+                    max_matched = max(r.matched_peaks for r in valid_results)
+                    top_matched = [r for r in valid_results if r.matched_peaks >= max_matched - 1]
+                    best_ultra = min(top_matched, key=lambda x: x.mean_delta_nm)
+                    
+                    if best_ultra.mean_delta_nm < best.mean_delta_nm:
+                        logger.info(f'✅ Ultra-fine improved: Mean Delta {best.mean_delta_nm:.2f}nm → {best_ultra.mean_delta_nm:.2f}nm')
+                        final_results = [best_ultra] + [r for r in valid_results if r != best_ultra][:top_k-1]
+                    else:
+                        logger.info(f'ℹ️ Ultra-fine did not improve (current: {best.mean_delta_nm:.2f}nm, best found: {best_ultra.mean_delta_nm:.2f}nm)')
+        
+        return final_results[:top_k]
     
     def _evaluate_parameter_grid(
         self,
@@ -2145,9 +2666,79 @@ class PyElliGridSearch:
             logger.warning('⚠️ No results passed filters!')
             return []
         
-        # Sort by score first, then by smallest peak_count_delta, then matched_peaks (score and matched_peaks descending, delta ascending)
-        results.sort(key=lambda x: (x.score, -x.peak_count_delta, x.matched_peaks), reverse=True)
-        return results[:top_k]
+        # Get measured peaks count for minimum matching requirement
+        # Use focus region (600-1120 nm) to match scoring
+        wl_mask = (wavelengths >= 600) & (wavelengths <= 1120)
+        wl_focus = wavelengths[wl_mask] if wl_mask.any() else wavelengths
+        meas_focus = measured[wl_mask] if wl_mask.any() else measured
+        meas_peaks_count = _get_measured_peaks_count(wl_focus, meas_focus)
+        min_matched_peaks = max(1, int(meas_peaks_count * 0.5))  # Require at least 50% of measured peaks
+        
+        # Stage 1: Sort by score, peak_count_delta, matched_peaks (for candidate identification)
+        sort_key_func = lambda r: _get_candidate_sort_key(r, min_matched_peaks)
+        results.sort(key=sort_key_func, reverse=True)
+        
+        # Filter candidates that meet minimum matched peaks requirement
+        candidates_meeting_min = [r for r in results if r.matched_peaks >= min_matched_peaks]
+        
+        # Select top candidates (top 20% or at least top 10, whichever is larger)
+        # Prefer candidates meeting minimum, but include others if not enough
+        if len(candidates_meeting_min) >= 10:
+            candidate_pool = candidates_meeting_min
+            logger.info(f'📊 Filtering: {len(candidates_meeting_min)} candidates meet minimum matched peaks requirement ({min_matched_peaks} of {meas_peaks_count} measured peaks)')
+        else:
+            candidate_pool = results  # Use all if not enough meet minimum
+            logger.warning(f'⚠️ Only {len(candidates_meeting_min)} candidates meet minimum matched peaks ({min_matched_peaks} of {meas_peaks_count}), using all candidates')
+        
+        num_candidates = max(10, len(candidate_pool) // 5)
+        top_candidates = candidate_pool[:num_candidates]
+        
+        # Stage 2: From top candidates, select the one with smallest mean_delta_nm (best peak alignment)
+        # Filter out candidates without peak alignment data (mean_delta_nm >= 1000.0)
+        # AND filter out candidates with bad oscillation ratio (amplitude mismatch)
+        candidates_with_peaks = [r for r in top_candidates if r.mean_delta_nm < 1000.0]
+        # CRITICAL: Also filter by oscillation ratio (prefer 0.7 to 1.5 range)
+        candidates_good_amplitude = [r for r in candidates_with_peaks if 0.7 <= r.oscillation_ratio <= 1.5]
+        
+        # CRITICAL: Filter out candidates with too many theoretical peaks
+        # Max allowed: measured peaks + 2
+        max_theo_peaks = meas_peaks_count + 2
+        candidates_valid_peak_count = [r for r in candidates_good_amplitude if r.theoretical_peaks <= max_theo_peaks]
+        
+        if not candidates_valid_peak_count and candidates_good_amplitude:
+            logger.warning(f'⚠️ No candidates with theo_peaks <= {max_theo_peaks}, relaxing constraint')
+            candidates_valid_peak_count = candidates_good_amplitude
+        
+        if candidates_valid_peak_count:
+            # Best case: good peaks, good amplitude, valid peak count
+            candidates_meeting_all = [r for r in candidates_valid_peak_count if r.matched_peaks >= min_matched_peaks]
+            if candidates_meeting_all:
+                # Find max matched peaks, then select by smallest mean_delta among top matches
+                max_matched = max(c.matched_peaks for c in candidates_meeting_all)
+                top_matched = [c for c in candidates_meeting_all if c.matched_peaks >= max_matched - 1]
+                best_candidate = min(top_matched, key=lambda x: x.mean_delta_nm)
+            else:
+                max_matched = max(c.matched_peaks for c in candidates_valid_peak_count)
+                top_matched = [c for c in candidates_valid_peak_count if c.matched_peaks >= max_matched - 1]
+                best_candidate = min(top_matched, key=lambda x: x.mean_delta_nm)
+            logger.info(f'✅ Found {len(candidates_valid_peak_count)} candidates with good amplitude AND valid peak count (theo <= {max_theo_peaks})')
+            # Reorder results to put best candidate first
+            final_results = [best_candidate] + [r for r in candidate_pool if r != best_candidate]
+            return final_results[:top_k]
+        elif candidates_with_peaks:
+            # Fallback: has peaks but other filters not met
+            candidates_valid_in_fallback = [r for r in candidates_with_peaks if r.theoretical_peaks <= max_theo_peaks]
+            if candidates_valid_in_fallback:
+                best_candidate = max(candidates_valid_in_fallback, key=lambda x: (x.matched_peaks, -x.mean_delta_nm))
+            else:
+                best_candidate = max(candidates_with_peaks, key=lambda x: (x.matched_peaks, -x.mean_delta_nm))
+            logger.warning(f'⚠️ No candidates with good amplitude, using best peak match (theo_peaks={best_candidate.theoretical_peaks})')
+            # Reorder results to put best candidate first
+            final_results = [best_candidate] + [r for r in candidate_pool if r != best_candidate]
+            return final_results[:top_k]
+        
+        # Fallback: use top by score if no candidates have peak data
+        return candidate_pool[:top_k]
     
     def refine_around_best(
         self,
