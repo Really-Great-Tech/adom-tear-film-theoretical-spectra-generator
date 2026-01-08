@@ -211,6 +211,15 @@ st.markdown('''
         visibility: hidden !important;
     }
     
+    /* Hide keyboard hints in expanders and all sidebar spans with keyboard text */
+    [data-testid="stExpander"] span[class*="keyboard"],
+    [data-testid="stSidebar"] span[class*="keyboard"],
+    [data-testid="stSidebar"] [class*="StyledKeyboardShortcut"],
+    [data-testid="stExpander"] [class*="StyledKeyboardShortcut"] {
+        display: none !important;
+        visibility: hidden !important;
+    }
+    
     /* Ensure regular buttons in sidebar are visible */
     [data-testid="stSidebar"] .stButton button {
         display: block !important;
