@@ -111,25 +111,68 @@ def peak_count_score(
     theoretical: PreparedTheoreticalSpectrum,
     *,
     tolerance_nm: float,
+    max_allowed_excess: int = 2,
+    min_coverage_ratio: float = 0.7,
+    excess_penalty_per_peak: float = 0.2,
+    coverage_penalty_factor: float = 0.5,
 ) -> MetricResult:
+    """
+    Score based on peak count matching with penalties for excess/missing peaks.
+    
+    Based on PyElli analysis:
+    - Theoretical peaks should be close to measured (within +2/-2)
+    - Too many theoretical peaks is a deal-breaker (severe penalty)
+    - Too few peaks (poor coverage) also penalized
+    
+    Args:
+        measurement: Prepared measurement spectrum
+        theoretical: Prepared theoretical spectrum
+        tolerance_nm: Peak matching tolerance in nm
+        max_allowed_excess: Max extra theoretical peaks before severe penalty
+        min_coverage_ratio: Minimum theo_peaks/meas_peaks ratio
+        excess_penalty_per_peak: Penalty per excess peak over limit
+        coverage_penalty_factor: Multiplier for coverage penalty
+    """
     meas_peaks = measurement.peaks["wavelength"].to_numpy(dtype=float)
     theo_peaks = theoretical.peaks["wavelength"].to_numpy(dtype=float)
 
     matched_meas, matched_theo, _ = _match_peaks(meas_peaks, theo_peaks, tolerance_nm)
 
     meas_count = len(meas_peaks)
+    theo_count = len(theo_peaks)
     matched_count = len(matched_meas)
 
     if meas_count == 0:
-        score = 1.0 if len(theo_peaks) == 0 else 0.0
+        score = 1.0 if theo_count == 0 else 0.0
+        peak_coverage = 1.0
+        peak_excess = 0
     else:
-        score = 1.0 - abs(meas_count - matched_count) / float(meas_count)
+        # Base score: ratio of matched to measured peaks
+        score = matched_count / float(meas_count)
         score = max(0.0, min(1.0, score))
+        
+        # Calculate peak excess (theoretical - measured)
+        peak_excess = theo_count - meas_count
+        peak_coverage = theo_count / float(meas_count)
+        
+        # PENALTY 1: Too many theoretical peaks (from PyElli)
+        # E.g., 13 theoretical vs 7 measured = 6 excess -> SEVERE penalty
+        if peak_excess > max_allowed_excess:
+            excess_over_limit = peak_excess - max_allowed_excess
+            excess_penalty = excess_penalty_per_peak * excess_over_limit
+            score = max(0.0, score - excess_penalty)
+        
+        # PENALTY 2: Too few theoretical peaks (poor coverage)
+        if peak_coverage < min_coverage_ratio:
+            coverage_penalty = (min_coverage_ratio - peak_coverage) * coverage_penalty_factor
+            score = max(0.0, score - coverage_penalty)
 
     diagnostics = {
         "measurement_peaks": float(meas_count),
-        "theoretical_peaks": float(len(theo_peaks)),
+        "theoretical_peaks": float(theo_count),
         "matched_peaks": float(matched_count),
+        "peak_excess": float(peak_excess),
+        "peak_coverage": float(peak_coverage),
     }
     return MetricResult(score=score, diagnostics=diagnostics)
 
@@ -141,7 +184,23 @@ def peak_delta_score(
     tolerance_nm: float,
     tau_nm: float,
     penalty_unpaired: float,
+    extra_penalty_unmatched_measured: float = 0.02,
 ) -> MetricResult:
+    """
+    Score based on peak alignment quality (position delta between matched peaks).
+    
+    Enhanced with PyElli-style penalties:
+    - Base penalty for any unpaired peaks
+    - Extra penalty for unmatched MEASURED peaks (failed to find them in theoretical)
+    
+    Args:
+        measurement: Prepared measurement spectrum
+        theoretical: Prepared theoretical spectrum
+        tolerance_nm: Peak matching tolerance in nm
+        tau_nm: Decay constant for delta scoring (lower = stricter)
+        penalty_unpaired: Base penalty per unpaired peak
+        extra_penalty_unmatched_measured: Extra penalty for unmatched measured peaks
+    """
     meas_peaks = measurement.peaks["wavelength"].to_numpy(dtype=float)
     theo_peaks = theoretical.peaks["wavelength"].to_numpy(dtype=float)
 
@@ -149,9 +208,11 @@ def peak_delta_score(
 
     unmatched_measurement = len(meas_peaks) - len(matched_meas)
     unmatched_theoretical = len(theo_peaks) - len(matched_theo)
+    total_unmatched = unmatched_measurement + unmatched_theoretical
+    
     if deltas.size == 0:
         mean_delta = 0.0
-        if unmatched_measurement == 0 and unmatched_theoretical == 0:
+        if total_unmatched == 0:
             score = 1.0
         else:
             score = 0.0
@@ -159,7 +220,14 @@ def peak_delta_score(
         mean_delta = float(np.mean(deltas))
         score = float(np.exp(-mean_delta / max(tau_nm, 1e-6)))
 
-    penalty = penalty_unpaired * float(unmatched_measurement + unmatched_theoretical)
+    # Base penalty for all unpaired peaks
+    penalty = penalty_unpaired * float(total_unmatched)
+    
+    # Extra penalty for unmatched MEASURED peaks (from PyElli)
+    # These are peaks we failed to find in theoretical - more critical
+    if unmatched_measurement > 0:
+        penalty += extra_penalty_unmatched_measured * float(unmatched_measurement)
+    
     score = max(0.0, min(1.0, score - penalty))
 
     diagnostics = {
@@ -167,6 +235,7 @@ def peak_delta_score(
         "mean_delta_nm": mean_delta,
         "unpaired_measurement": float(unmatched_measurement),
         "unpaired_theoretical": float(unmatched_theoretical),
+        "total_unmatched": float(total_unmatched),
     }
     return MetricResult(score=score, diagnostics=diagnostics)
 
