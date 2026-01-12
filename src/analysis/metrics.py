@@ -576,12 +576,21 @@ def score_spectrum(
     
     # Phase overlap score (FFT-based)
     phase_result = phase_overlap_score(measurement, theoretical)
+    
+    # Residual score (RMSE/MAE fit quality) - computed unconditionally like PyElli
+    residual_result = residual_score(
+        measurement,
+        theoretical,
+        tau_rmse=float(residual_cfg.get("tau_rmse", 0.015)),
+        max_rmse=residual_cfg.get("max_rmse"),
+    )
 
     component_scores: Dict[str, float] = {
         "peak_count": count_result.score,
         "peak_delta": delta_result.score,
         "correlation": corr_result.score,
         "amplitude": amp_result.score,
+        "residual": residual_result.score,
         "phase_overlap": phase_result.score,
     }
     diagnostics: Dict[str, Dict[str, float]] = {
@@ -589,18 +598,9 @@ def score_spectrum(
         "peak_delta": delta_result.diagnostics,
         "correlation": corr_result.diagnostics,
         "amplitude": amp_result.diagnostics,
+        "residual": residual_result.diagnostics,
         "phase_overlap": phase_result.diagnostics,
     }
-
-    if residual_cfg:
-        residual_result = residual_score(
-            measurement,
-            theoretical,
-            tau_rmse=float(residual_cfg.get("tau_rmse", 0.02)),
-            max_rmse=residual_cfg.get("max_rmse"),
-        )
-        component_scores["residual"] = residual_result.score
-        diagnostics["residual"] = residual_result.diagnostics
 
     if measurement_quality is not None:
         component_scores["quality"] = measurement_quality.score
