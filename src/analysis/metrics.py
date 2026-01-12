@@ -577,7 +577,7 @@ def score_spectrum(
     # Phase overlap score (FFT-based)
     phase_result = phase_overlap_score(measurement, theoretical)
     
-    # Residual score (RMSE/MAE fit quality) - computed unconditionally like PyElli
+    # Residual score
     residual_result = residual_score(
         measurement,
         theoretical,
