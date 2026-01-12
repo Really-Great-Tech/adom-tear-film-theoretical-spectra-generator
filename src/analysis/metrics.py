@@ -66,52 +66,43 @@ def _match_peaks(
     tolerance_nm: float,
 ) -> Tuple[List[int], List[int], np.ndarray]:
     """
-    Improved peak matching algorithm that finds optimal peak alignments.
+    Peak matching using measurement-order matching to maximize cardinality.
     
-    Uses a greedy approach with sorting to maximize matches and minimize total delta.
-    Matches are made by sorting all possible pairs by distance and selecting the best
-    non-overlapping matches.
+    Processes measurement peaks sequentially, matching each to the closest
+    available theoretical peak within tolerance. This avoids the cardinality
+    loss that greedy-by-delta can cause (where picking smallest deltas first
+    can block matches and reduce total pairs).
+    
+    Example: measurement=[0,4], theoretical=[3,8], tolerance=5
+      - Greedy-by-delta picks (m1,t0,delta=1) first, blocking m0 → 1 match
+      - Measurement-order: m0→t0 (delta=3), m1→t1 (delta=4) → 2 matches
     """
     if measurement_peaks.size == 0 or theoretical_peaks.size == 0:
         return [], [], np.array([], dtype=float)
 
-    # Build all possible matches within tolerance
-    candidate_matches: List[Tuple[int, int, float]] = []
-    for meas_idx, meas_peak in enumerate(measurement_peaks):
-        for theo_idx, theo_peak in enumerate(theoretical_peaks):
-            delta = abs(theo_peak - meas_peak)
-            if delta <= tolerance_nm:
-                candidate_matches.append((meas_idx, theo_idx, delta))
-    
-    if not candidate_matches:
-        return [], [], np.array([], dtype=float)
-    
-    # Sort by delta (best matches first), then by measurement index for stability
-    candidate_matches.sort(key=lambda x: (x[2], x[0]))
-    
-    # Greedily select best non-overlapping matches
     matched_measurement: List[int] = []
     matched_theoretical: List[int] = []
     deltas: List[float] = []
-    used_meas = set()
-    used_theo = set()
-    
-    for meas_idx, theo_idx, delta in candidate_matches:
-        if meas_idx not in used_meas and theo_idx not in used_theo:
+    used_theo: set = set()
+
+    for meas_idx, meas_peak in enumerate(measurement_peaks):
+        best_theo_idx: Optional[int] = None
+        best_delta: float = float('inf')
+
+        for theo_idx, theo_peak in enumerate(theoretical_peaks):
+            if theo_idx in used_theo:
+                continue
+            delta = abs(theo_peak - meas_peak)
+            if delta <= tolerance_nm and delta < best_delta:
+                best_theo_idx = theo_idx
+                best_delta = delta
+
+        if best_theo_idx is not None:
             matched_measurement.append(meas_idx)
-            matched_theoretical.append(theo_idx)
-            deltas.append(delta)
-            used_meas.add(meas_idx)
-            used_theo.add(theo_idx)
-    
-    # Sort results by measurement index for consistency
-    if matched_measurement:
-        sorted_pairs = sorted(zip(matched_measurement, matched_theoretical, deltas))
-        matched_measurement, matched_theoretical, deltas = zip(*sorted_pairs)
-        matched_measurement = list(matched_measurement)
-        matched_theoretical = list(matched_theoretical)
-        deltas = list(deltas)
-    
+            matched_theoretical.append(best_theo_idx)
+            deltas.append(best_delta)
+            used_theo.add(best_theo_idx)
+
     return matched_measurement, matched_theoretical, np.asarray(deltas, dtype=float)
 
 
