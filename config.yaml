@@ -109,15 +109,26 @@ analysis:
       roughness: {window_A: 200, step_A: 25}
       max_refine_candidates: 5000
   metrics:
+    # PyElli-inspired scoring parameters for better ranking performance
     residual:
       tau_rmse: 0.015
       max_rmse: 0.1
     peak_count:
-      wavelength_tolerance_nm: 5.0
+      wavelength_tolerance_nm: 20.0  # Increased from 5.0 to match LTA's effective tolerance
+      max_allowed_excess: 2          # Max extra theoretical peaks before severe penalty
+      min_coverage_ratio: 0.7        # Minimum theo/meas peak ratio
+      excess_penalty_per_peak: 0.2   # Penalty per excess peak over limit
+      coverage_penalty_factor: 0.5   # Multiplier for coverage penalty
     peak_delta:
-      tolerance_nm: 5.0
-      tau_nm: 15.0
-      penalty_unpaired: 0.05
+      tolerance_nm: 20.0             # Increased from 5.0 to match LTA tolerance
+      tau_nm: 15.0                   # Stricter delta scoring
+      penalty_unpaired: 0.04         # Base penalty per unpaired peak
+      extra_penalty_unmatched_measured: 0.02  # Extra penalty for unmatched measured peaks
+    correlation:
+      min_correlation: 0.85          # Minimum acceptable correlation (below = heavily penalized)
+    amplitude:
+      optimal_ratio: 1.0             # Target theoretical/measured oscillation ratio
+      tolerance: 0.3                 # Acceptable deviation from optimal
     phase_overlap:
       resample_points: 1024
       window: "hann"
@@ -128,13 +139,15 @@ analysis:
       tau_roughness_A: 150.0
     composite:
       weights:
-        # Balanced weights: peak matching is important for visual alignment
-        # Based on notebook exploration: peaks/valleys alignment matters for fit quality
-        peak_count: 0.3         # Peak count matching (important for oscillation matching)
-        peak_delta: 0.3         # Peak position alignment (important for phase alignment)
-        phase_overlap: 0.2      # FFT-based phase coherence (reduced weight)
-        residual: 0.1           # RMSE/MAE fit quality
-        quality: 0.1            # Measurement quality score
+        # PyElli-inspired weights for proper ranking performance
+        # Based on reverse engineering of LTA BestFit scoring
+        residual: 0.25          # RMSE/MAE fit quality (25%)
+        peak_count: 0.25        # Peak count matching with penalties (25%)
+        amplitude: 0.20         # Oscillation amplitude matching (20%)
+        correlation: 0.15       # Shape similarity - rejects anti-correlated (15%)
+        peak_delta: 0.15        # Peak position alignment (15%)
+        phase_overlap: 0.0      # Disabled - correlation covers shape matching
+        quality: 0.0            # Disabled - focus on fit quality
         temporal_continuity: 0.0  # Disabled for single measurements
 
 
