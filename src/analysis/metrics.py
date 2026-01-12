@@ -188,6 +188,118 @@ def phase_overlap_score(
     return MetricResult(score=score, diagnostics=diagnostics)
 
 
+def correlation_score(
+    measurement: PreparedMeasurement,
+    theoretical: PreparedTheoreticalSpectrum,
+    *,
+    min_correlation: float = 0.85,
+) -> MetricResult:
+    """
+    Score based on Pearson correlation between measured and theoretical spectra.
+    
+    Critical for rejecting anti-correlated fits. PyElli analysis showed that
+    LTA BestFit achieves 0.99+ correlation on good fits.
+    
+    Args:
+        measurement: Prepared measurement spectrum
+        theoretical: Prepared theoretical spectrum
+        min_correlation: Minimum acceptable correlation (below this, heavily penalized)
+        
+    Returns:
+        MetricResult with correlation-based score
+    """
+    measured = measurement.reflectance
+    theo = theoretical.aligned_reflectance
+    
+    if np.std(measured) < 1e-10 or np.std(theo) < 1e-10:
+        return MetricResult(score=0.0, diagnostics={'correlation': 0.0})
+    
+    correlation = float(np.corrcoef(measured, theo)[0, 1])
+    if np.isnan(correlation):
+        correlation = 0.0
+    
+    # Score calculation based on PyElli approach:
+    # - Negative correlation = 0 (anti-correlated fits rejected)
+    # - Below min_correlation = partial score (max 0.3)
+    # - Above min_correlation = scales from 0.7 to 1.0
+    if correlation < 0:
+        score = 0.0
+    elif correlation < min_correlation:
+        score = (correlation / min_correlation) * 0.3
+    else:
+        score = 0.7 + 0.3 * ((correlation - min_correlation) / (1.0 - min_correlation))
+    
+    score = float(np.clip(score, 0.0, 1.0))
+    
+    diagnostics = {
+        'correlation': correlation,
+        'min_correlation_threshold': min_correlation,
+    }
+    return MetricResult(score=score, diagnostics=diagnostics)
+
+
+def amplitude_score(
+    measurement: PreparedMeasurement,
+    theoretical: PreparedTheoreticalSpectrum,
+    *,
+    optimal_ratio: float = 1.0,
+    tolerance: float = 0.3,
+) -> MetricResult:
+    """
+    Score based on oscillation amplitude matching between measured and theoretical.
+    
+    Ensures the theoretical spectrum has similar oscillation magnitude to measured.
+    Catches "flat line" theoretical spectra and overly oscillating fits.
+    
+    Args:
+        measurement: Prepared measurement spectrum
+        theoretical: Prepared theoretical spectrum
+        optimal_ratio: Target ratio of theoretical/measured oscillation (1.0 = same)
+        tolerance: Acceptable deviation from optimal ratio
+        
+    Returns:
+        MetricResult with amplitude-based score
+    """
+    # Calculate oscillation amplitude (peak-to-peak of detrended signal)
+    meas_oscillation = float(np.ptp(measurement.detrended)) if measurement.detrended.size else 0.0
+    theo_oscillation = float(np.ptp(theoretical.detrended)) if theoretical.detrended.size else 0.0
+    
+    if meas_oscillation < 1e-8:
+        # Measured has no oscillation - can't compare
+        oscillation_ratio = 1.0
+        score = 0.5  # Neutral score
+    else:
+        oscillation_ratio = theo_oscillation / meas_oscillation
+        
+        # Score based on how close ratio is to optimal (1.0)
+        # Score = 1.0 when ratio is optimal, decreases as ratio deviates
+        deviation = abs(oscillation_ratio - optimal_ratio)
+        
+        if deviation <= tolerance:
+            # Within tolerance: high score
+            score = 1.0 - (deviation / tolerance) * 0.3
+        else:
+            # Outside tolerance: penalized
+            score = 0.7 * np.exp(-(deviation - tolerance) / 0.5)
+        
+        # Additional penalties for extreme cases (from PyElli)
+        if oscillation_ratio > 2.0:
+            score *= 0.3  # 70% penalty for 2x+ amplitude
+        elif oscillation_ratio > 1.5:
+            score *= 0.6  # 40% penalty for 1.5x+ amplitude
+        elif oscillation_ratio < 0.3:
+            score *= 0.5  # 50% penalty for very low amplitude (flat line)
+    
+    score = float(np.clip(score, 0.0, 1.0))
+    
+    diagnostics = {
+        'measured_oscillation': meas_oscillation,
+        'theoretical_oscillation': theo_oscillation,
+        'oscillation_ratio': oscillation_ratio,
+    }
+    return MetricResult(score=score, diagnostics=diagnostics)
+
+
 def residual_score(
     measurement: PreparedMeasurement,
     theoretical: PreparedTheoreticalSpectrum,
