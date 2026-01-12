@@ -111,25 +111,68 @@ def peak_count_score(
     theoretical: PreparedTheoreticalSpectrum,
     *,
     tolerance_nm: float,
+    max_allowed_excess: int = 2,
+    min_coverage_ratio: float = 0.7,
+    excess_penalty_per_peak: float = 0.2,
+    coverage_penalty_factor: float = 0.5,
 ) -> MetricResult:
+    """
+    Score based on peak count matching with penalties for excess/missing peaks.
+    
+    Based on PyElli analysis:
+    - Theoretical peaks should be close to measured (within +2/-2)
+    - Too many theoretical peaks is a deal-breaker (severe penalty)
+    - Too few peaks (poor coverage) also penalized
+    
+    Args:
+        measurement: Prepared measurement spectrum
+        theoretical: Prepared theoretical spectrum
+        tolerance_nm: Peak matching tolerance in nm
+        max_allowed_excess: Max extra theoretical peaks before severe penalty
+        min_coverage_ratio: Minimum theo_peaks/meas_peaks ratio
+        excess_penalty_per_peak: Penalty per excess peak over limit
+        coverage_penalty_factor: Multiplier for coverage penalty
+    """
     meas_peaks = measurement.peaks["wavelength"].to_numpy(dtype=float)
     theo_peaks = theoretical.peaks["wavelength"].to_numpy(dtype=float)
 
     matched_meas, matched_theo, _ = _match_peaks(meas_peaks, theo_peaks, tolerance_nm)
 
     meas_count = len(meas_peaks)
+    theo_count = len(theo_peaks)
     matched_count = len(matched_meas)
 
     if meas_count == 0:
-        score = 1.0 if len(theo_peaks) == 0 else 0.0
+        score = 1.0 if theo_count == 0 else 0.0
+        peak_coverage = 1.0
+        peak_excess = 0
     else:
-        score = 1.0 - abs(meas_count - matched_count) / float(meas_count)
+        # Base score: ratio of matched to measured peaks
+        score = matched_count / float(meas_count)
         score = max(0.0, min(1.0, score))
+        
+        # Calculate peak excess (theoretical - measured)
+        peak_excess = theo_count - meas_count
+        peak_coverage = theo_count / float(meas_count)
+        
+        # PENALTY 1: Too many theoretical peaks (from PyElli)
+        # E.g., 13 theoretical vs 7 measured = 6 excess -> SEVERE penalty
+        if peak_excess > max_allowed_excess:
+            excess_over_limit = peak_excess - max_allowed_excess
+            excess_penalty = excess_penalty_per_peak * excess_over_limit
+            score = max(0.0, score - excess_penalty)
+        
+        # PENALTY 2: Too few theoretical peaks (poor coverage)
+        if peak_coverage < min_coverage_ratio:
+            coverage_penalty = (min_coverage_ratio - peak_coverage) * coverage_penalty_factor
+            score = max(0.0, score - coverage_penalty)
 
     diagnostics = {
         "measurement_peaks": float(meas_count),
-        "theoretical_peaks": float(len(theo_peaks)),
+        "theoretical_peaks": float(theo_count),
         "matched_peaks": float(matched_count),
+        "peak_excess": float(peak_excess),
+        "peak_coverage": float(peak_coverage),
     }
     return MetricResult(score=score, diagnostics=diagnostics)
 
@@ -141,7 +184,23 @@ def peak_delta_score(
     tolerance_nm: float,
     tau_nm: float,
     penalty_unpaired: float,
+    extra_penalty_unmatched_measured: float = 0.02,
 ) -> MetricResult:
+    """
+    Score based on peak alignment quality (position delta between matched peaks).
+    
+    Enhanced with PyElli-style penalties:
+    - Base penalty for any unpaired peaks
+    - Extra penalty for unmatched MEASURED peaks (failed to find them in theoretical)
+    
+    Args:
+        measurement: Prepared measurement spectrum
+        theoretical: Prepared theoretical spectrum
+        tolerance_nm: Peak matching tolerance in nm
+        tau_nm: Decay constant for delta scoring (lower = stricter)
+        penalty_unpaired: Base penalty per unpaired peak
+        extra_penalty_unmatched_measured: Extra penalty for unmatched measured peaks
+    """
     meas_peaks = measurement.peaks["wavelength"].to_numpy(dtype=float)
     theo_peaks = theoretical.peaks["wavelength"].to_numpy(dtype=float)
 
@@ -149,9 +208,11 @@ def peak_delta_score(
 
     unmatched_measurement = len(meas_peaks) - len(matched_meas)
     unmatched_theoretical = len(theo_peaks) - len(matched_theo)
+    total_unmatched = unmatched_measurement + unmatched_theoretical
+    
     if deltas.size == 0:
         mean_delta = 0.0
-        if unmatched_measurement == 0 and unmatched_theoretical == 0:
+        if total_unmatched == 0:
             score = 1.0
         else:
             score = 0.0
@@ -159,7 +220,14 @@ def peak_delta_score(
         mean_delta = float(np.mean(deltas))
         score = float(np.exp(-mean_delta / max(tau_nm, 1e-6)))
 
-    penalty = penalty_unpaired * float(unmatched_measurement + unmatched_theoretical)
+    # Base penalty for all unpaired peaks
+    penalty = penalty_unpaired * float(total_unmatched)
+    
+    # Extra penalty for unmatched MEASURED peaks (from PyElli)
+    # These are peaks we failed to find in theoretical - more critical
+    if unmatched_measurement > 0:
+        penalty += extra_penalty_unmatched_measured * float(unmatched_measurement)
+    
     score = max(0.0, min(1.0, score - penalty))
 
     diagnostics = {
@@ -167,6 +235,7 @@ def peak_delta_score(
         "mean_delta_nm": mean_delta,
         "unpaired_measurement": float(unmatched_measurement),
         "unpaired_theoretical": float(unmatched_theoretical),
+        "total_unmatched": float(total_unmatched),
     }
     return MetricResult(score=score, diagnostics=diagnostics)
 
@@ -184,6 +253,118 @@ def phase_overlap_score(
         "coherence": float(abs(numerator)),
         "norm_reference": float(np.linalg.norm(reference_fft)),
         "norm_candidate": float(np.linalg.norm(candidate_fft)),
+    }
+    return MetricResult(score=score, diagnostics=diagnostics)
+
+
+def correlation_score(
+    measurement: PreparedMeasurement,
+    theoretical: PreparedTheoreticalSpectrum,
+    *,
+    min_correlation: float = 0.85,
+) -> MetricResult:
+    """
+    Score based on Pearson correlation between measured and theoretical spectra.
+    
+    Critical for rejecting anti-correlated fits. PyElli analysis showed that
+    LTA BestFit achieves 0.99+ correlation on good fits.
+    
+    Args:
+        measurement: Prepared measurement spectrum
+        theoretical: Prepared theoretical spectrum
+        min_correlation: Minimum acceptable correlation (below this, heavily penalized)
+        
+    Returns:
+        MetricResult with correlation-based score
+    """
+    measured = measurement.reflectance
+    theo = theoretical.aligned_reflectance
+    
+    if np.std(measured) < 1e-10 or np.std(theo) < 1e-10:
+        return MetricResult(score=0.0, diagnostics={'correlation': 0.0})
+    
+    correlation = float(np.corrcoef(measured, theo)[0, 1])
+    if np.isnan(correlation):
+        correlation = 0.0
+    
+    # Score calculation based on PyElli approach:
+    # - Negative correlation = 0 (anti-correlated fits rejected)
+    # - Below min_correlation = partial score (max 0.3)
+    # - Above min_correlation = scales from 0.7 to 1.0
+    if correlation < 0:
+        score = 0.0
+    elif correlation < min_correlation:
+        score = (correlation / min_correlation) * 0.3
+    else:
+        score = 0.7 + 0.3 * ((correlation - min_correlation) / (1.0 - min_correlation))
+    
+    score = float(np.clip(score, 0.0, 1.0))
+    
+    diagnostics = {
+        'correlation': correlation,
+        'min_correlation_threshold': min_correlation,
+    }
+    return MetricResult(score=score, diagnostics=diagnostics)
+
+
+def amplitude_score(
+    measurement: PreparedMeasurement,
+    theoretical: PreparedTheoreticalSpectrum,
+    *,
+    optimal_ratio: float = 1.0,
+    tolerance: float = 0.3,
+) -> MetricResult:
+    """
+    Score based on oscillation amplitude matching between measured and theoretical.
+    
+    Ensures the theoretical spectrum has similar oscillation magnitude to measured.
+    Catches "flat line" theoretical spectra and overly oscillating fits.
+    
+    Args:
+        measurement: Prepared measurement spectrum
+        theoretical: Prepared theoretical spectrum
+        optimal_ratio: Target ratio of theoretical/measured oscillation (1.0 = same)
+        tolerance: Acceptable deviation from optimal ratio
+        
+    Returns:
+        MetricResult with amplitude-based score
+    """
+    # Calculate oscillation amplitude (peak-to-peak of detrended signal)
+    meas_oscillation = float(np.ptp(measurement.detrended)) if measurement.detrended.size else 0.0
+    theo_oscillation = float(np.ptp(theoretical.detrended)) if theoretical.detrended.size else 0.0
+    
+    if meas_oscillation < 1e-8:
+        # Measured has no oscillation - can't compare
+        oscillation_ratio = 1.0
+        score = 0.5  # Neutral score
+    else:
+        oscillation_ratio = theo_oscillation / meas_oscillation
+        
+        # Score based on how close ratio is to optimal (1.0)
+        # Score = 1.0 when ratio is optimal, decreases as ratio deviates
+        deviation = abs(oscillation_ratio - optimal_ratio)
+        
+        if deviation <= tolerance:
+            # Within tolerance: high score
+            score = 1.0 - (deviation / tolerance) * 0.3
+        else:
+            # Outside tolerance: penalized
+            score = 0.7 * np.exp(-(deviation - tolerance) / 0.5)
+        
+        # Additional penalties for extreme cases (from PyElli)
+        if oscillation_ratio > 2.0:
+            score *= 0.3  # 70% penalty for 2x+ amplitude
+        elif oscillation_ratio > 1.5:
+            score *= 0.6  # 40% penalty for 1.5x+ amplitude
+        elif oscillation_ratio < 0.3:
+            score *= 0.5  # 50% penalty for very low amplitude (flat line)
+    
+    score = float(np.clip(score, 0.0, 1.0))
+    
+    diagnostics = {
+        'measured_oscillation': meas_oscillation,
+        'theoretical_oscillation': theo_oscillation,
+        'oscillation_ratio': oscillation_ratio,
     }
     return MetricResult(score=score, diagnostics=diagnostics)
 
@@ -339,46 +520,87 @@ def score_spectrum(
     measurement_quality: Optional[MetricResult] = None,
     previous_params: Optional[Dict[str, float]] = None,
 ) -> SpectrumScore:
+    """
+    Score a theoretical spectrum against a measurement using multiple metrics.
+    
+    Uses PyElli-inspired scoring with:
+    - Peak count matching (with excess/coverage penalties)
+    - Peak delta (alignment quality)
+    - Correlation (shape similarity - rejects anti-correlated fits)
+    - Amplitude (oscillation magnitude matching)
+    - Residual (RMSE/MAE fit quality)
+    """
     peak_count_cfg = metrics_cfg.get("peak_count", {})
     peak_delta_cfg = metrics_cfg.get("peak_delta", {})
+    correlation_cfg = metrics_cfg.get("correlation", {})
+    amplitude_cfg = metrics_cfg.get("amplitude", {})
     residual_cfg = metrics_cfg.get("residual", {})
     temporal_cfg = metrics_cfg.get("temporal_continuity", {})
     weights_cfg = metrics_cfg.get("composite", {}).get("weights", {})
 
+    # Peak count score with excess/coverage penalties
     count_result = peak_count_score(
         measurement,
         theoretical,
-        tolerance_nm=float(peak_count_cfg.get("wavelength_tolerance_nm", 5.0)),
+        tolerance_nm=float(peak_count_cfg.get("wavelength_tolerance_nm", 20.0)),
+        max_allowed_excess=int(peak_count_cfg.get("max_allowed_excess", 2)),
+        min_coverage_ratio=float(peak_count_cfg.get("min_coverage_ratio", 0.7)),
+        excess_penalty_per_peak=float(peak_count_cfg.get("excess_penalty_per_peak", 0.2)),
+        coverage_penalty_factor=float(peak_count_cfg.get("coverage_penalty_factor", 0.5)),
     )
+    
+    # Peak delta score with enhanced unpaired penalties
     delta_result = peak_delta_score(
         measurement,
         theoretical,
-        tolerance_nm=float(peak_delta_cfg.get("tolerance_nm", 5.0)),
+        tolerance_nm=float(peak_delta_cfg.get("tolerance_nm", 20.0)),
         tau_nm=float(peak_delta_cfg.get("tau_nm", 15.0)),
-        penalty_unpaired=float(peak_delta_cfg.get("penalty_unpaired", 0.05)),
+        penalty_unpaired=float(peak_delta_cfg.get("penalty_unpaired", 0.04)),
+        extra_penalty_unmatched_measured=float(peak_delta_cfg.get("extra_penalty_unmatched_measured", 0.02)),
     )
+    
+    # Correlation score (critical for rejecting anti-correlated fits)
+    corr_result = correlation_score(
+        measurement,
+        theoretical,
+        min_correlation=float(correlation_cfg.get("min_correlation", 0.85)),
+    )
+    
+    # Amplitude score (oscillation matching)
+    amp_result = amplitude_score(
+        measurement,
+        theoretical,
+        optimal_ratio=float(amplitude_cfg.get("optimal_ratio", 1.0)),
+        tolerance=float(amplitude_cfg.get("tolerance", 0.3)),
+    )
+    
+    # Phase overlap score (FFT-based)
     phase_result = phase_overlap_score(measurement, theoretical)
+    
+    # Residual score
+    residual_result = residual_score(
+        measurement,
+        theoretical,
+        tau_rmse=float(residual_cfg.get("tau_rmse", 0.015)),
+        max_rmse=residual_cfg.get("max_rmse"),
+    )
 
     component_scores: Dict[str, float] = {
         "peak_count": count_result.score,
         "peak_delta": delta_result.score,
+        "correlation": corr_result.score,
+        "amplitude": amp_result.score,
+        "residual": residual_result.score,
         "phase_overlap": phase_result.score,
     }
     diagnostics: Dict[str, Dict[str, float]] = {
         "peak_count": count_result.diagnostics,
         "peak_delta": delta_result.diagnostics,
+        "correlation": corr_result.diagnostics,
+        "amplitude": amp_result.diagnostics,
+        "residual": residual_result.diagnostics,
         "phase_overlap": phase_result.diagnostics,
     }
-
-    if residual_cfg:
-        residual_result = residual_score(
-            measurement,
-            theoretical,
-            tau_rmse=float(residual_cfg.get("tau_rmse", 0.02)),
-            max_rmse=residual_cfg.get("max_rmse"),
-        )
-        component_scores["residual"] = residual_result.score
-        diagnostics["residual"] = residual_result.diagnostics
 
     if measurement_quality is not None:
         component_scores["quality"] = measurement_quality.score
@@ -413,6 +635,8 @@ __all__ = [
     "peak_count_score",
     "peak_delta_score",
     "phase_overlap_score",
+    "correlation_score",
+    "amplitude_score",
     "residual_score",
     "measurement_quality_score",
     "temporal_continuity_score",

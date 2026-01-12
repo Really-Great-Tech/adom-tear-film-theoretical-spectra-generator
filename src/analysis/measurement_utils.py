@@ -477,7 +477,19 @@ def prepare_theoretical_spectrum(
     wavelengths = wavelengths[mask]
     reflectance = reflectance[mask]
 
-    aligned = np.interp(measurement.wavelengths, wavelengths, reflectance)
+    # Interpolate theoretical to measurement wavelengths
+    interpolated = np.interp(measurement.wavelengths, wavelengths, reflectance)
+    
+    # Align theoretical to measured using linear regression (handles baseline + amplitude)
+    # This makes the theoretical spectrum 'flow' with the measured spectrum visually
+    aligned = align_spectrum_linear_regression(
+        interpolated,
+        measurement.reflectance,
+        measurement.wavelengths,
+        focus_min=wl_min,
+        focus_max=wl_max,
+    )
+    
     detrended = detrend_signal(measurement.wavelengths, aligned, cutoff, order)
     
     # Try detecting peaks on both detrended and raw signals, then combine
@@ -518,7 +530,15 @@ def prepare_theoretical_spectrum(
         # No peaks found - return empty dataframe with correct structure
         peaks = pd.DataFrame(columns=["wavelength", "amplitude", "prominence"])
 
-    resampled = np.interp(measurement.resampled_wavelengths, wavelengths, reflectance)
+    # Also align resampled spectrum for FFT analysis consistency
+    resampled_interp = np.interp(measurement.resampled_wavelengths, wavelengths, reflectance)
+    resampled = align_spectrum_linear_regression(
+        resampled_interp,
+        measurement.resampled_reflectance,
+        measurement.resampled_wavelengths,
+        focus_min=wl_min,
+        focus_max=wl_max,
+    )
     resampled_detrended = detrend_signal(
         measurement.resampled_wavelengths, resampled, cutoff, order
     )
@@ -536,6 +556,100 @@ def prepare_theoretical_spectrum(
         resampled_detrended=resampled_detrended,
         fft_spectrum=fft_values,
     )
+
+
+def align_spectrum_linear_regression(
+    theoretical: np.ndarray,
+    measured: np.ndarray,
+    wavelengths: np.ndarray,
+    focus_min: float = 600.0,
+    focus_max: float = 1120.0,
+) -> np.ndarray:
+    """
+    Align theoretical spectrum to measured using linear regression.
+    
+    Fits: theoretical_aligned = a * theoretical + b
+    This handles both amplitude AND baseline differences, making the
+    theoretical spectrum 'flow' with the measured spectrum visually.
+    
+    Args:
+        theoretical: Theoretical reflectance values
+        measured: Measured reflectance values (same length as theoretical)
+        wavelengths: Wavelength array (same length as theoretical/measured)
+        focus_min: Minimum wavelength for focus region (nm)
+        focus_max: Maximum wavelength for focus region (nm)
+        
+    Returns:
+        Aligned theoretical spectrum (same length as input)
+    """
+    mask = (wavelengths >= focus_min) & (wavelengths <= focus_max)
+    
+    if mask.sum() < 10:
+        # Fallback to simple mean scaling if insufficient data
+        scale = np.mean(measured) / np.mean(theoretical) if np.mean(theoretical) > 0 else 1.0
+        return theoretical * scale
+    
+    meas_fit = measured[mask]
+    theo_fit = theoretical[mask]
+    
+    if np.std(theo_fit) < 1e-10:
+        return theoretical
+    
+    # Linear regression: measured ≈ a * theoretical + b
+    design_matrix = np.vstack([theo_fit, np.ones_like(theo_fit)]).T
+    try:
+        coefficients, _, _, _ = np.linalg.lstsq(design_matrix, meas_fit, rcond=None)
+        scale_factor, offset = coefficients
+        
+        # Apply transformation to full spectrum
+        aligned = scale_factor * theoretical + offset
+        
+        # Ensure non-negative reflectance
+        return np.clip(aligned, 0, None)
+    except Exception:
+        # Fallback to simple scaling
+        scale = np.mean(measured) / np.mean(theoretical) if np.mean(theoretical) > 0 else 1.0
+        return theoretical * scale
+
+
+def align_spectrum_proportional(
+    theoretical: np.ndarray,
+    measured: np.ndarray,
+    wavelengths: np.ndarray,
+    focus_min: float = 600.0,
+    focus_max: float = 1120.0,
+) -> np.ndarray:
+    """
+    Scale theoretical spectrum using optimal least-squares proportional scaling.
+    
+    Minimizes ||measured - scale * theoretical||^2 in the focus region.
+    Simpler than linear regression but doesn't correct baseline offset.
+    
+    Args:
+        theoretical: Theoretical reflectance values
+        measured: Measured reflectance values (same length as theoretical)
+        wavelengths: Wavelength array (same length as theoretical/measured)
+        focus_min: Minimum wavelength for focus region (nm)
+        focus_max: Maximum wavelength for focus region (nm)
+        
+    Returns:
+        Scaled theoretical spectrum
+    """
+    mask = (wavelengths >= focus_min) & (wavelengths <= focus_max)
+    
+    if mask.sum() < 10:
+        scale = np.mean(measured) / np.mean(theoretical) if np.mean(theoretical) > 0 else 1.0
+        return theoretical * scale
+    
+    meas_focus = measured[mask]
+    theo_focus = theoretical[mask]
+    
+    if np.std(theo_focus) < 1e-10:
+        return theoretical
+    
+    # Optimal scale: scale = (measured · theoretical) / (theoretical · theoretical)
+    scale = np.dot(meas_focus, theo_focus) / np.dot(theo_focus, theo_focus)
+    return theoretical * scale
 
 
 __all__ = [
@@ -557,4 +671,6 @@ __all__ = [
     "compute_fft_artifacts",
     "prepare_measurement",
     "prepare_theoretical_spectrum",
+    "align_spectrum_linear_regression",
+    "align_spectrum_proportional",
 ]

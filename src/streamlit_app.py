@@ -53,6 +53,7 @@ from analysis import (
     SpectrumScore,
 )
 from analysis.metrics import _match_peaks
+from analysis.measurement_utils import align_spectrum_linear_regression
 
 from tear_film_generator import (
     load_config,
@@ -971,14 +972,22 @@ def create_comparison_plot(theoretical_wl: np.ndarray, theoretical_spec: np.ndar
     wl_min = float(wavelength_range_cfg.get("min", 600))
     wl_max = float(wavelength_range_cfg.get("max", 1120))
     
-    # Filter data to wavelength range for proper y-axis auto-scaling
+    # Filter measured data to wavelength range
     meas_mask = (measured_df['wavelength'] >= wl_min) & (measured_df['wavelength'] <= wl_max)
-    meas_wl_filtered = measured_df.loc[meas_mask, 'wavelength']
-    meas_refl_filtered = measured_df.loc[meas_mask, 'reflectance']
+    meas_wl_filtered = measured_df.loc[meas_mask, 'wavelength'].values
+    meas_refl_filtered = measured_df.loc[meas_mask, 'reflectance'].values
     
-    theo_mask = (theoretical_wl >= wl_min) & (theoretical_wl <= wl_max)
-    theo_wl_filtered = theoretical_wl[theo_mask]
-    theo_spec_filtered = theoretical_spec[theo_mask]
+    # Interpolate theoretical to measured wavelengths for alignment
+    theo_interp = np.interp(meas_wl_filtered, theoretical_wl, theoretical_spec)
+    
+    # Align theoretical spectrum to measured using linear regression (handles baseline + amplitude)
+    theo_aligned = align_spectrum_linear_regression(
+        theo_interp,
+        meas_refl_filtered,
+        meas_wl_filtered,
+        focus_min=wl_min,
+        focus_max=wl_max,
+    )
     
     fig = go.Figure()
     
@@ -997,15 +1006,24 @@ def create_comparison_plot(theoretical_wl: np.ndarray, theoretical_spec: np.ndar
     
     # Add theoretical spectrum(s) based on toggle
     if show_both_theoretical and bestfit_df is not None:
-        # Filter bestfit data
-        bf_mask = (bestfit_df['wavelength'] >= wl_min) & (bestfit_df['wavelength'] <= wl_max)
-        bf_wl_filtered = bestfit_df.loc[bf_mask, 'wavelength']
-        bf_refl_filtered = bestfit_df.loc[bf_mask, 'reflectance']
+        # Interpolate and align bestfit data to measured wavelengths
+        bf_interp = np.interp(
+            meas_wl_filtered,
+            bestfit_df['wavelength'].values,
+            bestfit_df['reflectance'].values
+        )
+        bf_aligned = align_spectrum_linear_regression(
+            bf_interp,
+            meas_refl_filtered,
+            meas_wl_filtered,
+            focus_min=wl_min,
+            focus_max=wl_max,
+        )
         
-        # Show both LTA theoretical and BestFit
+        # Show both LTA theoretical (aligned) and BestFit (aligned)
         fig.add_trace(go.Scatter(
-            x=theo_wl_filtered,
-            y=theo_spec_filtered,
+            x=meas_wl_filtered,
+            y=theo_aligned,
             mode='lines',
             name=f'LTA Theoretical (L={lipid_val:.0f}, A={aqueous_val:.0f}, R={rough_val:.0f})',
             line=dict(
@@ -1016,8 +1034,8 @@ def create_comparison_plot(theoretical_wl: np.ndarray, theoretical_spec: np.ndar
             hovertemplate='λ=%{x:.1f}nm<br>R=%{y:.4f}<br>LTA Theoretical<extra></extra>'
         ))
         fig.add_trace(go.Scatter(
-            x=bf_wl_filtered,
-            y=bf_refl_filtered,
+            x=meas_wl_filtered,
+            y=bf_aligned,
             mode='lines',
             name='LTA BestFit',
             line=dict(
@@ -1028,15 +1046,24 @@ def create_comparison_plot(theoretical_wl: np.ndarray, theoretical_spec: np.ndar
             hovertemplate='λ=%{x:.1f}nm<br>R=%{y:.4f}<br>LTA BestFit<extra></extra>'
         ))
     elif show_bestfit and bestfit_df is not None:
-        # Filter bestfit data
-        bf_mask = (bestfit_df['wavelength'] >= wl_min) & (bestfit_df['wavelength'] <= wl_max)
-        bf_wl_filtered = bestfit_df.loc[bf_mask, 'wavelength']
-        bf_refl_filtered = bestfit_df.loc[bf_mask, 'reflectance']
+        # Interpolate and align bestfit data
+        bf_interp = np.interp(
+            meas_wl_filtered,
+            bestfit_df['wavelength'].values,
+            bestfit_df['reflectance'].values
+        )
+        bf_aligned = align_spectrum_linear_regression(
+            bf_interp,
+            meas_refl_filtered,
+            meas_wl_filtered,
+            focus_min=wl_min,
+            focus_max=wl_max,
+        )
         
-        # Show only BestFit
+        # Show only BestFit (aligned)
         fig.add_trace(go.Scatter(
-            x=bf_wl_filtered,
-            y=bf_refl_filtered,
+            x=meas_wl_filtered,
+            y=bf_aligned,
             mode='lines',
             name='LTA BestFit',
             line=dict(
@@ -1047,10 +1074,10 @@ def create_comparison_plot(theoretical_wl: np.ndarray, theoretical_spec: np.ndar
             hovertemplate='λ=%{x:.1f}nm<br>R=%{y:.4f}<br>LTA BestFit<extra></extra>'
         ))
     else:
-        # Show only LTA theoretical (default)
+        # Show only LTA theoretical (aligned) - default
         fig.add_trace(go.Scatter(
-            x=theo_wl_filtered,
-            y=theo_spec_filtered,
+            x=meas_wl_filtered,
+            y=theo_aligned,
             mode='lines',
             name=f'Theoretical (L={lipid_val:.0f}, A={aqueous_val:.0f}, R={rough_val:.0f})',
             line=dict(
