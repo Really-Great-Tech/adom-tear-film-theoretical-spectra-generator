@@ -520,34 +520,75 @@ def score_spectrum(
     measurement_quality: Optional[MetricResult] = None,
     previous_params: Optional[Dict[str, float]] = None,
 ) -> SpectrumScore:
+    """
+    Score a theoretical spectrum against a measurement using multiple metrics.
+    
+    Uses PyElli-inspired scoring with:
+    - Peak count matching (with excess/coverage penalties)
+    - Peak delta (alignment quality)
+    - Correlation (shape similarity - rejects anti-correlated fits)
+    - Amplitude (oscillation magnitude matching)
+    - Residual (RMSE/MAE fit quality)
+    """
     peak_count_cfg = metrics_cfg.get("peak_count", {})
     peak_delta_cfg = metrics_cfg.get("peak_delta", {})
+    correlation_cfg = metrics_cfg.get("correlation", {})
+    amplitude_cfg = metrics_cfg.get("amplitude", {})
     residual_cfg = metrics_cfg.get("residual", {})
     temporal_cfg = metrics_cfg.get("temporal_continuity", {})
     weights_cfg = metrics_cfg.get("composite", {}).get("weights", {})
 
+    # Peak count score with excess/coverage penalties
     count_result = peak_count_score(
         measurement,
         theoretical,
-        tolerance_nm=float(peak_count_cfg.get("wavelength_tolerance_nm", 5.0)),
+        tolerance_nm=float(peak_count_cfg.get("wavelength_tolerance_nm", 20.0)),
+        max_allowed_excess=int(peak_count_cfg.get("max_allowed_excess", 2)),
+        min_coverage_ratio=float(peak_count_cfg.get("min_coverage_ratio", 0.7)),
+        excess_penalty_per_peak=float(peak_count_cfg.get("excess_penalty_per_peak", 0.2)),
+        coverage_penalty_factor=float(peak_count_cfg.get("coverage_penalty_factor", 0.5)),
     )
+    
+    # Peak delta score with enhanced unpaired penalties
     delta_result = peak_delta_score(
         measurement,
         theoretical,
-        tolerance_nm=float(peak_delta_cfg.get("tolerance_nm", 5.0)),
+        tolerance_nm=float(peak_delta_cfg.get("tolerance_nm", 20.0)),
         tau_nm=float(peak_delta_cfg.get("tau_nm", 15.0)),
-        penalty_unpaired=float(peak_delta_cfg.get("penalty_unpaired", 0.05)),
+        penalty_unpaired=float(peak_delta_cfg.get("penalty_unpaired", 0.04)),
+        extra_penalty_unmatched_measured=float(peak_delta_cfg.get("extra_penalty_unmatched_measured", 0.02)),
     )
+    
+    # Correlation score (critical for rejecting anti-correlated fits)
+    corr_result = correlation_score(
+        measurement,
+        theoretical,
+        min_correlation=float(correlation_cfg.get("min_correlation", 0.85)),
+    )
+    
+    # Amplitude score (oscillation matching)
+    amp_result = amplitude_score(
+        measurement,
+        theoretical,
+        optimal_ratio=float(amplitude_cfg.get("optimal_ratio", 1.0)),
+        tolerance=float(amplitude_cfg.get("tolerance", 0.3)),
+    )
+    
+    # Phase overlap score (FFT-based)
     phase_result = phase_overlap_score(measurement, theoretical)
 
     component_scores: Dict[str, float] = {
         "peak_count": count_result.score,
         "peak_delta": delta_result.score,
+        "correlation": corr_result.score,
+        "amplitude": amp_result.score,
         "phase_overlap": phase_result.score,
     }
     diagnostics: Dict[str, Dict[str, float]] = {
         "peak_count": count_result.diagnostics,
         "peak_delta": delta_result.diagnostics,
+        "correlation": corr_result.diagnostics,
+        "amplitude": amp_result.diagnostics,
         "phase_overlap": phase_result.diagnostics,
     }
 
@@ -594,6 +635,8 @@ __all__ = [
     "peak_count_score",
     "peak_delta_score",
     "phase_overlap_score",
+    "correlation_score",
+    "amplitude_score",
     "residual_score",
     "measurement_quality_score",
     "temporal_continuity_score",
