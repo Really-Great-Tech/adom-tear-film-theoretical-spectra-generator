@@ -48,8 +48,35 @@ streamlit_logger.setLevel(logging.ERROR)  # Only show errors, not warnings
 # Suppress ScriptRunContext warnings from streamlit runtime
 logging.getLogger('streamlit.runtime.scriptrunner_utils.script_run_context').setLevel(logging.ERROR)
 logging.getLogger('streamlit.runtime.scriptrunner_utils').setLevel(logging.ERROR)
-# Suppress ScriptRunContext warnings from streamlit runtime
-logging.getLogger('streamlit.runtime.scriptrunner_utils.script_run_context').setLevel(logging.ERROR)
+# Suppress all streamlit runtime loggers that might produce ScriptRunContext warnings
+logging.getLogger('streamlit.runtime').setLevel(logging.ERROR)
+logging.getLogger('streamlit.runtime.scriptrunner').setLevel(logging.ERROR)
+logging.getLogger('streamlit.runtime.scriptrunner.script_runner').setLevel(logging.ERROR)
+
+# Add a custom filter to suppress ScriptRunContext warnings at the handler level
+class ScriptRunContextFilter(logging.Filter):
+    def filter(self, record):
+        msg = record.getMessage()
+        return 'ScriptRunContext' not in msg and 'missing ScriptRunContext' not in msg
+
+# Apply filter to root logger and all streamlit loggers
+root_logger = logging.getLogger()
+root_logger.setLevel(logging.ERROR)  # Suppress all warnings at root level
+for handler in root_logger.handlers:
+    handler.addFilter(ScriptRunContextFilter())
+
+# Suppress all streamlit-related loggers
+for logger_name in ['streamlit', 'streamlit.runtime', 'streamlit.runtime.scriptrunner', 
+                    'streamlit.runtime.scriptrunner.script_runner',
+                    'streamlit.runtime.scriptrunner_utils', 
+                    'streamlit.runtime.scriptrunner_utils.script_run_context']:
+    logger = logging.getLogger(logger_name)
+    logger.setLevel(logging.ERROR)
+    for handler in logger.handlers:
+        handler.addFilter(ScriptRunContextFilter())
+    
+# Also add filter to any future handlers
+logging.getLogger().addFilter(ScriptRunContextFilter())
 
 # Add parent paths for imports
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
@@ -1297,9 +1324,10 @@ if selected_file and Path(selected_file).exists():
                 mucus_max = st.session_state.get('grid_mu_max', 7000)  # Updated to 7000
                 mucus_step = st.session_state.get('grid_mu_step', 100)  # Use 100 as default
                 
-                # Always use Dynamic Search with 10,000 max combinations
+                # Always use Dynamic Search with 25,000 max combinations
+                # Increased to allow more thorough search and better peak alignment
                 strategy = 'Dynamic Search'
-                max_combinations = 10000
+                max_combinations = 25000
                 
                 return grid_search.run_grid_search(
                     wavelengths, measured,
@@ -1731,6 +1759,102 @@ with tabs[0]:
             with mcols_bestfit[3]:
                 matched_peaks = int(computed_data['bestfit_score_result'].get('matched_peaks', 0))
                 st.metric('Matched Peaks', f'{matched_peaks}')
+            
+            # === DEVIATION SCORE: PyElli vs LTA Comparison ===
+            st.markdown('---')
+            st.markdown('#### 📐 PyElli vs LTA Deviation Score')
+            
+            # Calculate deviation components
+            pyelli_theo = computed_data.get('theoretical_display')
+            lta_bestfit = computed_data.get('bestfit_display')
+            
+            if pyelli_theo is not None and lta_bestfit is not None and len(pyelli_theo) > 0 and len(lta_bestfit) > 0:
+                # Ensure same length
+                min_len = min(len(pyelli_theo), len(lta_bestfit))
+                pyelli_theo_aligned = pyelli_theo[:min_len]
+                lta_bestfit_aligned = lta_bestfit[:min_len]
+                
+                # 1. MAPE between PyElli and LTA spectra (avoid division by zero)
+                lta_abs = np.abs(lta_bestfit_aligned)
+                valid_mask = lta_abs > 1e-10
+                if valid_mask.any():
+                    mape = float(np.mean(np.abs(pyelli_theo_aligned[valid_mask] - lta_bestfit_aligned[valid_mask]) / lta_abs[valid_mask])) * 100
+                else:
+                    mape = 0.0
+                
+                # 2. Peak match rate deviation
+                # Compare PyElli matched peaks to LTA's peak count (as reference)
+                pyelli_matched = computed_data['pyelli_score_result'].get('matched_peaks', 0)
+                lta_peaks = computed_data['bestfit_score_result'].get('measurement_peaks', 0)  # LTA matched peaks against measured
+                if lta_peaks > 0:
+                    peak_match_deviation = (1.0 - (pyelli_matched / lta_peaks)) * 100
+                    peak_match_deviation = max(0.0, peak_match_deviation)  # Can't be negative
+                else:
+                    peak_match_deviation = 0.0
+                
+                # 3. Alignment deviation (mean_delta relative to typical peak spacing ~50nm)
+                pyelli_mean_delta = computed_data['pyelli_score_result'].get('mean_delta_nm', 0.0)
+                reference_spacing = 50.0  # Typical peak-to-peak spacing in nm
+                alignment_deviation = (pyelli_mean_delta / reference_spacing) * 100
+                
+                # Composite deviation score (weighted average)
+                # MAPE: 40%, Peak Match: 30%, Alignment: 30%
+                composite_deviation = 0.40 * mape + 0.30 * peak_match_deviation + 0.30 * alignment_deviation
+                
+                # Determine status icon and color
+                if composite_deviation <= 10:
+                    status_icon = '🟢'
+                    status_color = '#16a34a'
+                    status_text = 'Excellent Match'
+                elif composite_deviation <= 15:
+                    status_icon = '🟡'
+                    status_color = '#ca8a04'
+                    status_text = 'Good Match'
+                elif composite_deviation <= 25:
+                    status_icon = '🟠'
+                    status_color = '#ea580c'
+                    status_text = 'Moderate Deviation'
+                else:
+                    status_icon = '🔴'
+                    status_color = '#dc2626'
+                    status_text = 'High Deviation'
+                
+                # Display composite deviation prominently
+                dev_cols = st.columns([2, 1, 1, 1])
+                with dev_cols[0]:
+                    st.markdown(f'''
+                    <div style="background: linear-gradient(135deg, #f0f9ff 0%, #e0f2fe 100%); 
+                                border: 2px solid {status_color}; 
+                                border-radius: 12px; 
+                                padding: 16px; 
+                                text-align: center;">
+                        <div style="font-size: 0.75rem; color: #64748b; text-transform: uppercase; letter-spacing: 0.05em;">
+                            PyElli vs LTA Deviation
+                        </div>
+                        <div style="font-size: 2.2rem; font-weight: 700; color: {status_color}; margin: 4px 0;">
+                            {status_icon} {composite_deviation:.1f}%
+                        </div>
+                        <div style="font-size: 0.85rem; color: {status_color}; font-weight: 500;">
+                            {status_text}
+                        </div>
+                    </div>
+                    ''', unsafe_allow_html=True)
+                with dev_cols[1]:
+                    st.metric('MAPE', f'{mape:.1f}%', help='Mean Absolute Percentage Error between PyElli and LTA spectra')
+                with dev_cols[2]:
+                    st.metric('Peak Match Δ', f'{peak_match_deviation:.1f}%', help='Deviation in matched peak count vs LTA')
+                with dev_cols[3]:
+                    st.metric('Alignment Δ', f'{alignment_deviation:.1f}%', help='Peak alignment deviation (mean delta / 50nm reference)')
+                
+                # Explanation
+                st.markdown(f'''
+                <div style="background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 8px; padding: 12px; margin-top: 12px; font-size: 0.85rem; color: #64748b;">
+                    <strong>Target:</strong> ≤10% deviation indicates PyElli's best fit closely matches LTA's best fit.<br>
+                    <strong>Formula:</strong> 40% × MAPE + 30% × Peak Match Δ + 30% × Alignment Δ
+                </div>
+                ''', unsafe_allow_html=True)
+            else:
+                st.info('Deviation score requires both PyElli theoretical and LTA BestFit spectra to be available.')
         else:
             # Show single set of metrics
             mcols = st.columns(7)
@@ -1772,6 +1896,8 @@ with tabs[0]:
                 'Score': f'{r.score:.3f}',
                 'Corr': f'{r.correlation:.3f}',
                 'RMSE': f'{r.rmse:.5f}',
+                'Osc Ratio': f'{r.oscillation_ratio:.2f}',  # CRITICAL: Show amplitude match
+                'Matched': r.matched_peaks,
                 'Quality': get_quality(r.score)
             } for i, r in enumerate(st.session_state.autofit_results)])
             
@@ -2161,7 +2287,7 @@ with tabs[1]:
             if show_both_amp and has_bestfit_amp:
                 # Show metrics for both PyElli and BestFit
                 st.markdown('#### PyElli Theoretical')
-                mcols_pyelli_amp = st.columns(5)
+                mcols_pyelli_amp = st.columns(6)
                 with mcols_pyelli_amp[0]:
                     st.metric('Measured Peaks', f'{int(score_result_pyelli.get("measurement_peaks", 0))}')
                 with mcols_pyelli_amp[1]:
@@ -2171,11 +2297,16 @@ with tabs[1]:
                 with mcols_pyelli_amp[3]:
                     st.metric('Mean Delta', f'{score_result_pyelli.get("mean_delta_nm", 0):.2f} nm')
                 with mcols_pyelli_amp[4]:
+                    # CRITICAL: Show oscillation ratio to debug amplitude issues
+                    osc_ratio = score_result_pyelli.get("oscillation_ratio", 1.0)
+                    osc_icon = '🟢' if 0.7 <= osc_ratio <= 1.5 else ('🟡' if 0.5 <= osc_ratio <= 2.0 else '🔴')
+                    st.metric('Osc Ratio', f'{osc_icon} {osc_ratio:.2f}')
+                with mcols_pyelli_amp[5]:
                     score_icon_amp = '🟢' if score_result_pyelli['score'] >= 0.7 else ('🟡' if score_result_pyelli['score'] >= 0.5 else '🔴')
                     st.metric('Peak Score', f'{score_icon_amp} {score_result_pyelli["score"]:.3f}')
                 
                 st.markdown('#### LTA BestFit')
-                mcols_bestfit_amp = st.columns(5)
+                mcols_bestfit_amp = st.columns(6)
                 with mcols_bestfit_amp[0]:
                     st.metric('Measured Peaks', f'{int(score_result_bestfit.get("measurement_peaks", 0))}')
                 with mcols_bestfit_amp[1]:
@@ -2185,11 +2316,15 @@ with tabs[1]:
                 with mcols_bestfit_amp[3]:
                     st.metric('Mean Delta', f'{score_result_bestfit.get("mean_delta_nm", 0):.2f} nm')
                 with mcols_bestfit_amp[4]:
+                    osc_ratio_bf = score_result_bestfit.get("oscillation_ratio", 1.0)
+                    osc_icon_bf = '🟢' if 0.7 <= osc_ratio_bf <= 1.5 else ('🟡' if 0.5 <= osc_ratio_bf <= 2.0 else '🔴')
+                    st.metric('Osc Ratio', f'{osc_icon_bf} {osc_ratio_bf:.2f}')
+                with mcols_bestfit_amp[5]:
                     score_icon_amp = '🟢' if score_result_bestfit['score'] >= 0.7 else ('🟡' if score_result_bestfit['score'] >= 0.5 else '🔴')
                     st.metric('Peak Score', f'{score_icon_amp} {score_result_bestfit["score"]:.3f}')
             else:
                 # Show single set of metrics
-                mcols_amp = st.columns(5)
+                mcols_amp = st.columns(6)
                 with mcols_amp[0]:
                     st.metric('Measured Peaks', f'{int(score_result_amp.get("measurement_peaks", 0))}')
                 with mcols_amp[1]:
@@ -2199,6 +2334,10 @@ with tabs[1]:
                 with mcols_amp[3]:
                     st.metric('Mean Delta', f'{score_result_amp.get("mean_delta_nm", 0):.2f} nm')
                 with mcols_amp[4]:
+                    osc_ratio_amp = score_result_amp.get("oscillation_ratio", 1.0)
+                    osc_icon_amp = '🟢' if 0.7 <= osc_ratio_amp <= 1.5 else ('🟡' if 0.5 <= osc_ratio_amp <= 2.0 else '🔴')
+                    st.metric('Osc Ratio', f'{osc_icon_amp} {osc_ratio_amp:.2f}')
+                with mcols_amp[5]:
                     score_icon_amp = '🟢' if score_result_amp['score'] >= 0.7 else ('🟡' if score_result_amp['score'] >= 0.5 else '🔴')
                     st.metric('Peak Score', f'{score_icon_amp} {score_result_amp["score"]:.3f}')
             

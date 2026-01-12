@@ -65,27 +65,43 @@ def _match_peaks(
     theoretical_peaks: np.ndarray,
     tolerance_nm: float,
 ) -> Tuple[List[int], List[int], np.ndarray]:
+    """
+    Peak matching using measurement-order matching to maximize cardinality.
+    
+    Processes measurement peaks sequentially, matching each to the closest
+    available theoretical peak within tolerance. This avoids the cardinality
+    loss that greedy-by-delta can cause (where picking smallest deltas first
+    can block matches and reduce total pairs).
+    
+    Example: measurement=[0,4], theoretical=[3,8], tolerance=5
+      - Greedy-by-delta picks (m1,t0,delta=1) first, blocking m0 → 1 match
+      - Measurement-order: m0→t0 (delta=3), m1→t1 (delta=4) → 2 matches
+    """
     if measurement_peaks.size == 0 or theoretical_peaks.size == 0:
         return [], [], np.array([], dtype=float)
 
     matched_measurement: List[int] = []
     matched_theoretical: List[int] = []
     deltas: List[float] = []
+    used_theo: set = set()
 
-    available = set(range(len(theoretical_peaks)))
     for meas_idx, meas_peak in enumerate(measurement_peaks):
-        if not available:
-            break
-        candidates = sorted(available)
-        distances = np.abs(theoretical_peaks[candidates] - meas_peak)
-        best_local_idx = int(np.argmin(distances))
-        theo_idx = candidates[best_local_idx]
-        delta = distances[best_local_idx]
-        if delta <= tolerance_nm:
+        best_theo_idx: Optional[int] = None
+        best_delta: float = float('inf')
+
+        for theo_idx, theo_peak in enumerate(theoretical_peaks):
+            if theo_idx in used_theo:
+                continue
+            delta = abs(theo_peak - meas_peak)
+            if delta <= tolerance_nm and delta < best_delta:
+                best_theo_idx = theo_idx
+                best_delta = delta
+
+        if best_theo_idx is not None:
             matched_measurement.append(meas_idx)
-            matched_theoretical.append(theo_idx)
-            deltas.append(float(delta))
-            available.remove(theo_idx)
+            matched_theoretical.append(best_theo_idx)
+            deltas.append(best_delta)
+            used_theo.add(best_theo_idx)
 
     return matched_measurement, matched_theoretical, np.asarray(deltas, dtype=float)
 
