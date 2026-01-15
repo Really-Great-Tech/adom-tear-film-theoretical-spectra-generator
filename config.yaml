@@ -138,6 +138,17 @@ analysis:
       tau_lipid_nm: 10.0
       tau_aqueous_nm: 30.0
       tau_roughness_A: 150.0
+    bonus_penalty:
+      # PyElli-style dynamic bonus/penalty system
+      # Creates strong separation between excellent and mediocre fits
+      enabled: true
+      excellent_rmse: 0.0015      # Bonus for RMSE <= this (LTA achieves ~0.0006-0.0011)
+      good_rmse: 0.002            # Smaller bonus for RMSE <= this
+      poor_rmse: 0.003            # Penalty for RMSE > this
+      excellent_correlation: 0.98 # Bonus for correlation >= this
+      good_correlation: 0.95      # Smaller bonus for correlation >= this
+      poor_correlation: 0.5       # Heavy penalty for correlation < this
+      min_match_ratio: 0.5        # Penalty if fewer than 50% of peaks matched
     composite:
       weights:
         # PyElli-inspired weights for proper ranking performance

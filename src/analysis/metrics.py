@@ -491,6 +491,118 @@ def composite_score(component_scores: Dict[str, float], weights: Dict[str, float
     return combined / total_weight
 
 
+def apply_bonus_penalty_adjustments(
+    base_composite: float,
+    rmse: float,
+    correlation: float,
+    matched_peaks: int,
+    meas_peak_count: int,
+    *,
+    bonus_cfg: Optional[Dict[str, float]] = None,
+) -> Tuple[float, Dict[str, float]]:
+    """
+    Apply PyElli-style bonus/penalty adjustments to composite score.
+    
+    Creates strong separation between excellent and mediocre fits by applying
+    multiplicative bonuses for excellent metrics and penalties for poor metrics.
+    
+    Args:
+        base_composite: Initial weighted composite score
+        rmse: RMSE value from residual scoring
+        correlation: Correlation coefficient from correlation scoring
+        matched_peaks: Number of matched peaks
+        meas_peak_count: Total measured peaks (for match ratio calculation)
+        bonus_cfg: Optional config for bonus/penalty thresholds
+        
+    Returns:
+        Tuple of (adjusted_score, adjustment_diagnostics)
+    """
+    cfg = bonus_cfg or {}
+    
+    # Configurable thresholds with sensible defaults based on PyElli analysis
+    excellent_rmse_threshold = float(cfg.get('excellent_rmse', 0.0015))
+    good_rmse_threshold = float(cfg.get('good_rmse', 0.002))
+    poor_rmse_threshold = float(cfg.get('poor_rmse', 0.003))
+    
+    excellent_corr_threshold = float(cfg.get('excellent_correlation', 0.98))
+    good_corr_threshold = float(cfg.get('good_correlation', 0.95))
+    poor_corr_threshold = float(cfg.get('poor_correlation', 0.5))
+    
+    min_match_ratio = float(cfg.get('min_match_ratio', 0.5))
+    
+    adjusted = base_composite
+    applied_adjustments: Dict[str, float] = {}
+    
+    # === BONUSES FOR EXCELLENT FITS ===
+    
+    # Bonus for excellent RMSE (LTA achieves ~0.0006-0.0011)
+    if rmse <= excellent_rmse_threshold:
+        bonus = 1.3  # 30% bonus
+        adjusted = min(1.0, adjusted * bonus)
+        applied_adjustments['rmse_excellent_bonus'] = bonus
+    elif rmse <= good_rmse_threshold:
+        bonus = 1.15  # 15% bonus
+        adjusted = min(1.0, adjusted * bonus)
+        applied_adjustments['rmse_good_bonus'] = bonus
+    
+    # Bonus for excellent correlation (LTA achieves 0.99+)
+    if correlation >= excellent_corr_threshold:
+        bonus = 1.2  # 20% bonus
+        adjusted = min(1.0, adjusted * bonus)
+        applied_adjustments['corr_excellent_bonus'] = bonus
+    elif correlation >= good_corr_threshold:
+        bonus = 1.1  # 10% bonus
+        adjusted = min(1.0, adjusted * bonus)
+        applied_adjustments['corr_good_bonus'] = bonus
+    
+    # Combined bonus for excellent correlation AND low RMSE
+    if correlation >= excellent_corr_threshold and rmse <= excellent_rmse_threshold:
+        bonus = 1.15  # Additional 15% bonus
+        adjusted = min(1.0, adjusted * bonus)
+        applied_adjustments['combined_excellent_bonus'] = bonus
+    
+    # Bonus for high peak match ratio
+    if meas_peak_count > 0:
+        match_ratio = matched_peaks / float(meas_peak_count)
+        if match_ratio >= 0.9 and matched_peaks >= 5:
+            bonus = 1.1  # 10% bonus for matching 90%+ peaks
+            adjusted = min(1.0, adjusted * bonus)
+            applied_adjustments['peak_match_bonus'] = bonus
+    
+    # === PENALTIES FOR POOR FITS ===
+    
+    # Penalty for low/negative correlation
+    if correlation < poor_corr_threshold:
+        penalty = 0.3  # 70% penalty
+        adjusted *= penalty
+        applied_adjustments['corr_poor_penalty'] = penalty
+    elif correlation < cfg.get('min_correlation', 0.85):
+        penalty = 0.6  # 40% penalty
+        adjusted *= penalty
+        applied_adjustments['corr_below_min_penalty'] = penalty
+    
+    # Penalty for high RMSE
+    if rmse > poor_rmse_threshold:
+        penalty = 0.4  # 60% penalty
+        adjusted *= penalty
+        applied_adjustments['rmse_poor_penalty'] = penalty
+    
+    # Penalty for insufficient peak matches
+    if meas_peak_count > 0:
+        match_ratio = matched_peaks / float(meas_peak_count)
+        if match_ratio < min_match_ratio:
+            # Scale penalty based on how far below threshold
+            penalty_factor = 1.0 - (match_ratio / min_match_ratio)
+            penalty = 1.0 - 0.5 * penalty_factor  # Up to 50% penalty
+            adjusted *= penalty
+            applied_adjustments['peak_match_penalty'] = penalty
+    
+    adjusted = float(np.clip(adjusted, 0.0, 1.0))
+    applied_adjustments['final_adjustment_ratio'] = adjusted / max(base_composite, 1e-9)
+    
+    return adjusted, applied_adjustments
+
+
 def measurement_quality_score(
     measurement: PreparedMeasurement,
     *,
@@ -688,8 +800,31 @@ def score_spectrum(
         component_scores["temporal_continuity"] = temporal_result.score
         diagnostics["temporal_continuity"] = temporal_result.diagnostics
 
-    composite = composite_score(component_scores, weights_cfg)
-    component_scores["composite"] = composite
+    # Calculate base composite score
+    base_composite = composite_score(component_scores, weights_cfg)
+    
+    # Apply PyElli-style bonus/penalty adjustments
+    bonus_cfg = metrics_cfg.get("bonus_penalty", {})
+    rmse = residual_result.diagnostics.get("rmse", 0.0)
+    correlation = corr_result.diagnostics.get("correlation", 0.0)
+    matched_peaks = int(count_result.diagnostics.get("matched_peaks", 0))
+    meas_peak_count = int(count_result.diagnostics.get("measurement_peaks", 0))
+    
+    if bonus_cfg.get("enabled", True):
+        adjusted_composite, adjustment_diagnostics = apply_bonus_penalty_adjustments(
+            base_composite,
+            rmse,
+            correlation,
+            matched_peaks,
+            meas_peak_count,
+            bonus_cfg=bonus_cfg,
+        )
+        diagnostics["bonus_penalty"] = adjustment_diagnostics
+    else:
+        adjusted_composite = base_composite
+    
+    component_scores["composite"] = adjusted_composite
+    component_scores["composite_base"] = base_composite  # Store pre-adjustment score
 
     return SpectrumScore(
         lipid_nm=lipid_nm,
@@ -712,5 +847,6 @@ __all__ = [
     "measurement_quality_score",
     "temporal_continuity_score",
     "composite_score",
+    "apply_bonus_penalty_adjustments",
     "score_spectrum",
 ]
