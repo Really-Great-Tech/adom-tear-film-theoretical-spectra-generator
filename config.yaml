@@ -111,8 +111,9 @@ analysis:
   metrics:
     # PyElli-inspired scoring parameters for better ranking performance
     residual:
-      tau_rmse: 0.015
-      max_rmse: 0.1
+      tau_rmse: 0.002           # Tightened from 0.015 - LTA achieves RMSE ~0.0006-0.0011
+      max_rmse: 0.005           # Hard cutoff - reject very bad fits (was 0.1)
+      use_regional_weighting: true  # Weight early wavelengths more heavily
     peak_count:
       wavelength_tolerance_nm: 20.0  # Increased from 5.0 to match LTA's effective tolerance
       max_allowed_excess: 2          # Max extra theoretical peaks before severe penalty
