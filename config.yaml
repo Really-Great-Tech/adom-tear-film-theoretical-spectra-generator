@@ -113,9 +113,10 @@ analysis:
       aqueous: {min: 800, max: 12000, step: 200} # Accepted range for aqueous
       roughness: {min: 600, max: 2750, step: 500}  # Accepted range for roughness
     refine:
-      lipid: {window_nm: 20, step_nm: 5}
-      aqueous: {window_nm: 40, step_nm: 10}
-      roughness: {window_A: 200, step_A: 25}
+      # Wider windows and finer steps for better precision (PyElli-inspired)
+      lipid: {window_nm: 30, step_nm: 2}       # Was 20/5 - finer steps find optimal
+      aqueous: {window_nm: 100, step_nm: 5}    # Was 40/10 - wider window, finer step
+      roughness: {window_A: 300, step_A: 15}   # Was 200/25 - wider window, finer step
       max_refine_candidates: 5000
   metrics:
     # PyElli-inspired scoring parameters for better ranking performance
