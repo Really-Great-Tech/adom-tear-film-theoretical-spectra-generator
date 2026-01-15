@@ -916,6 +916,105 @@ def run_inline_grid_search(
     return results_df, evaluated
 
 
+def apply_pyelli_candidate_filtering(
+    results_df: pd.DataFrame,
+    filter_cfg: Optional[Dict[str, Any]] = None,
+) -> pd.DataFrame:
+    """
+    Apply PyElli-style multi-stage candidate filtering for better selection.
+    
+    PyElli doesn't just sort by composite score - it applies strict filters
+    to select candidates with valid peak alignment and physically reasonable
+    oscillation characteristics.
+    
+    Args:
+        results_df: DataFrame of grid search results sorted by score
+        filter_cfg: Configuration for filtering thresholds
+        
+    Returns:
+        Reordered DataFrame with best candidates at top based on multi-criteria selection
+    """
+    if results_df.empty:
+        return results_df
+    
+    cfg = filter_cfg or {}
+    min_match_ratio = float(cfg.get('min_match_ratio', 0.5))
+    max_peak_excess = int(cfg.get('max_peak_excess', 2))
+    min_oscillation_ratio = float(cfg.get('min_oscillation_ratio', 0.7))
+    max_oscillation_ratio = float(cfg.get('max_oscillation_ratio', 1.5))
+    max_mean_delta_nm = float(cfg.get('max_mean_delta_nm', 100.0))
+    
+    # Get column names (they may have prefixes)
+    meas_peaks_col = next((c for c in results_df.columns if 'measurement_peaks' in c), None)
+    theo_peaks_col = next((c for c in results_df.columns if 'theoretical_peaks' in c), None)
+    matched_peaks_col = next((c for c in results_df.columns if 'matched_peaks' in c), None)
+    mean_delta_col = next((c for c in results_df.columns if 'mean_delta_nm' in c), None)
+    osc_ratio_col = next((c for c in results_df.columns if 'oscillation_ratio' in c), None)
+    
+    # Calculate measured peak count for filtering
+    meas_peak_count = 0
+    if meas_peaks_col and meas_peaks_col in results_df.columns:
+        meas_peak_count = int(results_df[meas_peaks_col].iloc[0]) if len(results_df) > 0 else 0
+    
+    min_matched_peaks = max(1, int(meas_peak_count * min_match_ratio))
+    max_theo_peaks = meas_peak_count + max_peak_excess if meas_peak_count > 0 else 999
+    
+    # Stage 1: Filter by minimum matched peaks
+    df = results_df.copy()
+    if matched_peaks_col and matched_peaks_col in df.columns:
+        stage1_mask = df[matched_peaks_col] >= min_matched_peaks
+        stage1_df = df[stage1_mask]
+    else:
+        stage1_df = df
+    
+    # Stage 2: Filter by valid peak alignment (mean_delta_nm < threshold)
+    if mean_delta_col and mean_delta_col in stage1_df.columns and len(stage1_df) > 0:
+        stage2_mask = stage1_df[mean_delta_col] < max_mean_delta_nm
+        stage2_df = stage1_df[stage2_mask]
+    else:
+        stage2_df = stage1_df
+    
+    # Stage 3: Filter by oscillation ratio (reasonable amplitude matching)
+    if osc_ratio_col and osc_ratio_col in stage2_df.columns and len(stage2_df) > 0:
+        stage3_mask = (
+            (stage2_df[osc_ratio_col] >= min_oscillation_ratio) & 
+            (stage2_df[osc_ratio_col] <= max_oscillation_ratio)
+        )
+        stage3_df = stage2_df[stage3_mask]
+    else:
+        stage3_df = stage2_df
+    
+    # Stage 4: Filter by theoretical peak count (not too many extra peaks)
+    if theo_peaks_col and theo_peaks_col in stage3_df.columns and len(stage3_df) > 0:
+        stage4_mask = stage3_df[theo_peaks_col] <= max_theo_peaks
+        stage4_df = stage3_df[stage4_mask]
+    else:
+        stage4_df = stage3_df
+    
+    # Final selection: Among remaining candidates, prefer smallest mean_delta (best alignment)
+    if len(stage4_df) > 0:
+        # Sort by score first, then by mean_delta for tie-breaking
+        sort_cols = ['score_composite']
+        sort_ascending = [False]
+        if mean_delta_col and mean_delta_col in stage4_df.columns:
+            sort_cols.append(mean_delta_col)
+            sort_ascending.append(True)
+        filtered_df = stage4_df.sort_values(sort_cols, ascending=sort_ascending).reset_index(drop=True)
+        
+        # Add the rest of the results (that didn't pass filters) below the filtered ones
+        remaining_indices = set(results_df.index) - set(stage4_df.index)
+        if remaining_indices:
+            remaining_df = results_df.loc[list(remaining_indices)].sort_values(
+                'score_composite', ascending=False
+            )
+            filtered_df = pd.concat([filtered_df, remaining_df], ignore_index=True)
+        
+        return filtered_df
+    
+    # If no candidates pass filters, return original sorted results
+    return results_df
+
+
 def interpolate_measurement_to_theoretical(measured_df: pd.DataFrame, theoretical_wavelengths: np.ndarray) -> np.ndarray:
     """Interpolate measured spectrum to match theoretical wavelength grid."""
     return np.interp(theoretical_wavelengths, measured_df['wavelength'], measured_df['reflectance'])
@@ -2641,6 +2740,14 @@ def main():
                         results_df = results_df.copy()
                         results_df["edge_case_flag"] = False
                         results_df["edge_case_reason"] = ""
+                    
+                    # Apply PyElli-style candidate filtering (if enabled)
+                    candidate_filter_cfg = analysis_cfg.get("candidate_filtering", {})
+                    if candidate_filter_cfg.get("enabled", True):
+                        results_df = apply_pyelli_candidate_filtering(
+                            results_df,
+                            filter_cfg=candidate_filter_cfg,
+                        )
                     
                     # Client Reference Scoring - compare with known client best fits (if enabled)
                     if enable_client_ref and client_lipid is not None:
