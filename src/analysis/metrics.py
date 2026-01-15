@@ -369,19 +369,84 @@ def amplitude_score(
     return MetricResult(score=score, diagnostics=diagnostics)
 
 
+def _calculate_regional_rmse(
+    residual: np.ndarray,
+    mask: np.ndarray,
+) -> float:
+    """Calculate RMSE for a specific wavelength region."""
+    if not mask.any():
+        return 0.0
+    return float(np.sqrt(np.mean(residual[mask] ** 2)))
+
+
 def residual_score(
     measurement: PreparedMeasurement,
     theoretical: PreparedTheoreticalSpectrum,
     *,
     tau_rmse: float,
     max_rmse: Optional[float] = None,
+    use_regional_weighting: bool = True,
+    regional_weights: Optional[Dict[str, float]] = None,
 ) -> MetricResult:
-    # Use RAW (non-detrended) spectra for residual calculation - visual quality depends on raw alignment
-    # Detrended spectra remove baseline, which can hide misalignment issues
-    fit_metrics = calculate_fit_metrics(measurement.reflectance, theoretical.aligned_reflectance)
-    rmse = float(fit_metrics.get("RMSE", 0.0))
+    """
+    Score based on residual (RMSE) between measured and theoretical spectra.
+    
+    PyElli-inspired improvement: Regional RMSE weighting prioritizes early
+    wavelengths (600-750nm) where fit quality is most visually impactful.
+    
+    Args:
+        measurement: Prepared measurement spectrum
+        theoretical: Prepared theoretical spectrum
+        tau_rmse: Decay constant for RMSE scoring (lower = stricter)
+        max_rmse: Hard cutoff - score = 0 if RMSE exceeds this
+        use_regional_weighting: If True, weight RMSE by spectral region
+        regional_weights: Custom weights for regions (very_early, early, mid, late)
+    """
+    wavelengths = measurement.wavelengths
+    measured = measurement.reflectance
+    theo = theoretical.aligned_reflectance
+    residual = measured - theo
+    
+    # Global fit metrics for diagnostics
+    fit_metrics = calculate_fit_metrics(measured, theo)
+    global_rmse = float(fit_metrics.get("RMSE", 0.0))
     r2 = float(fit_metrics.get("R²", 0.0))
     tau = max(float(tau_rmse), 1e-9)
+    
+    if use_regional_weighting and len(wavelengths) > 0:
+        # Regional RMSE weighting - prioritize early wavelengths (PyElli approach)
+        # Early wavelength accuracy is most visually impactful
+        weights = regional_weights or {
+            'very_early': 0.30,  # 600-680nm - 30% weight (most critical)
+            'early': 0.20,      # 680-750nm - 20% weight
+            'mid': 0.25,        # 750-950nm - 25% weight
+            'late': 0.25,       # >950nm    - 25% weight
+        }
+        
+        very_early_mask = wavelengths <= 680
+        early_mask = (wavelengths > 680) & (wavelengths <= 750)
+        mid_mask = (wavelengths > 750) & (wavelengths <= 950)
+        late_mask = wavelengths > 950
+        
+        very_early_rmse = _calculate_regional_rmse(residual, very_early_mask)
+        early_rmse = _calculate_regional_rmse(residual, early_mask)
+        mid_rmse = _calculate_regional_rmse(residual, mid_mask)
+        late_rmse = _calculate_regional_rmse(residual, late_mask)
+        
+        # Weighted RMSE calculation
+        weighted_rmse = (
+            weights.get('very_early', 0.30) * very_early_rmse +
+            weights.get('early', 0.20) * early_rmse +
+            weights.get('mid', 0.25) * mid_rmse +
+            weights.get('late', 0.25) * late_rmse
+        )
+        rmse = weighted_rmse
+    else:
+        rmse = global_rmse
+        very_early_rmse = global_rmse
+        early_rmse = global_rmse
+        mid_rmse = global_rmse
+        late_rmse = global_rmse
     
     # Base score from RMSE (lower RMSE = higher score)
     rmse_score = float(np.exp(-rmse / tau))
@@ -400,6 +465,11 @@ def residual_score(
     
     diagnostics = {
         "rmse": rmse,
+        "rmse_global": global_rmse,
+        "rmse_very_early": very_early_rmse,
+        "rmse_early": early_rmse,
+        "rmse_mid": mid_rmse,
+        "rmse_late": late_rmse,
         "mae": float(fit_metrics.get("MAE", 0.0)),
         "r2": r2,
         "mape_pct": float(fit_metrics.get("MAPE (%)", 0.0)),
@@ -577,12 +647,13 @@ def score_spectrum(
     # Phase overlap score (FFT-based)
     phase_result = phase_overlap_score(measurement, theoretical)
     
-    # Residual score
+    # Residual score with regional weighting (PyElli-inspired)
     residual_result = residual_score(
         measurement,
         theoretical,
         tau_rmse=float(residual_cfg.get("tau_rmse", 0.015)),
         max_rmse=residual_cfg.get("max_rmse"),
+        use_regional_weighting=bool(residual_cfg.get("use_regional_weighting", True)),
     )
 
     component_scores: Dict[str, float] = {
