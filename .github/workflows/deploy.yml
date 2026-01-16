@@ -57,7 +57,7 @@ jobs:
             --parameters "commands=[
               'set -e',
               'echo \"--- Starting PyElli deployment ---\"',
-              'cd /opt/pyelli-app',
+              'cd /home/ubuntu/pyelli-app',
               'aws ecr get-login-password --region ${{ env.AWS_REGION }} | docker login --username AWS --password-stdin ${{ steps.login-ecr.outputs.registry }}',
               'echo \"ECR login successful.\"',
               'export ECR_IMAGE=${ECR_IMAGE}',
