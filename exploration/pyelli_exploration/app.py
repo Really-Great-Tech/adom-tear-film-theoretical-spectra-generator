@@ -753,11 +753,11 @@ with st.sidebar:
     st.markdown('### 📂 Spectrum Source')
     
     spectrum_sources = {
+        'New Spectra': PROJECT_ROOT / 'new spectra',
         # Shlomo spectra are now in-repo for deployment
         'Shlomo Raw Spectra': PROJECT_ROOT / 'spectra_from_shlomo',
         'Sample Data (Good Fit)': PROJECT_ROOT / 'exploration' / 'sample_data' / 'good_fit',
         'Sample Data (Bad Fit)': PROJECT_ROOT / 'exploration' / 'sample_data' / 'bad_fit',
-        'New Spectra': PROJECT_ROOT / 'new spectra',
         'Exploration Measurements': PROJECT_ROOT / 'exploration' / 'measurements',
     }
     
@@ -878,6 +878,14 @@ with st.sidebar:
         if bestfit_file:
             st.markdown('---')
             st.markdown('### 🔬 LTA BestFit Comparison')
+            # Default to "Both" when a BestFit file exists
+            # Reset view mode to "Both" when switching to a new spectrum with BestFit
+            current_selected_file = str(selected_path)
+            if ('last_selected_file' not in st.session_state or 
+                st.session_state.last_selected_file != current_selected_file):
+                # File has changed - reset view mode to "Both" for new spectrum with BestFit
+                st.session_state.theoretical_view_mode = 'Both (PyElli + BestFit)'
+            st.session_state.last_selected_file = current_selected_file
             view_mode = st.radio(
                 'Theoretical Spectrum View',
                 ['PyElli Theoretical Only', 'LTA BestFit Only', 'Both (PyElli + BestFit)'],
