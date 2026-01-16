@@ -79,8 +79,23 @@ for logger_name in ['streamlit', 'streamlit.runtime', 'streamlit.runtime.scriptr
 logging.getLogger().addFilter(ScriptRunContextFilter())
 
 # Add parent paths for imports
-PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
+# Resolve PROJECT_ROOT: try from __file__ first, then fallback to current working directory
+_candidate_root = Path(__file__).resolve().parent.parent.parent
+if (_candidate_root / 'exploration' / 'pyelli_exploration' / 'app.py').exists():
+    PROJECT_ROOT = _candidate_root
+else:
+    # Fallback: try resolving from current working directory
+    _cwd_root = Path.cwd()
+    if (_cwd_root / 'exploration' / 'pyelli_exploration' / 'app.py').exists():
+        PROJECT_ROOT = _cwd_root
+    else:
+        # Last resort: use __file__ resolution even if structure doesn't match perfectly
+        PROJECT_ROOT = _candidate_root
+        logger.warning(f'⚠️ PROJECT_ROOT resolution ambiguous. Using: {PROJECT_ROOT}')
+        logger.warning(f'   Current working directory: {Path.cwd()}')
+        logger.warning(f'   __file__ path: {Path(__file__).resolve()}')
 sys.path.insert(0, str(PROJECT_ROOT))
+logger.debug(f'📁 PROJECT_ROOT: {PROJECT_ROOT}')
 
 from src.pdf_report import generate_pyelli_pdf_report
 
@@ -753,9 +768,9 @@ with st.sidebar:
     st.markdown('### 📂 Spectrum Source')
     
     spectrum_sources = {
-        'New Spectra': PROJECT_ROOT / 'new spectra',
+        'New Spectra': PROJECT_ROOT / 'exploration' / 'new_spectra',
         # Shlomo spectra are now in-repo for deployment
-        'Shlomo Raw Spectra': PROJECT_ROOT / 'spectra_from_shlomo',
+        'Shlomo Raw Spectra': PROJECT_ROOT / 'exploration' / 'spectra_from_shlomo',
         'Sample Data (Good Fit)': PROJECT_ROOT / 'exploration' / 'sample_data' / 'good_fit',
         'Sample Data (Bad Fit)': PROJECT_ROOT / 'exploration' / 'sample_data' / 'bad_fit',
         'Exploration Measurements': PROJECT_ROOT / 'exploration' / 'measurements',
@@ -768,6 +783,26 @@ with st.sidebar:
     )
     
     source_path = spectrum_sources[selected_source]
+    
+    # Log path resolution for debugging
+    logger.debug(f'📂 Selected source: {selected_source}')
+    logger.debug(f'   Resolved path: {source_path}')
+    logger.debug(f'   Path exists: {source_path.exists()}')
+    logger.debug(f'   PROJECT_ROOT: {PROJECT_ROOT}')
+    
+    # Fallback: if path doesn't exist, try resolving from current working directory
+    if not source_path.exists():
+        # Try alternative resolution if primary path doesn't exist
+        # This handles cases where working directory differs in production
+        cwd_path = Path.cwd() / source_path.relative_to(PROJECT_ROOT) if source_path.is_relative_to(PROJECT_ROOT) else source_path
+        if cwd_path != source_path and cwd_path.exists():
+            logger.warning(f'⚠️ Primary path not found, using fallback: {cwd_path}')
+            source_path = cwd_path
+        # Also try if it's a relative path from PROJECT_ROOT that might resolve differently
+        elif not source_path.is_absolute():
+            abs_path = PROJECT_ROOT / source_path
+            if abs_path.exists():
+                source_path = abs_path
     
     if source_path.exists():
         if selected_source in ['Sample Data (Good Fit)', 'Sample Data (Bad Fit)']:
@@ -792,7 +827,11 @@ with st.sidebar:
             ])
     else:
         spectrum_files = []
-        st.warning('⚠️ Source path not found')
+        st.warning(f'⚠️ Source path not found: `{source_path}`')
+        st.info(f'💡 **Debug Info:**\n- PROJECT_ROOT: `{PROJECT_ROOT}`\n- Working Directory: `{Path.cwd()}`\n- Path exists: `{source_path.exists()}`')
+        logger.warning(f'⚠️ Source path not found: {source_path}')
+        logger.warning(f'   PROJECT_ROOT: {PROJECT_ROOT}')
+        logger.warning(f'   Working directory: {Path.cwd()}')
     
     if spectrum_files:
         selected_file = st.selectbox(

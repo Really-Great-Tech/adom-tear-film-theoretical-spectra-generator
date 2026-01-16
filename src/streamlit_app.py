@@ -211,8 +211,8 @@ def load_measurement_files(measurements_dir: pathlib.Path, config: Dict[str, Any
     
     # Search directories and their display prefixes
     exploration_dir = PROJECT_ROOT / "exploration" / "sample_data"
-    shlomo_dir = PROJECT_ROOT / "spectra_from_shlomo"
-    new_spectra_dir = PROJECT_ROOT / "new spectra"
+    shlomo_dir = PROJECT_ROOT / "exploration" / "spectra_from_shlomo"
+    new_spectra_dir = PROJECT_ROOT / "exploration" / "new_spectra"
     search_dirs = []
     dir_prefixes: Dict[pathlib.Path, str] = {}
     
