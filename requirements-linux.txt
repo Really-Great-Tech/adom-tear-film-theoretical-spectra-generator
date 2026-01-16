@@ -1,0 +1,27 @@
+# Linux-compatible dependencies for PyElli Streamlit App
+# Excludes pythonnet (Windows-only .NET interop)
+
+# Core data science
+numpy>=2.0.0
+pandas>=2.0.0
+scipy>=1.10.0
+
+# Web app
+streamlit>=1.30.0
+plotly>=5.18.0
+
+# Configuration
+pyyaml>=6.0
+
+# Excel support
+openpyxl>=3.1.0
+
+# PDF report generation
+reportlab>=4.0.0
+kaleido==0.2.1
+
+# Signal processing
+emd>=0.5.0
+
+# PyElli - Open source ellipsometry library (replaces SpAnalizer.dll)
+pyElli>=0.3.0
