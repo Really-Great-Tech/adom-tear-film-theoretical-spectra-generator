@@ -1339,8 +1339,8 @@ def main():
             # Reconstruct file path from selected_file key
             bestfit_file_path = None
             exploration_dir = PROJECT_ROOT / "exploration" / "sample_data"
-            shlomo_dir = PROJECT_ROOT / "spectra_from_shlomo"
-            new_spectra_dir = PROJECT_ROOT / "new spectra"
+            shlomo_dir = PROJECT_ROOT / "exploration" / "spectra_from_shlomo"
+            new_spectra_dir = PROJECT_ROOT / "exploration" / "new_spectra"
             
             # Construct the measurement file path from selected_file key
             if selected_file.startswith("shlomo/"):
