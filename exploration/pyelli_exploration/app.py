@@ -1374,7 +1374,7 @@ if selected_file and Path(selected_file).exists():
                 # Always use Dynamic Search with 25,000 max combinations
                 # Increased to allow more thorough search and better peak alignment
                 strategy = 'Dynamic Search'
-                max_combinations = 25000
+                max_combinations = 4000
                 
                 return grid_search.run_grid_search(
                     wavelengths, measured,
