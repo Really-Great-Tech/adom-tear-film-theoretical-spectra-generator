@@ -1397,15 +1397,15 @@ class PyElliGridSearch:
         wavelengths: np.ndarray,
         measured: np.ndarray,
         lipid_range: Tuple[float, float, float] = (9, 250, 10),  # Standard range: 9-250 nm
-        aqueous_range: Tuple[float, float, float] = (800, 12000, 200),  # Standard range: 800-12000 nm
-        roughness_range: Tuple[float, float, float] = (600, 2750, 100),  # Accepted range: 600-2750 Å
+        aqueous_range: Tuple[float, float, float] = (800, 12000, 300),  # Standard range: 800-12000 nm
+        roughness_range: Tuple[float, float, float] = (6000, 7000, 100),  # Optimized: good fits at ≥6000 Å
         top_k: int = 20,  # Increased to explore more candidates
         enable_roughness: bool = True,
         fine_search: bool = True,  
         fine_refinement_factor: float = 0.05,  # Much finer: 5% of coarse step for precision
         min_correlation_filter: float = 0.85,  # Keep selective
         search_strategy: str = 'Coarse Search',  # 'Coarse Search', 'Full Grid Search', or 'Dynamic Search'
-        max_combinations: Optional[int] = 5000,  # Max combinations for Coarse/Dynamic search (default 5000)
+        max_combinations: Optional[int] = 10000,  # Max combinations for Coarse/Dynamic search
     ) -> List[PyElliResult]:
         """
         Run grid search with IMPROVED scoring based on reverse engineering analysis.
@@ -1422,14 +1422,15 @@ class PyElliGridSearch:
             wavelengths: Wavelength array
             measured: Measured reflectance
             lipid_range: (min, max, step) for lipid thickness in nm
-                        OPTIMIZED: 100-350nm based on reverse engineering (was 0-400)
+                        Default: 9-250nm with 10nm step
             aqueous_range: (min, max, step) for aqueous thickness in nm
-                          OPTIMIZED: 0-4000nm based on reverse engineering (was -20-6000)
+                          Default: 800-12000nm with 300nm step
             roughness_range: (min, max, step) for interface roughness in Angstroms (Å)
-                            OPTIMIZED: 1500-3500Å based on reverse engineering (was 300-3000)
+                            Default: 6000-7000Å with 100Å step (empirically optimized)
+                            Note: Good fits consistently occur at ≥6000Å
             top_k: Number of top results to return
             enable_roughness: If True, use Bruggeman EMA roughness modeling
-            min_correlation_filter: Minimum correlation for results (default 0.80)
+            min_correlation_filter: Minimum correlation for results (default 0.85)
             
         Returns:
             List of top results sorted by score (descending), filtered by correlation
