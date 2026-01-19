@@ -1,4 +1,4 @@
-name: Deploy to AWS
+name: Deploy to Bare Metal AWS
 
 on:
   push:
@@ -6,8 +6,8 @@ on:
 
 env:
   AWS_REGION: eu-central-1
-  ECR_REPOSITORY: pyelli-app
   EC2_INSTANCE_ID: i-0d20ef67ddf31ea1c
+  DEPLOY_DIR: /home/ubuntu/baremetal
 
 permissions:
   id-token: write
@@ -15,7 +15,7 @@ permissions:
 
 jobs:
   deploy:
-    name: Build and Deploy via SSM
+    name: Deploy to Bare Metal via SSM
     runs-on: ubuntu-latest
 
     steps:
@@ -27,48 +27,41 @@ jobs:
           role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
 
-      - name: Login to Amazon ECR
-        id: login-ecr
-        uses: aws-actions/amazon-ecr-login@v2
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      - name: Build and push Docker image
-        uses: docker/build-push-action@v5
-        with:
-          context: .
-          push: true
-          tags: |
-            ${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}:${{ github.sha }}
-            ${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}:latest
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
-
-      - name: Deploy to EC2 via SSM
+      - name: Deploy via SSM
         id: ssm_deploy
         run: |
-          ECR_IMAGE="${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}:latest"
+          # Command to run on the EC2 instance
+          DEPLOY_SCRIPT="
+          set -e
+          echo '--- Starting Bare Metal Deployment ---'
+          cd ${{ env.DEPLOY_DIR }}
+
+          echo 'Pulling latest code...'
+          git fetch origin dev
+          git reset --hard origin/dev
+
+          echo 'Updating dependencies...'
+          source venv/bin/activate
+          pip install -r requirements-linux.txt
+
+          echo 'Restarting application service...'
+          sudo systemctl restart pyelli
+
+          echo 'Checking service status...'
+          sudo systemctl is-active pyelli
+
+          echo '--- Deployment Complete ---'
+          "
+
+          # Encode script to avoid escaping issues
+          ENCODED_SCRIPT=$(echo "$DEPLOY_SCRIPT" | base64 -w 0)
 
           COMMAND_ID=$(aws ssm send-command \
             --instance-ids "${{ env.EC2_INSTANCE_ID }}" \
             --document-name "AWS-RunShellScript" \
-            --comment "Deploying PyElli app from commit ${{ github.sha }}" \
+            --comment "Deploying PyElli bare metal from commit ${{ github.sha }}" \
             --parameters "commands=[
-              'set -e',
-              'echo \"--- Starting PyElli deployment ---\"',
-              'cd /home/ubuntu/pyelli-app',
-              'aws ecr get-login-password --region ${{ env.AWS_REGION }} | docker login --username AWS --password-stdin ${{ steps.login-ecr.outputs.registry }}',
-              'echo \"ECR login successful.\"',
-              'export ECR_IMAGE=${ECR_IMAGE}',
-              'echo \"Pulling image: ${ECR_IMAGE}\"',
-              'docker compose pull streamlit',
-              'echo \"Image pull complete.\"',
-              'echo \"Restarting services...\"',
-              'docker compose up -d --remove-orphans',
-              'echo \"Services restarted.\"',
-              'docker image prune -af',
-              'echo \"--- Deployment complete ---\"'
+              'echo $ENCODED_SCRIPT | base64 -d | bash'
             ]" \
             --query 'Command.CommandId' \
             --output text)

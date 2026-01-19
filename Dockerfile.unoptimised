@@ -1,0 +1,8 @@
+FROM python:3.13-slim
+WORKDIR /app
+COPY requirements-linux.txt .
+RUN pip install --no-cache-dir -r requirements-linux.txt
+COPY . .
+RUN useradd -m appuser && chown -R appuser:appuser /app
+USER appuser
+CMD ["streamlit", "run", "exploration/pyelli_exploration/app.py"]

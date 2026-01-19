@@ -1,0 +1,17 @@
+{
+    "Changes": [
+        {
+            "Action": "UPSERT",
+            "ResourceRecordSet": {
+                "Name": "dev.adom.reallygreattech.com",
+                "Type": "A",
+                "TTL": 300,
+                "ResourceRecords": [
+                    {
+                        "Value": "35.158.185.140"
+                    }
+                ]
+            }
+        }
+    ]
+}
