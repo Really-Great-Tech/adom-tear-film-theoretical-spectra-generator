@@ -185,21 +185,22 @@ def peak_delta_score(
     tau_nm: float,
     penalty_unpaired: float,
     extra_penalty_unmatched_measured: float = 0.02,
+    use_soft_penalty: bool = True,
 ) -> MetricResult:
     """
     Score based on peak alignment quality (position delta between matched peaks).
     
-    Enhanced with PyElli-style penalties:
-    - Base penalty for any unpaired peaks
-    - Extra penalty for unmatched MEASURED peaks (failed to find them in theoretical)
+    Uses soft multiplicative penalty instead of subtractive to avoid zeroing out
+    candidates with good fit quality but imperfect peak matching.
     
     Args:
         measurement: Prepared measurement spectrum
         theoretical: Prepared theoretical spectrum
         tolerance_nm: Peak matching tolerance in nm
         tau_nm: Decay constant for delta scoring (lower = stricter)
-        penalty_unpaired: Base penalty per unpaired peak
+        penalty_unpaired: Base penalty per unpaired peak (used in soft mode as dampening)
         extra_penalty_unmatched_measured: Extra penalty for unmatched measured peaks
+        use_soft_penalty: If True, use multiplicative dampening; if False, use subtractive
     """
     meas_peaks = measurement.peaks["wavelength"].to_numpy(dtype=float)
     theo_peaks = theoretical.peaks["wavelength"].to_numpy(dtype=float)
@@ -215,20 +216,33 @@ def peak_delta_score(
         if total_unmatched == 0:
             score = 1.0
         else:
-            score = 0.0
+            # No matches but have peaks - still give partial credit for having peaks
+            score = 0.2 if use_soft_penalty else 0.0
     else:
         mean_delta = float(np.mean(deltas))
         score = float(np.exp(-mean_delta / max(tau_nm, 1e-6)))
 
-    # Base penalty for all unpaired peaks
-    penalty = penalty_unpaired * float(total_unmatched)
-    
-    # Extra penalty for unmatched MEASURED peaks (from PyElli)
-    # These are peaks we failed to find in theoretical - more critical
-    if unmatched_measurement > 0:
-        penalty += extra_penalty_unmatched_measured * float(unmatched_measurement)
-    
-    score = max(0.0, min(1.0, score - penalty))
+    if use_soft_penalty:
+        # Soft penalty: multiplicative dampening based on match ratio
+        # This prevents good-fit-but-imperfect-peak-matching candidates from zeroing out
+        total_peaks = max(len(meas_peaks), len(theo_peaks))
+        if total_peaks > 0:
+            match_ratio = len(matched_meas) / total_peaks
+            # Dampening factor: ranges from 0.3 (no matches) to 1.0 (all matched)
+            dampening = 0.3 + 0.7 * match_ratio
+            score *= dampening
+            
+            # Extra dampening for unmatched measured peaks (more important)
+            if unmatched_measurement > 0 and len(meas_peaks) > 0:
+                meas_match_ratio = len(matched_meas) / len(meas_peaks)
+                extra_dampening = 0.5 + 0.5 * meas_match_ratio
+                score *= extra_dampening
+    else:
+        # Original subtractive penalty (legacy behavior)
+        penalty = penalty_unpaired * float(total_unmatched)
+        if unmatched_measurement > 0:
+            penalty += extra_penalty_unmatched_measured * float(unmatched_measurement)
+        score = max(0.0, min(1.0, score - penalty))
 
     diagnostics = {
         "matched_pairs": float(len(matched_meas)),
@@ -262,6 +276,7 @@ def correlation_score(
     theoretical: PreparedTheoreticalSpectrum,
     *,
     min_correlation: float = 0.85,
+    use_direct_mapping: bool = True,
 ) -> MetricResult:
     """
     Score based on Pearson correlation between measured and theoretical spectra.
@@ -273,6 +288,8 @@ def correlation_score(
         measurement: Prepared measurement spectrum
         theoretical: Prepared theoretical spectrum
         min_correlation: Minimum acceptable correlation (below this, heavily penalized)
+        use_direct_mapping: If True, use correlation directly as score (preserves ranking);
+                           if False, use compressed range transformation
         
     Returns:
         MetricResult with correlation-based score
@@ -287,16 +304,28 @@ def correlation_score(
     if np.isnan(correlation):
         correlation = 0.0
     
-    # Score calculation based on PyElli approach:
-    # - Negative correlation = 0 (anti-correlated fits rejected)
-    # - Below min_correlation = partial score (max 0.3)
-    # - Above min_correlation = scales from 0.7 to 1.0
-    if correlation < 0:
-        score = 0.0
-    elif correlation < min_correlation:
-        score = (correlation / min_correlation) * 0.3
+    if use_direct_mapping:
+        # Direct mapping: correlation value IS the score (with floor for negative)
+        # This preserves the ranking power of correlation differences
+        # 0.94 correlation → 0.94 score, 0.87 correlation → 0.87 score
+        if correlation < 0:
+            score = 0.0
+        elif correlation < min_correlation:
+            # Below threshold: dampen but don't collapse completely
+            score = correlation * 0.8  # 0.80 → 0.64, 0.70 → 0.56
+        else:
+            score = correlation
     else:
-        score = 0.7 + 0.3 * ((correlation - min_correlation) / (1.0 - min_correlation))
+        # Legacy: compressed range transformation
+        # - Negative correlation = 0 (anti-correlated fits rejected)
+        # - Below min_correlation = partial score (max 0.3)
+        # - Above min_correlation = scales from 0.7 to 1.0
+        if correlation < 0:
+            score = 0.0
+        elif correlation < min_correlation:
+            score = (correlation / min_correlation) * 0.3
+        else:
+            score = 0.7 + 0.3 * ((correlation - min_correlation) / (1.0 - min_correlation))
     
     score = float(np.clip(score, 0.0, 1.0))
     
@@ -534,39 +563,40 @@ def apply_bonus_penalty_adjustments(
     applied_adjustments: Dict[str, float] = {}
     
     # === BONUSES FOR EXCELLENT FITS ===
+    # Use smaller bonuses and don't cap at 1.0 to preserve ranking differentiation
     
     # Bonus for excellent RMSE (LTA achieves ~0.0006-0.0011)
     if rmse <= excellent_rmse_threshold:
-        bonus = 1.3  # 30% bonus
-        adjusted = min(1.0, adjusted * bonus)
+        bonus = 1.10  # 10% bonus (reduced from 30%)
+        adjusted *= bonus
         applied_adjustments['rmse_excellent_bonus'] = bonus
     elif rmse <= good_rmse_threshold:
-        bonus = 1.15  # 15% bonus
-        adjusted = min(1.0, adjusted * bonus)
+        bonus = 1.05  # 5% bonus (reduced from 15%)
+        adjusted *= bonus
         applied_adjustments['rmse_good_bonus'] = bonus
     
     # Bonus for excellent correlation (LTA achieves 0.99+)
     if correlation >= excellent_corr_threshold:
-        bonus = 1.2  # 20% bonus
-        adjusted = min(1.0, adjusted * bonus)
+        bonus = 1.08  # 8% bonus (reduced from 20%)
+        adjusted *= bonus
         applied_adjustments['corr_excellent_bonus'] = bonus
     elif correlation >= good_corr_threshold:
-        bonus = 1.1  # 10% bonus
-        adjusted = min(1.0, adjusted * bonus)
+        bonus = 1.04  # 4% bonus (reduced from 10%)
+        adjusted *= bonus
         applied_adjustments['corr_good_bonus'] = bonus
     
     # Combined bonus for excellent correlation AND low RMSE
     if correlation >= excellent_corr_threshold and rmse <= excellent_rmse_threshold:
-        bonus = 1.15  # Additional 15% bonus
-        adjusted = min(1.0, adjusted * bonus)
+        bonus = 1.05  # 5% bonus (reduced from 15%)
+        adjusted *= bonus
         applied_adjustments['combined_excellent_bonus'] = bonus
     
     # Bonus for high peak match ratio
     if meas_peak_count > 0:
         match_ratio = matched_peaks / float(meas_peak_count)
         if match_ratio >= 0.9 and matched_peaks >= 5:
-            bonus = 1.1  # 10% bonus for matching 90%+ peaks
-            adjusted = min(1.0, adjusted * bonus)
+            bonus = 1.03  # 3% bonus (reduced from 10%)
+            adjusted *= bonus
             applied_adjustments['peak_match_bonus'] = bonus
     
     # === PENALTIES FOR POOR FITS ===
@@ -597,7 +627,9 @@ def apply_bonus_penalty_adjustments(
             adjusted *= penalty
             applied_adjustments['peak_match_penalty'] = penalty
     
-    adjusted = float(np.clip(adjusted, 0.0, 1.0))
+    # Don't cap at 1.0 to preserve ranking differentiation among excellent candidates
+    # Final score can exceed 1.0 slightly, which helps rank the best candidates
+    adjusted = float(np.clip(adjusted, 0.0, 1.5))
     applied_adjustments['final_adjustment_ratio'] = adjusted / max(base_composite, 1e-9)
     
     return adjusted, applied_adjustments
@@ -731,7 +763,7 @@ def score_spectrum(
         coverage_penalty_factor=float(peak_count_cfg.get("coverage_penalty_factor", 0.5)),
     )
     
-    # Peak delta score with enhanced unpaired penalties
+    # Peak delta score with soft penalty (avoids zeroing out good fits)
     delta_result = peak_delta_score(
         measurement,
         theoretical,
@@ -739,6 +771,7 @@ def score_spectrum(
         tau_nm=float(peak_delta_cfg.get("tau_nm", 15.0)),
         penalty_unpaired=float(peak_delta_cfg.get("penalty_unpaired", 0.04)),
         extra_penalty_unmatched_measured=float(peak_delta_cfg.get("extra_penalty_unmatched_measured", 0.02)),
+        use_soft_penalty=bool(peak_delta_cfg.get("use_soft_penalty", True)),
     )
     
     # Correlation score (critical for rejecting anti-correlated fits)
@@ -746,6 +779,7 @@ def score_spectrum(
         measurement,
         theoretical,
         min_correlation=float(correlation_cfg.get("min_correlation", 0.85)),
+        use_direct_mapping=bool(correlation_cfg.get("use_direct_mapping", True)),
     )
     
     # Amplitude score (oscillation matching)

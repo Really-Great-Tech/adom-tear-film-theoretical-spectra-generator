@@ -133,10 +133,12 @@ analysis:
     peak_delta:
       tolerance_nm: 20.0             # Increased from 5.0 to match LTA tolerance
       tau_nm: 15.0                   # Stricter delta scoring
-      penalty_unpaired: 0.04         # Base penalty per unpaired peak
+      penalty_unpaired: 0.04         # Base penalty per unpaired peak (used in legacy mode)
       extra_penalty_unmatched_measured: 0.02  # Extra penalty for unmatched measured peaks
+      use_soft_penalty: true         # Use multiplicative dampening instead of subtractive
     correlation:
       min_correlation: 0.85          # Minimum acceptable correlation (below = heavily penalized)
+      use_direct_mapping: true       # Use correlation directly as score (preserves ranking power)
     amplitude:
       optimal_ratio: 1.0             # Target theoretical/measured oscillation ratio
       tolerance: 0.3                 # Acceptable deviation from optimal
@@ -149,25 +151,25 @@ analysis:
       tau_aqueous_nm: 30.0
       tau_roughness_A: 150.0
     bonus_penalty:
-      # PyElli-style dynamic bonus/penalty system
-      # Creates strong separation between excellent and mediocre fits
+      # Dynamic bonus/penalty system (reduced aggressiveness)
+      # With improved base scoring, bonuses should be gentler
       enabled: true
-      excellent_rmse: 0.0015      # Bonus for RMSE <= this (LTA achieves ~0.0006-0.0011)
-      good_rmse: 0.002            # Smaller bonus for RMSE <= this
-      poor_rmse: 0.003            # Penalty for RMSE > this
+      excellent_rmse: 0.001       # Bonus for RMSE <= this (very strict)
+      good_rmse: 0.0015           # Smaller bonus for RMSE <= this
+      poor_rmse: 0.005            # Penalty for RMSE > this (more lenient)
       excellent_correlation: 0.98 # Bonus for correlation >= this
       good_correlation: 0.95      # Smaller bonus for correlation >= this
       poor_correlation: 0.5       # Heavy penalty for correlation < this
-      min_match_ratio: 0.5        # Penalty if fewer than 50% of peaks matched
+      min_match_ratio: 0.4        # Penalty if fewer than 40% of peaks matched (relaxed)
     composite:
       weights:
-        # PyElli-inspired weights for proper ranking performance
-        # Based on reverse engineering of LTA BestFit scoring
-        residual: 0.25          # RMSE/MAE fit quality (25%)
-        peak_count: 0.25        # Peak count matching with penalties (25%)
+        # Improved weights prioritizing fit quality over peak counting
+        # Correlation and residual are the most reliable quality indicators
+        correlation: 0.30       # Shape similarity - PRIMARY ranking criterion (30%)
+        residual: 0.30          # RMSE/MAE fit quality (30%)
         amplitude: 0.20         # Oscillation amplitude matching (20%)
-        correlation: 0.15       # Shape similarity - rejects anti-correlated (15%)
-        peak_delta: 0.15        # Peak position alignment (15%)
+        peak_count: 0.10        # Peak count matching - secondary (10%)
+        peak_delta: 0.10        # Peak position alignment - soft penalty now (10%)
         phase_overlap: 0.0      # Disabled - correlation covers shape matching
         quality: 0.0            # Disabled - focus on fit quality
         temporal_continuity: 0.0  # Disabled for single measurements
