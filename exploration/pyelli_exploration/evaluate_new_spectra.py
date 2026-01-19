@@ -178,17 +178,21 @@ def analyze_single_spectrum(
         lta_interp = np.interp(wl_display, lta_wl, lta_refl)
         
         # === RUN PYELLI GRID SEARCH ===
+        # Optimized ranges based on empirical analysis:
+        # - Lipid: 10nm step (was 5nm) - sufficient resolution
+        # - Aqueous: 300nm step (was 200nm) - coarser for speed
+        # - Roughness: 6000-7000 Å (was 600-7000) - good fits occur at ≥6000 Å
         logger.info(f'  Running grid search for {sample_id}...')
         pyelli_results = grid_search.run_grid_search(
             wavelengths, measured,
-            lipid_range=(9, 250, 5),
-            aqueous_range=(800, 12000, 200),
-            roughness_range=(600, 7000, 100),
+            lipid_range=(9, 250, 10),
+            aqueous_range=(800, 12000, 300),
+            roughness_range=(6000, 7000, 100),
             top_k=1,  # Only need the best result
             enable_roughness=True,
             fine_search=True,
             strategy='Dynamic Search',
-            max_combinations=25000,
+            max_combinations=15000,
         )
         
         if not pyelli_results:
