@@ -9,7 +9,24 @@ This demonstrates how to use PyElli for auto-fitting tear film spectra.
 Roughness Modeling:
     Uses pyElli's BruggemanEMA + VaryingMixtureLayer for proper interface roughness
     modeling between the mucus layer and corneal epithelium substrate.
+
+Performance Note:
+    BLAS thread limiting is applied at module load to prevent thread oversubscription
+    when using multiprocessing. This is critical for performance on multi-core systems.
 """
+
+# =============================================================================
+# CRITICAL: Set BLAS thread limits BEFORE importing numpy/scipy
+# This prevents thread oversubscription when using ProcessPoolExecutor
+# Each worker process would otherwise spawn multiple BLAS threads, causing
+# massive contention on multi-core systems (e.g., 32 cores x 8 threads = 256 threads)
+# =============================================================================
+import os
+os.environ.setdefault('OMP_NUM_THREADS', '1')
+os.environ.setdefault('MKL_NUM_THREADS', '1')
+os.environ.setdefault('OPENBLAS_NUM_THREADS', '1')
+os.environ.setdefault('NUMEXPR_NUM_THREADS', '1')
+os.environ.setdefault('VECLIB_MAXIMUM_THREADS', '1')
 
 import logging
 from pathlib import Path
