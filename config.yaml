@@ -26,6 +26,13 @@ parameters:
 fixed:
   mucus_thickness: 500    # Mucus layer thickness (nm) - kept constant
 
+# Phase 2: Roughness Modeling Configuration
+# Choose between Bruggeman EMA (physical model) and Debye-Waller (ADOM-compatible, faster)
+roughness_model:
+  method: "debye_waller" #"bruggeman"  # Options: "bruggeman" (default, more accurate) or "debye_waller" (ADOM-compatible, faster)
+  # Note: Debye-Waller is an analytical approximation that matches ADOM's approach
+  # Bruggeman EMA is more physically accurate but computationally more expensive
+
 # Wavelength Configuration
 wavelengths:
   file: "Wavelengths813.csv"  # Options: Wavelengths813.csv, Wavelengths1024.csv, Wavelengths2061.csv
@@ -150,8 +157,6 @@ analysis:
         quality: 0.0            # Disabled - focus on fit quality
         temporal_continuity: 0.0  # Disabled for single measurements
 
-
-# File Paths (relative to project root)
 paths:
   dll: "src/SpAnalizer.dll"
   algorithm: "configs/Algorithm_eye_test_4.xml"
