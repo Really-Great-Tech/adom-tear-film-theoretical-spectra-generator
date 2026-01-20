@@ -9,7 +9,24 @@ This demonstrates how to use PyElli for auto-fitting tear film spectra.
 Roughness Modeling:
     Uses pyElli's BruggemanEMA + VaryingMixtureLayer for proper interface roughness
     modeling between the mucus layer and corneal epithelium substrate.
+
+Performance Note:
+    BLAS thread limiting is applied at module load to prevent thread oversubscription
+    when using multiprocessing. This is critical for performance on multi-core systems.
 """
+
+# =============================================================================
+# CRITICAL: Set BLAS thread limits BEFORE importing numpy/scipy
+# This prevents thread oversubscription when using ProcessPoolExecutor
+# Each worker process would otherwise spawn multiple BLAS threads, causing
+# massive contention on multi-core systems (e.g., 32 cores x 8 threads = 256 threads)
+# =============================================================================
+import os
+os.environ.setdefault('OMP_NUM_THREADS', '1')
+os.environ.setdefault('MKL_NUM_THREADS', '1')
+os.environ.setdefault('OPENBLAS_NUM_THREADS', '1')
+os.environ.setdefault('NUMEXPR_NUM_THREADS', '1')
+os.environ.setdefault('VECLIB_MAXIMUM_THREADS', '1')
 
 import logging
 from pathlib import Path
@@ -969,6 +986,269 @@ def _get_measured_peaks_count(wavelengths: np.ndarray, measured: np.ndarray) -> 
 # Parallel Processing Worker Functions
 # =============================================================================
 
+# Global worker state - initialized once per worker process to avoid per-task overhead
+_worker_state = {}
+
+
+def _worker_initializer(
+    wavelengths: np.ndarray,
+    measured: np.ndarray,
+    material_data: Dict[str, Any],
+    enable_roughness: bool,
+) -> None:
+    """
+    Initialize worker process with shared data.
+    
+    Called once per worker process (not per task) to:
+    1. Set up logging/warning suppression
+    2. Import pyElli once per worker (not per task)
+    3. Pre-interpolate material data to target wavelengths
+    4. Store all shared data in global state
+    
+    This dramatically reduces per-task overhead by avoiding:
+    - Repeated pickling/unpickling of large arrays
+    - Repeated module imports
+    - Repeated interpolation of the same data
+    """
+    global _worker_state
+    
+    # Suppress warnings in worker processes (multiprocessing workers don't have Streamlit context)
+    import warnings
+    import logging as worker_logging
+    
+    warnings.filterwarnings('ignore', message='.*ScriptRunContext.*', category=UserWarning)
+    warnings.filterwarnings('ignore', message='.*missing ScriptRunContext.*', category=UserWarning)
+    
+    root_logger = worker_logging.getLogger()
+    root_logger.setLevel(worker_logging.ERROR)
+    
+    for logger_name in ['streamlit', 'streamlit.runtime', 'streamlit.runtime.scriptrunner', 
+                        'streamlit.runtime.scriptrunner.script_runner',
+                        'streamlit.runtime.scriptrunner_utils', 
+                        'streamlit.runtime.scriptrunner_utils.script_run_context']:
+        worker_logging.getLogger(logger_name).setLevel(worker_logging.ERROR)
+    
+    class ScriptRunContextFilter(worker_logging.Filter):
+        def filter(self, record):
+            msg = record.getMessage()
+            return 'ScriptRunContext' not in msg and 'missing ScriptRunContext' not in msg
+    
+    for handler in root_logger.handlers:
+        handler.addFilter(ScriptRunContextFilter())
+    worker_logging.getLogger('streamlit.runtime.scriptrunner_utils.script_run_context').setLevel(worker_logging.CRITICAL)
+    worker_logging.getLogger('streamlit.runtime.scriptrunner_utils').setLevel(worker_logging.CRITICAL)
+    
+    # Import pyElli once per worker (not per task)
+    # This avoids repeated import overhead for each parameter combination
+    import elli
+    from elli.dispersions.table_index import Table
+    from elli.materials import IsotropicMaterial
+    
+    # Pre-interpolate material data to target wavelengths
+    # This is the same for all tasks, so do it once per worker
+    lipid_n = np.interp(wavelengths, material_data['lipid']['wavelength_nm'], material_data['lipid']['n'])
+    lipid_k = np.interp(wavelengths, material_data['lipid']['wavelength_nm'], material_data['lipid']['k'])
+    water_n = np.interp(wavelengths, material_data['water']['wavelength_nm'], material_data['water']['n'])
+    water_k = np.interp(wavelengths, material_data['water']['wavelength_nm'], material_data['water']['k'])
+    mucus_n = np.interp(wavelengths, material_data['mucus']['wavelength_nm'], material_data['mucus']['n'])
+    mucus_k = np.interp(wavelengths, material_data['mucus']['wavelength_nm'], material_data['mucus']['k'])
+    substratum_n = np.interp(wavelengths, material_data['substratum']['wavelength_nm'], material_data['substratum']['n'])
+    substratum_k = np.interp(wavelengths, material_data['substratum']['wavelength_nm'], material_data['substratum']['k'])
+    
+    # Pre-compute focus mask (same for all tasks)
+    focus_mask = (wavelengths >= 600.0) & (wavelengths <= 1120.0)
+    
+    # Store all shared data in worker state
+    _worker_state.update({
+        'wavelengths': wavelengths,
+        'measured': measured,
+        'enable_roughness': enable_roughness,
+        'focus_mask': focus_mask,
+        # Pre-interpolated material data
+        'lipid_n': lipid_n,
+        'lipid_k': lipid_k,
+        'water_n': water_n,
+        'water_k': water_k,
+        'mucus_n': mucus_n,
+        'mucus_k': mucus_k,
+        'substratum_n': substratum_n,
+        'substratum_k': substratum_k,
+        # pyElli modules (avoid per-task imports)
+        'elli': elli,
+        'Table': Table,
+        'IsotropicMaterial': IsotropicMaterial,
+    })
+
+
+def _evaluate_combination_fast(args: Tuple[float, float, float]) -> Optional[PyElliResult]:
+    """
+    Fast worker function using pre-initialized state.
+    
+    This function only receives the parameter values to evaluate,
+    not the large shared data arrays. All shared data is accessed
+    from _worker_state which was initialized once per worker.
+    
+    Args:
+        args: Tuple of (lipid_nm, aqueous_nm, roughness_angstrom)
+        
+    Returns:
+        PyElliResult or None if calculation fails
+    """
+    global _worker_state
+    
+    lipid, aqueous, roughness_angstrom = args
+    
+    try:
+        # Access pre-initialized data from worker state
+        wavelengths = _worker_state['wavelengths']
+        measured = _worker_state['measured']
+        enable_roughness = _worker_state['enable_roughness']
+        focus_mask = _worker_state['focus_mask']
+        
+        # Use pre-interpolated material data
+        lipid_n = _worker_state['lipid_n']
+        lipid_k = _worker_state['lipid_k']
+        water_n = _worker_state['water_n']
+        water_k = _worker_state['water_k']
+        mucus_n = _worker_state['mucus_n']
+        mucus_k = _worker_state['mucus_k']
+        substratum_n = _worker_state['substratum_n']
+        substratum_k = _worker_state['substratum_k']
+        
+        # Calculate theoretical spectrum
+        mucus_thickness_nm = 500.0  # Fixed in LTA
+        
+        theoretical = calculate_reflectance_pyelli(
+            wavelengths,
+            lipid_n, lipid_k, lipid,
+            water_n, water_k, aqueous,
+            mucus_n, mucus_k, mucus_thickness_nm,
+            substratum_n, substratum_k,
+            roughness_angstrom=roughness_angstrom,
+            enable_roughness=enable_roughness,
+            num_roughness_divisions=20,
+            use_error_function_profile=True,
+        )
+        
+        # Align using simple proportional scaling (focus region 600-1120 nm)
+        if focus_mask.sum() > 0:
+            meas_focus = measured[focus_mask]
+            theo_focus = theoretical[focus_mask]
+            if np.std(theo_focus) > 1e-10:
+                scale = np.dot(meas_focus, theo_focus) / np.dot(theo_focus, theo_focus)
+                theoretical_scaled = theoretical * scale
+            else:
+                theoretical_scaled = theoretical
+        else:
+            theoretical_scaled = theoretical
+        
+        # Quick correlation check
+        wl_focus = wavelengths[focus_mask] if focus_mask.sum() > 0 else wavelengths
+        meas_focus_scaled = measured[focus_mask] if focus_mask.sum() > 0 else measured
+        theo_focus_scaled = theoretical_scaled[focus_mask] if focus_mask.sum() > 0 else theoretical_scaled
+        
+        if focus_mask.sum() > 0:
+            if np.std(meas_focus_scaled) > 1e-10 and np.std(theo_focus_scaled) > 1e-10:
+                quick_corr = float(np.corrcoef(meas_focus_scaled, theo_focus_scaled)[0, 1])
+                if np.isnan(quick_corr):
+                    quick_corr = 0.0
+            else:
+                quick_corr = 0.0
+            
+            if quick_corr < 0.5:
+                return None
+        else:
+            quick_corr = 0.0
+        
+        # Fast scoring for moderate correlations
+        if quick_corr < 0.7:
+            residual = meas_focus_scaled - theo_focus_scaled
+            rmse = float(np.sqrt(np.mean(residual ** 2)))
+            
+            rmse_tau = 0.0008
+            rmse_score = float(np.exp(-rmse / rmse_tau))
+            correlation_score = max(0.0, quick_corr) if quick_corr > 0 else 0.0
+            
+            try:
+                meas_detrended_quick = detrend_signal(wl_focus, meas_focus_scaled, 0.008, 3)
+                theo_detrended_quick = detrend_signal(wl_focus, theo_focus_scaled, 0.008, 3)
+                meas_osc = float(np.std(meas_detrended_quick))
+                theo_osc = float(np.std(theo_detrended_quick))
+                if meas_osc > 1e-8:
+                    osc_ratio = theo_osc / meas_osc
+                    if osc_ratio < 0.5:
+                        amplitude_score = osc_ratio * 2
+                    elif osc_ratio > 2.0:
+                        amplitude_score = 1.0 / osc_ratio
+                    elif osc_ratio > 1.5:
+                        excess = osc_ratio - 1.0
+                        amplitude_score = max(0.5, 1.0 - excess)
+                    else:
+                        deviation = abs(osc_ratio - 1.0)
+                        amplitude_score = 1.0 - 0.2 * deviation
+                else:
+                    osc_ratio = 1.0
+                    amplitude_score = 1.0
+            except Exception:
+                osc_ratio = 1.0
+                amplitude_score = 1.0
+            
+            simple_score = 0.35 * rmse_score + 0.35 * amplitude_score + 0.30 * correlation_score
+            
+            if rmse > 0.002:
+                simple_score *= 0.2
+            elif rmse > 0.0015:
+                simple_score *= 0.5
+            if quick_corr < 0.5:
+                simple_score *= 0.2
+            if osc_ratio > 2.0:
+                simple_score *= 0.3
+            elif osc_ratio > 1.5:
+                simple_score *= 0.6
+            
+            score_result = {
+                "score": float(np.clip(simple_score, 0.0, 1.0)),
+                "correlation": quick_corr,
+                "oscillation_ratio": osc_ratio,
+                "matched_peaks": 0,
+                "mean_delta_nm": 1000.0,
+                "measurement_peaks": 0.0,
+                "theoretical_peaks": 0.0,
+            }
+            correlation = quick_corr
+        else:
+            score_result = calculate_peak_based_score(
+                wl_focus, meas_focus_scaled, theo_focus_scaled
+            )
+            residual = meas_focus_scaled - theo_focus_scaled
+            rmse = float(np.sqrt(np.mean(residual ** 2)))
+            correlation = score_result.get('correlation', quick_corr)
+        
+        meas_peaks_count = int(score_result.get('measurement_peaks', 0))
+        theo_peaks_count = int(score_result.get('theoretical_peaks', 0))
+        peak_count_delta = abs(meas_peaks_count - theo_peaks_count)
+        mean_delta_nm = float(score_result.get('mean_delta_nm', 0.0))
+        
+        return PyElliResult(
+            lipid_nm=float(lipid),
+            aqueous_nm=float(aqueous),
+            mucus_nm=float(roughness_angstrom),
+            score=score_result['score'],
+            rmse=rmse,
+            correlation=correlation,
+            crossing_count=0,
+            matched_peaks=int(score_result.get('matched_peaks', 0)),
+            peak_count_delta=peak_count_delta,
+            mean_delta_nm=mean_delta_nm,
+            oscillation_ratio=float(score_result.get('oscillation_ratio', 1.0)),
+            theoretical_peaks=theo_peaks_count,
+            theoretical_spectrum=theoretical_scaled,
+            wavelengths=wavelengths,
+        )
+    except Exception as e:
+        return None
+
+
 def _evaluate_single_combination(
     wavelengths: np.ndarray,
     measured: np.ndarray,
@@ -1561,7 +1841,7 @@ class PyElliGridSearch:
             },
         }
         
-        # Generate all parameter combinations
+        # Generate all parameter combinations as tuples (for fast worker function)
         combinations = [
             (lipid, aqueous, roughness_angstrom)
             for lipid in lipid_values
@@ -1569,21 +1849,17 @@ class PyElliGridSearch:
             for roughness_angstrom in roughness_values_angstrom
         ]
         
-        # Parallel evaluation
-        with ProcessPoolExecutor(max_workers=num_workers) as executor:
-            # Submit all tasks
+        # Parallel evaluation with worker initializer (avoids per-task serialization overhead)
+        with ProcessPoolExecutor(
+            max_workers=num_workers,
+            initializer=_worker_initializer,
+            initargs=(wavelengths, measured, material_data, enable_roughness),
+        ) as executor:
+            # Use map for better efficiency - chunks work automatically
+            # Submit all tasks using the fast worker function
             futures = {
-                executor.submit(
-                    _evaluate_single_combination,
-                    wavelengths,
-                    measured,
-                    lipid,
-                    aqueous,
-                    roughness_angstrom,
-                    material_data,
-                    enable_roughness,
-                ): (lipid, aqueous, roughness_angstrom)
-                for lipid, aqueous, roughness_angstrom in combinations
+                executor.submit(_evaluate_combination_fast, combo): combo
+                for combo in combinations
             }
             
             # Collect results as they complete with progress logging
@@ -1724,7 +2000,7 @@ class PyElliGridSearch:
                 total_fine = len(fine_combinations)
                 logger.info(f'   After limiting: {total_fine:,} combinations')
             
-            # Parallel fine search
+            # Parallel fine search with worker initializer
             if fine_combinations:
                 num_workers = os.cpu_count() or 4
                 logger.info(f'🚀 Starting parallel evaluation of {total_fine:,} combinations with {num_workers} workers...')
@@ -1755,19 +2031,14 @@ class PyElliGridSearch:
                 
                 fine_completed = 0
                 fine_filtered = 0
-                with ProcessPoolExecutor(max_workers=num_workers) as executor:
+                with ProcessPoolExecutor(
+                    max_workers=num_workers,
+                    initializer=_worker_initializer,
+                    initargs=(wavelengths, measured, material_data, enable_roughness),
+                ) as executor:
                     futures = {
-                        executor.submit(
-                            _evaluate_single_combination,
-                            wavelengths,
-                            measured,
-                            lipid,
-                            aqueous,
-                            roughness_angstrom,
-                            material_data,
-                            enable_roughness,
-                        ): (lipid, aqueous, roughness_angstrom)
-                        for lipid, aqueous, roughness_angstrom in fine_combinations
+                        executor.submit(_evaluate_combination_fast, combo): combo
+                        for combo in fine_combinations
                     }
                     
                     for future in as_completed(futures):
@@ -2395,19 +2666,14 @@ class PyElliGridSearch:
         completed_count = 0
         filtered_out = 0
         
-        with ProcessPoolExecutor(max_workers=num_workers) as executor:
+        with ProcessPoolExecutor(
+            max_workers=num_workers,
+            initializer=_worker_initializer,
+            initargs=(wavelengths, measured, material_data, enable_roughness),
+        ) as executor:
             futures = {
-                executor.submit(
-                    _evaluate_single_combination,
-                    wavelengths,
-                    measured,
-                    lipid,
-                    aqueous,
-                    roughness_angstrom,
-                    material_data,
-                    enable_roughness,
-                ): (lipid, aqueous, roughness_angstrom)
-                for lipid, aqueous, roughness_angstrom in fine_combinations
+                executor.submit(_evaluate_combination_fast, combo): combo
+                for combo in fine_combinations
             }
             
             # Collect results with progress logging
@@ -2667,22 +2933,17 @@ class PyElliGridSearch:
             for roughness_angstrom in roughness_values
         ]
         
-        # Use all available CPU cores
+        # Use all available CPU cores with worker initializer
         num_workers = os.cpu_count() or 4
         logger.info(f'⚡ Using {num_workers} parallel workers for evaluation')
-        with ProcessPoolExecutor(max_workers=num_workers) as executor:
+        with ProcessPoolExecutor(
+            max_workers=num_workers,
+            initializer=_worker_initializer,
+            initargs=(wavelengths, measured, material_data, enable_roughness),
+        ) as executor:
             futures = {
-                executor.submit(
-                    _evaluate_single_combination,
-                    wavelengths,
-                    measured,
-                    lipid,
-                    aqueous,
-                    roughness_angstrom,
-                    material_data,
-                    enable_roughness,
-                ): (lipid, aqueous, roughness_angstrom)
-                for lipid, aqueous, roughness_angstrom in combinations
+                executor.submit(_evaluate_combination_fast, combo): combo
+                for combo in combinations
             }
             
             # Collect results
