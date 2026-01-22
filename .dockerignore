@@ -1,0 +1,50 @@
+# Git
+.git
+.gitignore
+
+# Python cache
+__pycache__
+*.py[cod]
+*$py.class
+*.so
+.eggs
+dist
+build
+
+# Virtual environments
+.venv
+venv
+
+# IDE
+.idea
+.vscode
+
+# Testing
+.pytest_cache
+tests/
+
+# Data directories (mounted as volumes at runtime)
+data/
+exploration/sample_data/
+exploration/new_spectra/
+exploration/spectra_from_shlomo/
+exploration/measurements/
+
+# Outputs
+outputs/
+
+# Images and screenshots
+*.png
+*.bmp
+*.jpg
+exploration/pyelli_exploration/screenshots/
+
+# Misc
+*.backup
+*.bak
+*.log
+.DS_Store
+*.bat
+*.dll
+docs/
+configs/
