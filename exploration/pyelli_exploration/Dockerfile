@@ -47,9 +47,17 @@ ENV PATH="/opt/venv/bin:$PATH"
 WORKDIR /app
 
 # Create directory structure for volume mounts
+# All data directories the app expects:
+#   - data/Materials: material optical properties (CSV files)
+#   - exploration/sample_data: good_fit and bad_fit samples
+#   - exploration/new_spectra: new spectra to analyze
+#   - exploration/spectra_from_shlomo: raw spectra from Shlomo
+#   - exploration/measurements: exploration measurements
 RUN mkdir -p /app/data/Materials \
     /app/exploration/sample_data \
-    /app/exploration/new_spectra
+    /app/exploration/new_spectra \
+    /app/exploration/spectra_from_shlomo \
+    /app/exploration/measurements
 
 # Copy application code
 COPY .streamlit/ /app/.streamlit/
