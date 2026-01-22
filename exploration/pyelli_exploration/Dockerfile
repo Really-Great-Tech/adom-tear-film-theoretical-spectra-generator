@@ -67,6 +67,20 @@ COPY exploration/pyelli_exploration/ /app/exploration/pyelli_exploration/
 # Set Python path for imports
 ENV PYTHONPATH="/app:${PYTHONPATH}"
 
+# =============================================================================
+# BLAS/OpenMP Thread Limiting (CRITICAL for multiprocessing performance)
+# =============================================================================
+# These MUST be set BEFORE Python starts to prevent thread oversubscription
+# when using ProcessPoolExecutor. Without these, each worker process spawns
+# multiple BLAS threads (e.g., 32 cores × 8 threads = 256 threads competing).
+# Setting to 1 ensures each Python process uses single-threaded BLAS,
+# allowing ProcessPoolExecutor to efficiently parallelize at the process level.
+ENV OMP_NUM_THREADS=1
+ENV MKL_NUM_THREADS=1
+ENV OPENBLAS_NUM_THREADS=1
+ENV NUMEXPR_NUM_THREADS=1
+ENV VECLIB_MAXIMUM_THREADS=1
+
 # Streamlit configuration
 ENV STREAMLIT_SERVER_PORT=8501
 ENV STREAMLIT_SERVER_ADDRESS=0.0.0.0
