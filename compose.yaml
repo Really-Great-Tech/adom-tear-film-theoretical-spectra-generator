@@ -1,0 +1,15 @@
+services:
+  pyelli:
+    build:
+      context: .
+      dockerfile: Dockerfile.pyelli
+    container_name: pyelli
+    restart: unless-stopped
+    ports:
+      - "8501:8501"
+    volumes:
+      - ./data/Materials:/app/data/Materials
+      - ./exploration/sample_data:/app/exploration/sample_data
+      - ./exploration/new_spectra:/app/exploration/new_spectra
+      - ./exploration/spectra_from_shlomo:/app/exploration/spectra_from_shlomo
+      - ./exploration/measurements:/app/exploration/measurements
