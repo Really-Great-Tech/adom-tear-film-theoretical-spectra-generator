@@ -2831,20 +2831,20 @@ class PyElliGridSearch:
             logger.info('-' * 80)
             
             best = final_results[0]
-            # Very small search window with tiny steps
+            # Very small search window with tiny steps - respect user-specified ranges
             ultra_fine_lipid = np.arange(
-                max(9, best.lipid_nm - 10), 
-                min(250, best.lipid_nm + 10) + 1, 
+                max(lipid_range[0], best.lipid_nm - 10), 
+                min(lipid_range[1], best.lipid_nm + 10) + 1, 
                 2.0  # 2nm step
             )
             ultra_fine_aqueous = np.arange(
-                max(800, best.aqueous_nm - 200),
-                min(12000, best.aqueous_nm + 200) + 1,
+                max(aqueous_range[0], best.aqueous_nm - 200),
+                min(aqueous_range[1], best.aqueous_nm + 200) + 1,
                 20.0  # 20nm step
             )
             ultra_fine_roughness = np.arange(
-                max(600, best.mucus_nm - 200),
-                min(7000, best.mucus_nm + 200) + 1,
+                max(roughness_range[0], best.mucus_nm - 200),
+                min(roughness_range[1], best.mucus_nm + 200) + 1,
                 50.0  # 50Å step
             )
             
