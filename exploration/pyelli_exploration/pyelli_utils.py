@@ -8,9 +8,52 @@ for tear film interferometry analysis.
 import logging
 from pathlib import Path
 from typing import Dict, Optional, Tuple
+import warnings
+import os
+import sys
+from io import StringIO
+
+# Suppress Streamlit warnings via environment variable (set before any streamlit imports)
+os.environ['STREAMLIT_LOGGER_LEVEL'] = 'error'
+os.environ['STREAMLIT_BROWSER_GATHER_USAGE_STATS'] = 'false'
+
+# Redirect stderr to filter out ScriptRunContext warnings (but keep other useful logs)
+class FilteredStderr:
+    """Filter stderr to suppress Streamlit ScriptRunContext warnings while preserving useful logs."""
+    def __init__(self, original_stderr):
+        self.original_stderr = original_stderr
+        self.buffer = StringIO()
+    
+    def write(self, text):
+        # Only filter out ScriptRunContext warnings - keep all other logs (params, steps, etc.)
+        if 'ScriptRunContext' in text or 'missing ScriptRunContext' in text:
+            return  # Suppress these messages
+        self.original_stderr.write(text)
+    
+    def flush(self):
+        self.original_stderr.flush()
+    
+    def __getattr__(self, name):
+        return getattr(self.original_stderr, name)
+
+# Apply stderr filter (only if not already applied)
+if not isinstance(sys.stderr, FilteredStderr):
+    _original_stderr = sys.stderr
+    sys.stderr = FilteredStderr(_original_stderr)
 
 import numpy as np
 import pandas as pd
+
+# Suppress Streamlit ScriptRunContext warnings at module level (but keep other logging)
+warnings.filterwarnings('ignore', message='.*ScriptRunContext.*', category=UserWarning)
+warnings.filterwarnings('ignore', message='.*missing ScriptRunContext.*', category=UserWarning)
+
+# Suppress Streamlit logging warnings (but keep our logger active for params/steps)
+logging.getLogger('streamlit').setLevel(logging.ERROR)
+logging.getLogger('streamlit.runtime').setLevel(logging.ERROR)
+logging.getLogger('streamlit.runtime.scriptrunner').setLevel(logging.ERROR)
+logging.getLogger('streamlit.runtime.scriptrunner_utils').setLevel(logging.ERROR)
+logging.getLogger('streamlit.runtime.state').setLevel(logging.ERROR)
 
 logger = logging.getLogger(__name__)
 

@@ -59,6 +59,9 @@ from src.analysis.measurement_utils import (
 from src.analysis.metrics import _match_peaks
 
 logger = logging.getLogger(__name__)
+# Ensure logger is set to INFO level to show parameter logging
+if logger.level == logging.NOTSET:
+    logger.setLevel(logging.INFO)
 
 
 # =============================================================================
@@ -1715,6 +1718,26 @@ class PyElliGridSearch:
         Returns:
             List of top results sorted by score (descending), filtered by correlation
         """
+        # Log entry point with all parameters
+        logger.info('')
+        logger.info('=' * 80)
+        logger.info('🚀 GRID SEARCH STARTED')
+        logger.info('=' * 80)
+        logger.info(f'📋 Input Parameters:')
+        logger.info(f'   - Search Strategy: {search_strategy}')
+        logger.info(f'   - Lipid Range: {lipid_range[0]:.1f} - {lipid_range[1]:.1f} nm (step: {lipid_range[2]:.1f} nm)')
+        logger.info(f'   - Aqueous Range: {aqueous_range[0]:.1f} - {aqueous_range[1]:.1f} nm (step: {aqueous_range[2]:.1f} nm)')
+        logger.info(f'   - Roughness Range: {roughness_range[0]:.1f} - {roughness_range[1]:.1f} Å (step: {roughness_range[2]:.1f} Å)')
+        logger.info(f'   - Max Combinations: {max_combinations:,}' if max_combinations else '   - Max Combinations: None (unlimited)')
+        logger.info(f'   - Top K Results: {top_k}')
+        logger.info(f'   - Enable Roughness: {enable_roughness}')
+        if search_strategy == 'Coarse Search':
+            logger.info(f'   - Fine Search: {fine_search}')
+            logger.info(f'   - Fine Refinement Factor: {fine_refinement_factor:.2f}')
+        logger.info(f'   - Min Correlation Filter: {min_correlation_filter:.2f}')
+        logger.info('=' * 80)
+        logger.info('')
+        
         # Route to appropriate search strategy
         if search_strategy == 'Full Grid Search':
             return self._run_full_grid_search(
@@ -1768,14 +1791,22 @@ class PyElliGridSearch:
         results: List[PyElliResult] = []
         
         # Generate parameter grid
+        logger.info('')
+        logger.info('🔧 Generating parameter grid from user inputs...')
+        logger.info(f'   Input step sizes: Lipid={lipid_range[2]:.1f}nm, Aqueous={aqueous_range[2]:.1f}nm, Roughness={roughness_range[2]:.1f}Å')
+        
         lipid_values = np.arange(lipid_range[0], lipid_range[1] + 1, lipid_range[2])
         aqueous_values = np.arange(aqueous_range[0], aqueous_range[1] + 1, aqueous_range[2])
         roughness_values_angstrom = np.arange(roughness_range[0], roughness_range[1] + 1, roughness_range[2])
+        
+        logger.info(f'   Generated before filtering: Lipid={len(lipid_values)}, Aqueous={len(aqueous_values)}, Roughness={len(roughness_values_angstrom)}')
         
         # Filter to user-specified ranges (already bounded by ADOM limits in UI)
         lipid_values = lipid_values[(lipid_values >= lipid_range[0]) & (lipid_values <= lipid_range[1])]
         aqueous_values = aqueous_values[(aqueous_values >= aqueous_range[0]) & (aqueous_values <= aqueous_range[1])]
         roughness_values_angstrom = roughness_values_angstrom[(roughness_values_angstrom >= roughness_range[0]) & (roughness_values_angstrom <= roughness_range[1])]
+        
+        logger.info(f'   After range filtering: Lipid={len(lipid_values)}, Aqueous={len(aqueous_values)}, Roughness={len(roughness_values_angstrom)}')
         
         if len(lipid_values) == 0 or len(aqueous_values) == 0 or len(roughness_values_angstrom) == 0:
             logger.warning(f'⚠️ Parameter ranges resulted in empty grid! Lipid: {len(lipid_values)}, Aqueous: {len(aqueous_values)}, Roughness: {len(roughness_values_angstrom)}')
@@ -1789,19 +1820,30 @@ class PyElliGridSearch:
             max_combinations = 5000  # Default if not provided
         if total > max_combinations:
             logger.warning(f'⚠️ Coarse grid too large ({total:,} combinations). Limiting to {max_combinations:,} by sampling...')
+            logger.info(f'   Before sampling: {len(lipid_values)} lipid × {len(aqueous_values)} aqueous × {len(roughness_values_angstrom)} roughness = {total:,} combinations')
             # Sample evenly from each dimension to stay within limit
             target_per_dim = int(np.ceil(max_combinations ** (1/3)))
+            logger.info(f'   Target samples per dimension: {target_per_dim}')
+            
+            lipid_before = len(lipid_values)
+            aqueous_before = len(aqueous_values)
+            roughness_before = len(roughness_values_angstrom)
+            
             if len(lipid_values) > target_per_dim:
                 indices = np.linspace(0, len(lipid_values)-1, target_per_dim, dtype=int)
                 lipid_values = lipid_values[indices]
+                logger.info(f'   Lipid sampled: {lipid_before} → {len(lipid_values)} values')
             if len(aqueous_values) > target_per_dim:
                 indices = np.linspace(0, len(aqueous_values)-1, target_per_dim, dtype=int)
                 aqueous_values = aqueous_values[indices]
+                logger.info(f'   Aqueous sampled: {aqueous_before} → {len(aqueous_values)} values')
             if len(roughness_values_angstrom) > target_per_dim:
                 indices = np.linspace(0, len(roughness_values_angstrom)-1, target_per_dim, dtype=int)
                 roughness_values_angstrom = roughness_values_angstrom[indices]
+                logger.info(f'   Roughness sampled: {roughness_before} → {len(roughness_values_angstrom)} values')
+            
             total = len(lipid_values) * len(aqueous_values) * len(roughness_values_angstrom)
-            logger.info(f'📊 After limiting: {total:,} combinations')
+            logger.info(f'   After sampling: {len(lipid_values)} lipid × {len(aqueous_values)} aqueous × {len(roughness_values_angstrom)} roughness = {total:,} combinations')
         
         # Use all available CPU cores
         num_workers = os.cpu_count() or 4
@@ -2228,21 +2270,32 @@ class PyElliGridSearch:
         This is slower but more thorough - searches every combination in the parameter space.
         """
         # Use finer steps for full grid search
+        logger.info('')
+        logger.info('🔧 Calculating fine step sizes for full grid search...')
+        logger.info(f'   User input step sizes: Lipid={lipid_range[2]:.1f}nm, Aqueous={aqueous_range[2]:.1f}nm, Roughness={roughness_range[2]:.1f}Å')
+        
         fine_lipid_step = max(1.0, lipid_range[2] * 0.2)  # 20% of coarse step
         fine_aqueous_step = max(20.0, aqueous_range[2] * 0.2)
         fine_roughness_step = max(10.0, roughness_range[2] * 0.2)
         
+        logger.info(f'   Calculated fine steps: Lipid={fine_lipid_step:.1f}nm (20% of {lipid_range[2]:.1f}nm), Aqueous={fine_aqueous_step:.1f}nm (20% of {aqueous_range[2]:.1f}nm), Roughness={fine_roughness_step:.1f}Å (20% of {roughness_range[2]:.1f}Å)')
         logger.info(f'🔍 Running FULL GRID SEARCH with fine steps: Lipid={fine_lipid_step:.1f}nm, Aqueous={fine_aqueous_step:.1f}nm, Roughness={fine_roughness_step:.1f}Å')
         
         # Generate fine parameter grid
+        logger.info('')
+        logger.info('🔧 Generating fine parameter grid...')
         lipid_values = np.arange(lipid_range[0], lipid_range[1] + 1, fine_lipid_step)
         aqueous_values = np.arange(aqueous_range[0], aqueous_range[1] + 1, fine_aqueous_step)
         roughness_values_angstrom = np.arange(roughness_range[0], roughness_range[1] + 1, fine_roughness_step)
+        
+        logger.info(f'   Generated before filtering: Lipid={len(lipid_values)}, Aqueous={len(aqueous_values)}, Roughness={len(roughness_values_angstrom)}')
         
         # Filter to user-specified ranges (already bounded by ADOM limits in UI)
         lipid_values = lipid_values[(lipid_values >= lipid_range[0]) & (lipid_values <= lipid_range[1])]
         aqueous_values = aqueous_values[(aqueous_values >= aqueous_range[0]) & (aqueous_values <= aqueous_range[1])]
         roughness_values_angstrom = roughness_values_angstrom[(roughness_values_angstrom >= roughness_range[0]) & (roughness_values_angstrom <= roughness_range[1])]
+        
+        logger.info(f'   After range filtering: Lipid={len(lipid_values)}, Aqueous={len(aqueous_values)}, Roughness={len(roughness_values_angstrom)}')
         
         if len(lipid_values) == 0 or len(aqueous_values) == 0 or len(roughness_values_angstrom) == 0:
             logger.warning(f'⚠️ Parameter ranges resulted in empty grid!')
@@ -2250,6 +2303,7 @@ class PyElliGridSearch:
         
         total = len(lipid_values) * len(aqueous_values) * len(roughness_values_angstrom)
         logger.info(f'📊 Full grid search: {total:,} total combinations to evaluate (no limit - exhaustive search)')
+        logger.info(f'   Final grid: {len(lipid_values)} lipid × {len(aqueous_values)} aqueous × {len(roughness_values_angstrom)} roughness')
         
         # Use same evaluation logic as coarse search
         return self._evaluate_parameter_grid(
@@ -2308,64 +2362,35 @@ class PyElliGridSearch:
         else:
             stage1_budget = None
         
-        # Calculate optimal step sizes to utilize the full Stage 1 budget
-        # Target: generate approximately stage1_budget combinations
+        # Use user's exact step sizes (respect client's UI settings)
+        logger.info('')
+        logger.info('🔧 Using user-specified step sizes for dynamic search...')
+        logger.info(f'   User input step sizes: Lipid={lipid_range[2]:.1f}nm, Aqueous={aqueous_range[2]:.1f}nm, Roughness={roughness_range[2]:.1f}Å')
+        
+        # Always use the user's step sizes - no optimization/change
         coarse_lipid_step = lipid_range[2]
         coarse_aqueous_step = aqueous_range[2]
         coarse_roughness_step = roughness_range[2]
         
-        # Calculate ranges
-        lipid_span = min(lipid_range[1], 250) - max(lipid_range[0], 9)
-        aqueous_span = min(aqueous_range[1], 12000) - max(aqueous_range[0], 800)
-        roughness_span = min(roughness_range[1], 7000) - max(roughness_range[0], 600)
-        
-        # If we have a budget, optimize step sizes to utilize it
-        if stage1_budget is not None and stage1_budget > 0:
-            # Calculate how many combinations current steps would generate
-            lipid_count_initial = max(1, int(lipid_span / coarse_lipid_step) + 1)
-            aqueous_count_initial = max(1, int(aqueous_span / coarse_aqueous_step) + 1)
-            roughness_count_initial = max(1, int(roughness_span / coarse_roughness_step) + 1)
-            initial_total = lipid_count_initial * aqueous_count_initial * roughness_count_initial
-            
-            # Target: 90% of budget (leave some headroom for filtering)
-            target_combinations = int(stage1_budget * 0.9)
-            
-            # Optimize steps if we're significantly off target (either too many or too few)
-            # Threshold: if we're more than 20% away from target, optimize
-            if abs(initial_total - target_combinations) > target_combinations * 0.2:
-                # Calculate optimal step sizes to reach target
-                # Cube root approach: each dimension gets roughly cube_root(target) values
-                target_per_dim = int(np.ceil(target_combinations ** (1/3)))
-                
-                # Calculate optimal steps (ensure minimum reasonable steps)
-                optimal_lipid_step = max(1.0, lipid_span / max(1, target_per_dim))
-                optimal_aqueous_step = max(10.0, aqueous_span / max(1, target_per_dim))
-                optimal_roughness_step = max(5.0, roughness_span / max(1, target_per_dim))
-                
-                # Use optimal steps (they will be smaller if initial_total > target, larger if initial_total < target)
-                coarse_lipid_step = optimal_lipid_step
-                coarse_aqueous_step = optimal_aqueous_step
-                coarse_roughness_step = optimal_roughness_step
-                
-                logger.info(f'📊 Optimized step sizes to utilize Stage 1 budget ({stage1_budget:,} combinations):')
-                logger.info(f'   - Initial combinations: {initial_total:,} (target: {target_combinations:,})')
-                logger.info(f'   - Lipid step: {coarse_lipid_step:.1f} nm (was {lipid_range[2]:.1f} nm)')
-                logger.info(f'   - Aqueous step: {coarse_aqueous_step:.1f} nm (was {aqueous_range[2]:.1f} nm)')
-                logger.info(f'   - Roughness step: {coarse_roughness_step:.1f} Å (was {roughness_range[2]:.1f} Å)')
-        
-        logger.info(f'🔧 Coarse Step Sizes:')
+        logger.info(f'🔧 Coarse Step Sizes (using user input):')
         logger.info(f'   - Lipid: {coarse_lipid_step:.1f} nm')
         logger.info(f'   - Aqueous: {coarse_aqueous_step:.1f} nm')
         logger.info(f'   - Roughness: {coarse_roughness_step:.1f} Å')
         
+        logger.info('')
+        logger.info('🔧 Generating coarse parameter grid for Stage 1 with user step sizes...')
         lipid_values_coarse = np.arange(lipid_range[0], lipid_range[1] + 1, coarse_lipid_step)
         aqueous_values_coarse = np.arange(aqueous_range[0], aqueous_range[1] + 1, coarse_aqueous_step)
         roughness_values_coarse = np.arange(roughness_range[0], roughness_range[1] + 1, coarse_roughness_step)
+        
+        logger.info(f'   Generated before filtering: Lipid={len(lipid_values_coarse)}, Aqueous={len(aqueous_values_coarse)}, Roughness={len(roughness_values_coarse)}')
         
         # Filter to user-specified ranges (already bounded by ADOM limits in UI)
         lipid_values_coarse = lipid_values_coarse[(lipid_values_coarse >= lipid_range[0]) & (lipid_values_coarse <= lipid_range[1])]
         aqueous_values_coarse = aqueous_values_coarse[(aqueous_values_coarse >= aqueous_range[0]) & (aqueous_values_coarse <= aqueous_range[1])]
         roughness_values_coarse = roughness_values_coarse[(roughness_values_coarse >= roughness_range[0]) & (roughness_values_coarse <= roughness_range[1])]
+        
+        logger.info(f'   After range filtering: Lipid={len(lipid_values_coarse)}, Aqueous={len(aqueous_values_coarse)}, Roughness={len(roughness_values_coarse)}')
         
         coarse_total = len(lipid_values_coarse) * len(aqueous_values_coarse) * len(roughness_values_coarse)
         logger.info(f'📈 Coarse Grid Dimensions:')
@@ -2374,16 +2399,21 @@ class PyElliGridSearch:
         logger.info(f'   - Roughness values: {len(roughness_values_coarse)} ({roughness_values_coarse[0]:.1f} to {roughness_values_coarse[-1]:.1f} Å)')
         logger.info(f'   - Total combinations: {coarse_total:,}')
         
-        # Check if coarse search exceeds Stage 1 budget (should be rare now with optimization)
+        # Check if coarse search exceeds Stage 1 budget - sample grid to fit budget while respecting step sizes
         if stage1_budget is not None and coarse_total > stage1_budget:
             logger.warning(f'⚠️ Coarse search ({coarse_total:,} combinations) exceeds Stage 1 budget ({stage1_budget:,})')
             logger.warning(f'   Limiting coarse search to {stage1_budget:,} combinations (70% of {max_combinations:,} total)...')
+            logger.info(f'   Before sampling: {len(lipid_values_coarse)} lipid × {len(aqueous_values_coarse)} aqueous × {len(roughness_values_coarse)} roughness = {coarse_total:,} combinations')
             
             # Intelligently sample from each dimension to maximize coverage within budget
             # Strategy: Keep smaller dimensions fully, sample more aggressively from larger dimensions
             lipid_count = len(lipid_values_coarse)
             aqueous_count = len(aqueous_values_coarse)
             roughness_count = len(roughness_values_coarse)
+            
+            lipid_before = lipid_count
+            aqueous_before = aqueous_count
+            roughness_before = roughness_count
             
             # Sort dimensions by size to decide sampling strategy
             dims = [
@@ -2429,52 +2459,63 @@ class PyElliGridSearch:
                     if dim2_target < aqueous_count:
                         indices = np.linspace(0, aqueous_count-1, dim2_target, dtype=int)
                         aqueous_values_coarse = aqueous_values_coarse[indices]
+                        logger.info(f'   Aqueous sampled: {aqueous_before} → {len(aqueous_values_coarse)} values')
                     if dim3_target < roughness_count:
                         indices = np.linspace(0, roughness_count-1, dim3_target, dtype=int)
                         roughness_values_coarse = roughness_values_coarse[indices]
+                        logger.info(f'   Roughness sampled: {roughness_before} → {len(roughness_values_coarse)} values')
                 else:  # dim2 is roughness
                     if dim2_target < roughness_count:
                         indices = np.linspace(0, roughness_count-1, dim2_target, dtype=int)
                         roughness_values_coarse = roughness_values_coarse[indices]
+                        logger.info(f'   Roughness sampled: {roughness_before} → {len(roughness_values_coarse)} values')
                     if dim3_target < aqueous_count:
                         indices = np.linspace(0, aqueous_count-1, dim3_target, dtype=int)
                         aqueous_values_coarse = aqueous_values_coarse[indices]
+                        logger.info(f'   Aqueous sampled: {aqueous_before} → {len(aqueous_values_coarse)} values')
             elif smallest_name == 'aqueous':
                 aqueous_values_coarse = smallest_values  # Keep all
                 if dim2_name == 'lipid':
                     if dim2_target < lipid_count:
                         indices = np.linspace(0, lipid_count-1, dim2_target, dtype=int)
                         lipid_values_coarse = lipid_values_coarse[indices]
+                        logger.info(f'   Lipid sampled: {lipid_before} → {len(lipid_values_coarse)} values')
                     if dim3_target < roughness_count:
                         indices = np.linspace(0, roughness_count-1, dim3_target, dtype=int)
                         roughness_values_coarse = roughness_values_coarse[indices]
+                        logger.info(f'   Roughness sampled: {roughness_before} → {len(roughness_values_coarse)} values')
                 else:  # dim2 is roughness
                     if dim2_target < roughness_count:
                         indices = np.linspace(0, roughness_count-1, dim2_target, dtype=int)
                         roughness_values_coarse = roughness_values_coarse[indices]
+                        logger.info(f'   Roughness sampled: {roughness_before} → {len(roughness_values_coarse)} values')
                     if dim3_target < lipid_count:
                         indices = np.linspace(0, lipid_count-1, dim3_target, dtype=int)
                         lipid_values_coarse = lipid_values_coarse[indices]
+                        logger.info(f'   Lipid sampled: {lipid_before} → {len(lipid_values_coarse)} values')
             else:  # smallest is roughness
                 roughness_values_coarse = smallest_values  # Keep all
                 if dim2_name == 'lipid':
                     if dim2_target < lipid_count:
                         indices = np.linspace(0, lipid_count-1, dim2_target, dtype=int)
                         lipid_values_coarse = lipid_values_coarse[indices]
+                        logger.info(f'   Lipid sampled: {lipid_before} → {len(lipid_values_coarse)} values')
                     if dim3_target < aqueous_count:
                         indices = np.linspace(0, aqueous_count-1, dim3_target, dtype=int)
                         aqueous_values_coarse = aqueous_values_coarse[indices]
+                        logger.info(f'   Aqueous sampled: {aqueous_before} → {len(aqueous_values_coarse)} values')
                 else:  # dim2 is aqueous
                     if dim2_target < aqueous_count:
                         indices = np.linspace(0, aqueous_count-1, dim2_target, dtype=int)
                         aqueous_values_coarse = aqueous_values_coarse[indices]
+                        logger.info(f'   Aqueous sampled: {aqueous_before} → {len(aqueous_values_coarse)} values')
                     if dim3_target < lipid_count:
                         indices = np.linspace(0, lipid_count-1, dim3_target, dtype=int)
                         lipid_values_coarse = lipid_values_coarse[indices]
+                        logger.info(f'   Lipid sampled: {lipid_before} → {len(lipid_values_coarse)} values')
             
             coarse_total = len(lipid_values_coarse) * len(aqueous_values_coarse) * len(roughness_values_coarse)
-            logger.info(f'   After limiting: {coarse_total:,} combinations (target: {stage1_budget:,})')
-            logger.info(f'   Sampling: {len(lipid_values_coarse)} lipid × {len(aqueous_values_coarse)} aqueous × {len(roughness_values_coarse)} roughness')
+            logger.info(f'   After sampling: {len(lipid_values_coarse)} lipid × {len(aqueous_values_coarse)} aqueous × {len(roughness_values_coarse)} roughness = {coarse_total:,} combinations (target: {stage1_budget:,})')
         
         logger.info(f'🚀 Starting parallel evaluation with {os.cpu_count() or 4} workers...')
         
