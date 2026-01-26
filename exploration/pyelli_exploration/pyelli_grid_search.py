@@ -1772,10 +1772,10 @@ class PyElliGridSearch:
         aqueous_values = np.arange(aqueous_range[0], aqueous_range[1] + 1, aqueous_range[2])
         roughness_values_angstrom = np.arange(roughness_range[0], roughness_range[1] + 1, roughness_range[2])
         
-        # Filter out negative values and enforce standard ADOM ranges
-        lipid_values = lipid_values[(lipid_values >= 9) & (lipid_values <= 250)]
-        aqueous_values = aqueous_values[(aqueous_values >= 800) & (aqueous_values <= 12000)]
-        roughness_values_angstrom = roughness_values_angstrom[(roughness_values_angstrom >= 600) & (roughness_values_angstrom <= 7000)]
+        # Filter to user-specified ranges (already bounded by ADOM limits in UI)
+        lipid_values = lipid_values[(lipid_values >= lipid_range[0]) & (lipid_values <= lipid_range[1])]
+        aqueous_values = aqueous_values[(aqueous_values >= aqueous_range[0]) & (aqueous_values <= aqueous_range[1])]
+        roughness_values_angstrom = roughness_values_angstrom[(roughness_values_angstrom >= roughness_range[0]) & (roughness_values_angstrom <= roughness_range[1])]
         
         if len(lipid_values) == 0 or len(aqueous_values) == 0 or len(roughness_values_angstrom) == 0:
             logger.warning(f'⚠️ Parameter ranges resulted in empty grid! Lipid: {len(lipid_values)}, Aqueous: {len(aqueous_values)}, Roughness: {len(roughness_values_angstrom)}')
@@ -1965,10 +1965,10 @@ class PyElliGridSearch:
                 fine_roughness_max = min(roughness_range[1], candidate.mucus_nm + 3 * roughness_range[2])
                 fine_roughness_values = np.arange(fine_roughness_min, fine_roughness_max + fine_roughness_step, fine_roughness_step)
                 
-                # Filter out negative values and enforce standard ADOM ranges
-                fine_lipid_values = fine_lipid_values[(fine_lipid_values >= 9) & (fine_lipid_values <= 250)]
-                fine_aqueous_values = fine_aqueous_values[(fine_aqueous_values >= 800) & (fine_aqueous_values <= 12000)]
-                fine_roughness_values = fine_roughness_values[(fine_roughness_values >= 600) & (fine_roughness_values <= 7000)]
+                # Filter to user-specified ranges (already bounded by ADOM limits in UI)
+                fine_lipid_values = fine_lipid_values[(fine_lipid_values >= lipid_range[0]) & (fine_lipid_values <= lipid_range[1])]
+                fine_aqueous_values = fine_aqueous_values[(fine_aqueous_values >= aqueous_range[0]) & (fine_aqueous_values <= aqueous_range[1])]
+                fine_roughness_values = fine_roughness_values[(fine_roughness_values >= roughness_range[0]) & (fine_roughness_values <= roughness_range[1])]
                 
                 # Generate fine search combinations
                 for lipid in fine_lipid_values:
@@ -2239,10 +2239,10 @@ class PyElliGridSearch:
         aqueous_values = np.arange(aqueous_range[0], aqueous_range[1] + 1, fine_aqueous_step)
         roughness_values_angstrom = np.arange(roughness_range[0], roughness_range[1] + 1, fine_roughness_step)
         
-        # Filter and enforce standard ADOM ranges
-        lipid_values = lipid_values[(lipid_values >= 9) & (lipid_values <= 250)]
-        aqueous_values = aqueous_values[(aqueous_values >= 800) & (aqueous_values <= 12000)]
-        roughness_values_angstrom = roughness_values_angstrom[(roughness_values_angstrom >= 600) & (roughness_values_angstrom <= 7000)]
+        # Filter to user-specified ranges (already bounded by ADOM limits in UI)
+        lipid_values = lipid_values[(lipid_values >= lipid_range[0]) & (lipid_values <= lipid_range[1])]
+        aqueous_values = aqueous_values[(aqueous_values >= aqueous_range[0]) & (aqueous_values <= aqueous_range[1])]
+        roughness_values_angstrom = roughness_values_angstrom[(roughness_values_angstrom >= roughness_range[0]) & (roughness_values_angstrom <= roughness_range[1])]
         
         if len(lipid_values) == 0 or len(aqueous_values) == 0 or len(roughness_values_angstrom) == 0:
             logger.warning(f'⚠️ Parameter ranges resulted in empty grid!')
@@ -2362,10 +2362,10 @@ class PyElliGridSearch:
         aqueous_values_coarse = np.arange(aqueous_range[0], aqueous_range[1] + 1, coarse_aqueous_step)
         roughness_values_coarse = np.arange(roughness_range[0], roughness_range[1] + 1, coarse_roughness_step)
         
-        # Filter and enforce ranges
-        lipid_values_coarse = lipid_values_coarse[(lipid_values_coarse >= 9) & (lipid_values_coarse <= 250)]
-        aqueous_values_coarse = aqueous_values_coarse[(aqueous_values_coarse >= 800) & (aqueous_values_coarse <= 12000)]
-        roughness_values_coarse = roughness_values_coarse[(roughness_values_coarse >= 600) & (roughness_values_coarse <= 7000)]
+        # Filter to user-specified ranges (already bounded by ADOM limits in UI)
+        lipid_values_coarse = lipid_values_coarse[(lipid_values_coarse >= lipid_range[0]) & (lipid_values_coarse <= lipid_range[1])]
+        aqueous_values_coarse = aqueous_values_coarse[(aqueous_values_coarse >= aqueous_range[0]) & (aqueous_values_coarse <= aqueous_range[1])]
+        roughness_values_coarse = roughness_values_coarse[(roughness_values_coarse >= roughness_range[0]) & (roughness_values_coarse <= roughness_range[1])]
         
         coarse_total = len(lipid_values_coarse) * len(aqueous_values_coarse) * len(roughness_values_coarse)
         logger.info(f'📈 Coarse Grid Dimensions:')
@@ -2567,10 +2567,10 @@ class PyElliGridSearch:
             fine_aqueous = np.arange(aqueous_min, aqueous_max + fine_aqueous_step, fine_aqueous_step)
             fine_roughness = np.arange(roughness_min, roughness_max + fine_roughness_step, fine_roughness_step)
             
-            # Filter to valid ranges
-            fine_lipids = fine_lipids[(fine_lipids >= 9) & (fine_lipids <= 250)]
-            fine_aqueous = fine_aqueous[(fine_aqueous >= 800) & (fine_aqueous <= 12000)]
-            fine_roughness = fine_roughness[(fine_roughness >= 600) & (fine_roughness <= 7000)]
+            # Filter to user-specified ranges (already bounded by ADOM limits in UI)
+            fine_lipids = fine_lipids[(fine_lipids >= lipid_range[0]) & (fine_lipids <= lipid_range[1])]
+            fine_aqueous = fine_aqueous[(fine_aqueous >= aqueous_range[0]) & (fine_aqueous <= aqueous_range[1])]
+            fine_roughness = fine_roughness[(fine_roughness >= roughness_range[0]) & (fine_roughness <= roughness_range[1])]
             
             # Add combinations (avoid duplicates with coarse results)
             for lipid in fine_lipids:
