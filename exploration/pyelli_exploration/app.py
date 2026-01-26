@@ -1414,33 +1414,35 @@ if selected_file and Path(selected_file).exists():
         # Run grid search if button pressed
         if run_autofit:
             start_time = time.perf_counter()
-
+            
+            # Capture session state values BEFORE entering thread (main thread)
+            # This ensures we use the correct values even if session_state isn't thread-safe
+            captured_lipid_range = (
+                st.session_state.get('grid_lipid_min', 9.0),
+                st.session_state.get('grid_lipid_max', 250.0),
+                st.session_state.get('grid_lipid_step', 5.0),
+            )
+            captured_aqueous_range = (
+                st.session_state.get('grid_aq_min', 800.0),
+                st.session_state.get('grid_aq_max', 12000.0),
+                st.session_state.get('grid_aq_step', 200.0),
+            )
+            captured_roughness_range = (
+                st.session_state.get('grid_mu_min', 600.0),
+                st.session_state.get('grid_mu_max', 7000.0),
+                st.session_state.get('grid_mu_step', 100.0),
+            )
+            
             def _run_search():
-                # Use UI values with correct standard ADOM defaults
-                lipid_min = st.session_state.get('grid_lipid_min', 9)
-                lipid_max = st.session_state.get('grid_lipid_max', 250)
-                lipid_step = st.session_state.get('grid_lipid_step', 5)
-                aqueous_min = st.session_state.get('grid_aq_min', 800)
-                aqueous_max = st.session_state.get('grid_aq_max', 12000)
-                aqueous_step = st.session_state.get('grid_aq_step', 200)
-                mucus_min = st.session_state.get('grid_mu_min', 600)
-                mucus_max = st.session_state.get('grid_mu_max', 7000)  # Updated to 7000
-                mucus_step = st.session_state.get('grid_mu_step', 100)  # Use 100 as default
-                
-                # Always use Dynamic Search with 25,000 max combinations
-                # Increased to allow more thorough search and better peak alignment
-                strategy = 'Dynamic Search'
-                max_combinations = 4000
-                
                 return grid_search.run_grid_search(
                     wavelengths, measured,
-                    lipid_range=(lipid_min, lipid_max, lipid_step),
-                    aqueous_range=(aqueous_min, aqueous_max, aqueous_step),
-                    roughness_range=(mucus_min, mucus_max, mucus_step),
+                    lipid_range=captured_lipid_range,
+                    aqueous_range=captured_aqueous_range,
+                    roughness_range=captured_roughness_range,
                     top_k=10,
                     enable_roughness=True,
-                    search_strategy=strategy,  # Always Dynamic Search
-                    max_combinations=max_combinations,  # Fixed at 10,000
+                    search_strategy='Dynamic Search',
+                    max_combinations=4000,
                 )
 
             # Show progress in the placeholder above the tabs
