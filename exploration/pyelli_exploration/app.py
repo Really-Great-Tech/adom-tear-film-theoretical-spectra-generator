@@ -179,6 +179,26 @@ if 'selected_substratum_material' not in st.session_state:
 if 'custom_materials' not in st.session_state:
     st.session_state.custom_materials = {}
 
+# Grid search range settings (match ADOM standard ranges)
+if 'grid_lipid_min' not in st.session_state:
+    st.session_state.grid_lipid_min = 9.0
+if 'grid_lipid_max' not in st.session_state:
+    st.session_state.grid_lipid_max = 250.0
+if 'grid_lipid_step' not in st.session_state:
+    st.session_state.grid_lipid_step = 5.0
+if 'grid_aq_min' not in st.session_state:
+    st.session_state.grid_aq_min = 800.0
+if 'grid_aq_max' not in st.session_state:
+    st.session_state.grid_aq_max = 12000.0
+if 'grid_aq_step' not in st.session_state:
+    st.session_state.grid_aq_step = 200.0
+if 'grid_mu_min' not in st.session_state:
+    st.session_state.grid_mu_min = 600.0
+if 'grid_mu_max' not in st.session_state:
+    st.session_state.grid_mu_max = 7000.0
+if 'grid_mu_step' not in st.session_state:
+    st.session_state.grid_mu_step = 100.0
+
 
 def validate_material_file(uploaded_file) -> tuple[bool, str, pd.DataFrame | None]:
     """
