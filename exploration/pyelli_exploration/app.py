@@ -1249,19 +1249,55 @@ with st.sidebar:
         col_a, col_b, col_c = st.columns(3)
         with col_a:
             # Lipid: Standard range 9-250nm
-            lipid_min = st.number_input('Lipid Min', value=9, key='grid_lipid_min')
-            lipid_max = st.number_input('Lipid Max', value=250, key='grid_lipid_max')
-            lipid_step = st.number_input('Lipid Step', value=5, key='grid_lipid_step')
+            lipid_min = st.number_input(
+                'Lipid Min', min_value=1.0, max_value=249.0, step=1.0,
+                value=st.session_state.get('grid_lipid_min', 9.0),
+                key='grid_lipid_min'
+            )
+            lipid_max = st.number_input(
+                'Lipid Max', min_value=2.0, max_value=500.0, step=1.0,
+                value=st.session_state.get('grid_lipid_max', 250.0),
+                key='grid_lipid_max'
+            )
+            lipid_step = st.number_input(
+                'Lipid Step', min_value=1.0, max_value=50.0, step=1.0,
+                value=st.session_state.get('grid_lipid_step', 5.0),
+                key='grid_lipid_step'
+            )
         with col_b:
             # Aqueous: Standard range 800-12000nm
-            aqueous_min = st.number_input('Aqueous Min', value=800, key='grid_aq_min')
-            aqueous_max = st.number_input('Aqueous Max', value=12000, key='grid_aq_max')
-            aqueous_step = st.number_input('Aqueous Step', value=200, key='grid_aq_step')
+            aqueous_min = st.number_input(
+                'Aqueous Min', min_value=100.0, max_value=11999.0, step=10.0,
+                value=st.session_state.get('grid_aq_min', 800.0),
+                key='grid_aq_min'
+            )
+            aqueous_max = st.number_input(
+                'Aqueous Max', min_value=101.0, max_value=20000.0, step=10.0,
+                value=st.session_state.get('grid_aq_max', 12000.0),
+                key='grid_aq_max'
+            )
+            aqueous_step = st.number_input(
+                'Aqueous Step', min_value=10.0, max_value=1000.0, step=10.0,
+                value=st.session_state.get('grid_aq_step', 200.0),
+                key='grid_aq_step'
+            )
         with col_c:
             # Interface roughness in Angstroms: Standard range 600-7000 Å
-            mucus_min = st.number_input('Roughness Min (Å)', value=600, key='grid_mu_min')
-            mucus_max = st.number_input('Roughness Max (Å)', value=7000, key='grid_mu_max')
-            mucus_step = st.number_input('Roughness Step (Å)', value=100, key='grid_mu_step')
+            mucus_min = st.number_input(
+                'Roughness Min (Å)', min_value=100.0, max_value=6999.0, step=10.0,
+                value=st.session_state.get('grid_mu_min', 600.0),
+                key='grid_mu_min'
+            )
+            mucus_max = st.number_input(
+                'Roughness Max (Å)', min_value=101.0, max_value=10000.0, step=10.0,
+                value=st.session_state.get('grid_mu_max', 7000.0),
+                key='grid_mu_max'
+            )
+            mucus_step = st.number_input(
+                'Roughness Step (Å)', min_value=10.0, max_value=500.0, step=10.0,
+                value=st.session_state.get('grid_mu_step', 100.0),
+                key='grid_mu_step'
+            )
         
         # Grid Search settings and button
         st.markdown('---')
