@@ -1248,14 +1248,14 @@ with st.sidebar:
         
         col_a, col_b, col_c = st.columns(3)
         with col_a:
-            # Lipid: Standard range 9-250nm
+            # Lipid: Standard ADOM range 9-250nm
             lipid_min = st.number_input(
-                'Lipid Min', min_value=1.0, max_value=249.0, step=1.0,
+                'Lipid Min', min_value=9.0, max_value=249.0, step=1.0,
                 value=st.session_state.get('grid_lipid_min', 9.0),
                 key='grid_lipid_min'
             )
             lipid_max = st.number_input(
-                'Lipid Max', min_value=2.0, max_value=500.0, step=1.0,
+                'Lipid Max', min_value=10.0, max_value=250.0, step=1.0,
                 value=st.session_state.get('grid_lipid_max', 250.0),
                 key='grid_lipid_max'
             )
@@ -1265,14 +1265,14 @@ with st.sidebar:
                 key='grid_lipid_step'
             )
         with col_b:
-            # Aqueous: Standard range 800-12000nm
+            # Aqueous: Standard ADOM range 800-12000nm
             aqueous_min = st.number_input(
-                'Aqueous Min', min_value=100.0, max_value=11999.0, step=10.0,
+                'Aqueous Min', min_value=800.0, max_value=11999.0, step=10.0,
                 value=st.session_state.get('grid_aq_min', 800.0),
                 key='grid_aq_min'
             )
             aqueous_max = st.number_input(
-                'Aqueous Max', min_value=101.0, max_value=20000.0, step=10.0,
+                'Aqueous Max', min_value=801.0, max_value=12000.0, step=10.0,
                 value=st.session_state.get('grid_aq_max', 12000.0),
                 key='grid_aq_max'
             )
@@ -1282,14 +1282,14 @@ with st.sidebar:
                 key='grid_aq_step'
             )
         with col_c:
-            # Interface roughness in Angstroms: Standard range 600-7000 Å
+            # Interface roughness: Standard ADOM range 600-7000 Å
             mucus_min = st.number_input(
-                'Roughness Min (Å)', min_value=100.0, max_value=6999.0, step=10.0,
+                'Roughness Min (Å)', min_value=600.0, max_value=6999.0, step=10.0,
                 value=st.session_state.get('grid_mu_min', 600.0),
                 key='grid_mu_min'
             )
             mucus_max = st.number_input(
-                'Roughness Max (Å)', min_value=101.0, max_value=10000.0, step=10.0,
+                'Roughness Max (Å)', min_value=601.0, max_value=7000.0, step=10.0,
                 value=st.session_state.get('grid_mu_max', 7000.0),
                 key='grid_mu_max'
             )
