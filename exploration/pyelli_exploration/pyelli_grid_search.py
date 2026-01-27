@@ -494,6 +494,33 @@ def calculate_peak_based_score(
     # Match peaks
     matched_meas, matched_theo, deltas = _match_peaks(meas_peaks, theo_peaks, tolerance_nm)
     
+    # === DRIFT METRICS (Cycle Jump Proxies) ===
+    # Extract matched peak data for drift analysis
+    if len(matched_meas) >= 3:
+        matched_meas_wavelengths = meas_peaks[matched_meas]
+        matched_theo_wavelengths = theo_peaks[matched_theo]
+        # Get amplitudes from the peaks DataFrames
+        matched_meas_amplitudes = meas_peaks_df['amplitude'].iloc[matched_meas].to_numpy(dtype=float)
+        matched_theo_amplitudes = theo_peaks_df['amplitude'].iloc[matched_theo].to_numpy(dtype=float)
+        
+        drift_metrics = calculate_drift_metrics(
+            matched_meas_wavelengths,
+            matched_theo_wavelengths,
+            matched_meas_amplitudes,
+            matched_theo_amplitudes,
+        )
+    else:
+        # Not enough matched peaks for drift analysis
+        drift_metrics = {
+            'peak_drift_slope': 0.0,
+            'peak_drift_r_squared': 0.0,
+            'peak_drift_flagged': False,
+            'amplitude_drift_slope': 0.0,
+            'amplitude_drift_r_squared': 0.0,
+            'amplitude_drift_flagged': False,
+            'drift_analysis_valid': False,
+        }
+    
     # Peak count score - CRITICAL for matching peak frequency
     # We need theoretical spectra to have SIMILAR peak counts to measured
     meas_count = len(meas_peaks)
@@ -791,6 +818,14 @@ def calculate_peak_based_score(
         "theo_oscillation": theo_oscillation,
         "start_offset": 0.0,  # Removed start offset penalty - kept for compatibility
         "very_early_rmse": very_early_rmse,
+        # Drift metrics (cycle jump proxies)
+        "peak_drift_slope": drift_metrics['peak_drift_slope'],
+        "peak_drift_r_squared": drift_metrics['peak_drift_r_squared'],
+        "peak_drift_flagged": drift_metrics['peak_drift_flagged'],
+        "amplitude_drift_slope": drift_metrics['amplitude_drift_slope'],
+        "amplitude_drift_r_squared": drift_metrics['amplitude_drift_r_squared'],
+        "amplitude_drift_flagged": drift_metrics['amplitude_drift_flagged'],
+        "drift_analysis_valid": drift_metrics.get('drift_analysis_valid', False),
     }
 
 
