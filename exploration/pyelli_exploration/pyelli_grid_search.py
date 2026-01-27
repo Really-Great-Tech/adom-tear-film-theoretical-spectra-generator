@@ -1391,6 +1391,13 @@ def _evaluate_combination_fast(args: Tuple[float, float, float]) -> Optional[PyE
                 "mean_delta_nm": 1000.0,
                 "measurement_peaks": 0.0,
                 "theoretical_peaks": 0.0,
+                # Drift metrics not available in fast path (insufficient peaks)
+                "peak_drift_slope": 0.0,
+                "peak_drift_r_squared": 0.0,
+                "peak_drift_flagged": False,
+                "amplitude_drift_slope": 0.0,
+                "amplitude_drift_r_squared": 0.0,
+                "amplitude_drift_flagged": False,
             }
             correlation = quick_corr
         else:
@@ -1421,6 +1428,13 @@ def _evaluate_combination_fast(args: Tuple[float, float, float]) -> Optional[PyE
             theoretical_peaks=theo_peaks_count,
             theoretical_spectrum=theoretical_scaled,
             wavelengths=wavelengths,
+            # Drift metrics (cycle jump proxies)
+            peak_drift_slope=float(score_result.get('peak_drift_slope', 0.0)),
+            peak_drift_r_squared=float(score_result.get('peak_drift_r_squared', 0.0)),
+            peak_drift_flagged=bool(score_result.get('peak_drift_flagged', False)),
+            amplitude_drift_slope=float(score_result.get('amplitude_drift_slope', 0.0)),
+            amplitude_drift_r_squared=float(score_result.get('amplitude_drift_r_squared', 0.0)),
+            amplitude_drift_flagged=bool(score_result.get('amplitude_drift_flagged', False)),
         )
     except Exception as e:
         return None
@@ -1620,6 +1634,13 @@ def _evaluate_single_combination(
                 "theoretical_peaks": 0.0,
                 "unpaired_measurement": 0.0,
                 "unpaired_theoretical": 0.0,
+                # Drift metrics not available in fast path (insufficient peaks)
+                "peak_drift_slope": 0.0,
+                "peak_drift_r_squared": 0.0,
+                "peak_drift_flagged": False,
+                "amplitude_drift_slope": 0.0,
+                "amplitude_drift_r_squared": 0.0,
+                "amplitude_drift_flagged": False,
             }
             correlation = quick_corr
         else:
@@ -1656,6 +1677,13 @@ def _evaluate_single_combination(
             theoretical_peaks=theo_peaks_count,
             theoretical_spectrum=theoretical_scaled,
             wavelengths=wavelengths,
+            # Drift metrics (cycle jump proxies)
+            peak_drift_slope=float(score_result.get('peak_drift_slope', 0.0)),
+            peak_drift_r_squared=float(score_result.get('peak_drift_r_squared', 0.0)),
+            peak_drift_flagged=bool(score_result.get('peak_drift_flagged', False)),
+            amplitude_drift_slope=float(score_result.get('amplitude_drift_slope', 0.0)),
+            amplitude_drift_r_squared=float(score_result.get('amplitude_drift_r_squared', 0.0)),
+            amplitude_drift_flagged=bool(score_result.get('amplitude_drift_flagged', False)),
         )
     except Exception as e:
         logger.debug(f'Error evaluating combination (L={lipid}, A={aqueous}, R={roughness_angstrom}Å): {e}')
