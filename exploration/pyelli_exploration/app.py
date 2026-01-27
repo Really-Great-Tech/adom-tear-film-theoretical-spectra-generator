@@ -1982,6 +1982,55 @@ with tabs[0]:
                 matched_peaks = int(score_result.get('matched_peaks', 0))
                 st.metric('Matched Peaks', f'{matched_peaks}')
         
+        # === DRIFT ANALYSIS (Cycle Jump Indicators) ===
+        # Get drift metrics from the appropriate score result
+        drift_score_result = computed_data.get('pyelli_score_result') or computed_data.get('score_result')
+        if drift_score_result and drift_score_result.get('drift_analysis_valid', False):
+            with st.expander('🔄 Drift Analysis (Cycle Jump Indicators)', expanded=False):
+                st.markdown('''
+                <div style="background: #fef3c7; border: 1px solid #f59e0b; border-radius: 8px; padding: 12px; margin-bottom: 16px; font-size: 0.85rem; color: #92400e;">
+                    <strong>Note:</strong> These single-spectrum metrics are <em>proxies</em> for cycle jump detection. 
+                    True cycle-jump detection requires adjacent measurements/trends. Flagged fits may indicate 
+                    the chosen frequency multiple is incorrect.
+                </div>
+                ''', unsafe_allow_html=True)
+                
+                drift_cols = st.columns(2)
+                
+                with drift_cols[0]:
+                    st.markdown('**Peak Drift**')
+                    peak_slope = drift_score_result.get('peak_drift_slope', 0.0)
+                    peak_r2 = drift_score_result.get('peak_drift_r_squared', 0.0)
+                    peak_flagged = drift_score_result.get('peak_drift_flagged', False)
+                    
+                    slope_icon = '⚠️' if peak_flagged else '✅'
+                    st.metric('Slope', f'{slope_icon} {peak_slope:.4f} nm/nm', 
+                              help='Linear trend of wavelength error (Δλ) across matched peaks. Large |slope| with high R² indicates systematic misalignment.')
+                    st.metric('R²', f'{peak_r2:.3f}',
+                              help='Goodness of fit for peak drift trend. High R² (>0.5) with significant slope indicates systematic, not random, drift.')
+                    
+                    if peak_flagged:
+                        st.warning('Systematic peak misalignment detected - possible cycle jump candidate')
+                
+                with drift_cols[1]:
+                    st.markdown('**Amplitude Drift**')
+                    amp_slope = drift_score_result.get('amplitude_drift_slope', 0.0)
+                    amp_r2 = drift_score_result.get('amplitude_drift_r_squared', 0.0)
+                    amp_flagged = drift_score_result.get('amplitude_drift_flagged', False)
+                    
+                    slope_icon = '⚠️' if amp_flagged else '✅'
+                    st.metric('Slope', f'{slope_icon} {amp_slope:.4f}',
+                              help='Linear trend of amplitude ratio (theo/meas) across matched peaks. Growing mismatch suggests wrong fit.')
+                    st.metric('R²', f'{amp_r2:.3f}',
+                              help='Goodness of fit for amplitude drift trend. High R² (>0.5) with significant slope indicates systematic mismatch.')
+                    
+                    if amp_flagged:
+                        st.warning('Amplitude mismatch trend detected - possible cycle jump candidate')
+        elif drift_score_result:
+            # Drift analysis not valid (likely insufficient peaks)
+            with st.expander('🔄 Drift Analysis (Cycle Jump Indicators)', expanded=False):
+                st.info('Drift analysis requires at least 3 matched peaks. Insufficient peaks for analysis.')
+        
         # Show results table if grid search was run
         if st.session_state.autofit_results:
             st.markdown('---')
@@ -1993,6 +2042,14 @@ with tabs[0]:
                 elif score >= 0.3: return '🟠 Fair'
                 else: return '🔴 Poor'
             
+            def get_drift_flag(result):
+                """Return drift indicator: ⚠️ if flagged, ✅ if not, - if not analyzed."""
+                if not hasattr(result, 'peak_drift_flagged'):
+                    return '-'
+                if result.peak_drift_flagged or result.amplitude_drift_flagged:
+                    return '⚠️'
+                return '✅'
+            
             results_df = pd.DataFrame([{
                 'Rank': i+1,
                 'Lipid (nm)': r.lipid_nm,
@@ -2003,6 +2060,7 @@ with tabs[0]:
                 'RMSE': f'{r.rmse:.5f}',
                 'Osc Ratio': f'{r.oscillation_ratio:.2f}',  # CRITICAL: Show amplitude match
                 'Matched': r.matched_peaks,
+                'Drift': get_drift_flag(r),  # Cycle jump indicator
                 'Quality': get_quality(r.score)
             } for i, r in enumerate(st.session_state.autofit_results)])
             

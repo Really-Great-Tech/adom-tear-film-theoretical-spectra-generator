@@ -85,6 +85,13 @@ class PyElliResult:
     theoretical_peaks: int = 0  # Number of peaks detected in theoretical spectrum
     theoretical_spectrum: np.ndarray = None
     wavelengths: np.ndarray = None
+    # Drift metrics (cycle jump proxies) - single-spectrum indicators
+    peak_drift_slope: float = 0.0  # Linear trend of Δλ vs wavelength (nm/nm)
+    peak_drift_r_squared: float = 0.0  # R² of peak drift fit
+    peak_drift_flagged: bool = False  # True if systematic peak drift detected
+    amplitude_drift_slope: float = 0.0  # Linear trend of amplitude ratio vs wavelength
+    amplitude_drift_r_squared: float = 0.0  # R² of amplitude drift fit
+    amplitude_drift_flagged: bool = False  # True if systematic amplitude drift detected
 
 
 # =============================================================================
@@ -487,6 +494,33 @@ def calculate_peak_based_score(
     # Match peaks
     matched_meas, matched_theo, deltas = _match_peaks(meas_peaks, theo_peaks, tolerance_nm)
     
+    # === DRIFT METRICS (Cycle Jump Proxies) ===
+    # Extract matched peak data for drift analysis
+    if len(matched_meas) >= 3:
+        matched_meas_wavelengths = meas_peaks[matched_meas]
+        matched_theo_wavelengths = theo_peaks[matched_theo]
+        # Get amplitudes from the peaks DataFrames
+        matched_meas_amplitudes = meas_peaks_df['amplitude'].iloc[matched_meas].to_numpy(dtype=float)
+        matched_theo_amplitudes = theo_peaks_df['amplitude'].iloc[matched_theo].to_numpy(dtype=float)
+        
+        drift_metrics = calculate_drift_metrics(
+            matched_meas_wavelengths,
+            matched_theo_wavelengths,
+            matched_meas_amplitudes,
+            matched_theo_amplitudes,
+        )
+    else:
+        # Not enough matched peaks for drift analysis
+        drift_metrics = {
+            'peak_drift_slope': 0.0,
+            'peak_drift_r_squared': 0.0,
+            'peak_drift_flagged': False,
+            'amplitude_drift_slope': 0.0,
+            'amplitude_drift_r_squared': 0.0,
+            'amplitude_drift_flagged': False,
+            'drift_analysis_valid': False,
+        }
+    
     # Peak count score - CRITICAL for matching peak frequency
     # We need theoretical spectra to have SIMILAR peak counts to measured
     meas_count = len(meas_peaks)
@@ -784,6 +818,146 @@ def calculate_peak_based_score(
         "theo_oscillation": theo_oscillation,
         "start_offset": 0.0,  # Removed start offset penalty - kept for compatibility
         "very_early_rmse": very_early_rmse,
+        # Drift metrics (cycle jump proxies)
+        "peak_drift_slope": drift_metrics['peak_drift_slope'],
+        "peak_drift_r_squared": drift_metrics['peak_drift_r_squared'],
+        "peak_drift_flagged": drift_metrics['peak_drift_flagged'],
+        "amplitude_drift_slope": drift_metrics['amplitude_drift_slope'],
+        "amplitude_drift_r_squared": drift_metrics['amplitude_drift_r_squared'],
+        "amplitude_drift_flagged": drift_metrics['amplitude_drift_flagged'],
+        "drift_analysis_valid": drift_metrics.get('drift_analysis_valid', False),
+    }
+
+
+def calculate_drift_metrics(
+    matched_meas_wavelengths: np.ndarray,
+    matched_theo_wavelengths: np.ndarray,
+    matched_meas_amplitudes: np.ndarray,
+    matched_theo_amplitudes: np.ndarray,
+    min_peaks_for_drift: int = 3,
+    peak_drift_slope_threshold: float = 0.05,
+    amplitude_drift_slope_threshold: float = 0.01,
+    r_squared_threshold: float = 0.5,
+) -> Dict[str, float]:
+    """
+    Calculate drift metrics as single-spectrum proxies for cycle jump detection.
+    
+    Drift indicates systematic misalignment that grows across the spectrum,
+    suggesting the chosen frequency/thickness solution may be a wrong multiple.
+    
+    Args:
+        matched_meas_wavelengths: Wavelengths of matched measurement peaks
+        matched_theo_wavelengths: Wavelengths of matched theoretical peaks
+        matched_meas_amplitudes: Amplitudes of matched measurement peaks
+        matched_theo_amplitudes: Amplitudes of matched theoretical peaks
+        min_peaks_for_drift: Minimum matched peaks required for drift analysis
+        peak_drift_slope_threshold: |slope| above this flags peak drift (nm/nm)
+        amplitude_drift_slope_threshold: |slope| above this flags amplitude drift
+        r_squared_threshold: R² above this indicates systematic (not random) drift
+        
+    Returns:
+        Dictionary with drift metrics:
+        - peak_drift_slope: Linear trend of Δλ vs wavelength (nm/nm)
+        - peak_drift_r_squared: R² of peak drift fit
+        - peak_drift_flagged: True if systematic peak drift detected
+        - amplitude_drift_slope: Linear trend of amplitude ratio vs wavelength
+        - amplitude_drift_r_squared: R² of amplitude drift fit
+        - amplitude_drift_flagged: True if systematic amplitude drift detected
+    """
+    default_result = {
+        'peak_drift_slope': 0.0,
+        'peak_drift_r_squared': 0.0,
+        'peak_drift_flagged': False,
+        'amplitude_drift_slope': 0.0,
+        'amplitude_drift_r_squared': 0.0,
+        'amplitude_drift_flagged': False,
+        'drift_analysis_valid': False,
+    }
+    
+    num_matched = len(matched_meas_wavelengths)
+    if num_matched < min_peaks_for_drift:
+        logger.debug(f'📊 Drift analysis skipped: only {num_matched} matched peaks (need {min_peaks_for_drift})')
+        return default_result
+    
+    # === PEAK DRIFT: How Δλ evolves across the spectrum ===
+    # Δλ = theoretical - measured wavelength at each matched peak
+    delta_wavelengths = matched_theo_wavelengths - matched_meas_wavelengths
+    
+    # Use measurement wavelengths as x-axis (where in spectrum is this peak?)
+    x_values = matched_meas_wavelengths
+    
+    # Linear regression: Δλ = slope * wavelength + intercept
+    x_mean = np.mean(x_values)
+    y_mean = np.mean(delta_wavelengths)
+    
+    numerator = np.sum((x_values - x_mean) * (delta_wavelengths - y_mean))
+    denominator = np.sum((x_values - x_mean) ** 2)
+    
+    if abs(denominator) < 1e-10:
+        peak_drift_slope = 0.0
+        peak_drift_r_squared = 0.0
+    else:
+        peak_drift_slope = numerator / denominator
+        intercept = y_mean - peak_drift_slope * x_mean
+        
+        # Calculate R²
+        y_predicted = peak_drift_slope * x_values + intercept
+        ss_residual = np.sum((delta_wavelengths - y_predicted) ** 2)
+        ss_total = np.sum((delta_wavelengths - y_mean) ** 2)
+        peak_drift_r_squared = 1.0 - (ss_residual / ss_total) if ss_total > 1e-10 else 0.0
+        peak_drift_r_squared = max(0.0, peak_drift_r_squared)
+    
+    # Flag if slope is significant AND systematic (high R²)
+    peak_drift_flagged = (
+        abs(peak_drift_slope) > peak_drift_slope_threshold and
+        peak_drift_r_squared > r_squared_threshold
+    )
+    
+    # === AMPLITUDE DRIFT: How amplitude mismatch evolves across spectrum ===
+    # Ratio = theoretical amplitude / measured amplitude at each peak
+    # Protect against division by zero
+    safe_meas_amps = np.where(np.abs(matched_meas_amplitudes) > 1e-10, 
+                               matched_meas_amplitudes, 1e-10)
+    amplitude_ratios = matched_theo_amplitudes / safe_meas_amps
+    
+    # Linear regression: ratio = slope * wavelength + intercept
+    y_mean_amp = np.mean(amplitude_ratios)
+    
+    numerator_amp = np.sum((x_values - x_mean) * (amplitude_ratios - y_mean_amp))
+    
+    if abs(denominator) < 1e-10:
+        amplitude_drift_slope = 0.0
+        amplitude_drift_r_squared = 0.0
+    else:
+        amplitude_drift_slope = numerator_amp / denominator
+        intercept_amp = y_mean_amp - amplitude_drift_slope * x_mean
+        
+        # Calculate R²
+        y_predicted_amp = amplitude_drift_slope * x_values + intercept_amp
+        ss_residual_amp = np.sum((amplitude_ratios - y_predicted_amp) ** 2)
+        ss_total_amp = np.sum((amplitude_ratios - y_mean_amp) ** 2)
+        amplitude_drift_r_squared = 1.0 - (ss_residual_amp / ss_total_amp) if ss_total_amp > 1e-10 else 0.0
+        amplitude_drift_r_squared = max(0.0, amplitude_drift_r_squared)
+    
+    # Flag if slope is significant AND systematic
+    amplitude_drift_flagged = (
+        abs(amplitude_drift_slope) > amplitude_drift_slope_threshold and
+        amplitude_drift_r_squared > r_squared_threshold
+    )
+    
+    logger.debug(
+        f'📊 Drift analysis: peak_slope={peak_drift_slope:.4f} (R²={peak_drift_r_squared:.2f}), '
+        f'amp_slope={amplitude_drift_slope:.4f} (R²={amplitude_drift_r_squared:.2f})'
+    )
+    
+    return {
+        'peak_drift_slope': float(peak_drift_slope),
+        'peak_drift_r_squared': float(peak_drift_r_squared),
+        'peak_drift_flagged': bool(peak_drift_flagged),
+        'amplitude_drift_slope': float(amplitude_drift_slope),
+        'amplitude_drift_r_squared': float(amplitude_drift_r_squared),
+        'amplitude_drift_flagged': bool(amplitude_drift_flagged),
+        'drift_analysis_valid': True,
     }
 
 
@@ -1217,6 +1391,13 @@ def _evaluate_combination_fast(args: Tuple[float, float, float]) -> Optional[PyE
                 "mean_delta_nm": 1000.0,
                 "measurement_peaks": 0.0,
                 "theoretical_peaks": 0.0,
+                # Drift metrics not available in fast path (insufficient peaks)
+                "peak_drift_slope": 0.0,
+                "peak_drift_r_squared": 0.0,
+                "peak_drift_flagged": False,
+                "amplitude_drift_slope": 0.0,
+                "amplitude_drift_r_squared": 0.0,
+                "amplitude_drift_flagged": False,
             }
             correlation = quick_corr
         else:
@@ -1247,6 +1428,13 @@ def _evaluate_combination_fast(args: Tuple[float, float, float]) -> Optional[PyE
             theoretical_peaks=theo_peaks_count,
             theoretical_spectrum=theoretical_scaled,
             wavelengths=wavelengths,
+            # Drift metrics (cycle jump proxies)
+            peak_drift_slope=float(score_result.get('peak_drift_slope', 0.0)),
+            peak_drift_r_squared=float(score_result.get('peak_drift_r_squared', 0.0)),
+            peak_drift_flagged=bool(score_result.get('peak_drift_flagged', False)),
+            amplitude_drift_slope=float(score_result.get('amplitude_drift_slope', 0.0)),
+            amplitude_drift_r_squared=float(score_result.get('amplitude_drift_r_squared', 0.0)),
+            amplitude_drift_flagged=bool(score_result.get('amplitude_drift_flagged', False)),
         )
     except Exception as e:
         return None
@@ -1446,6 +1634,13 @@ def _evaluate_single_combination(
                 "theoretical_peaks": 0.0,
                 "unpaired_measurement": 0.0,
                 "unpaired_theoretical": 0.0,
+                # Drift metrics not available in fast path (insufficient peaks)
+                "peak_drift_slope": 0.0,
+                "peak_drift_r_squared": 0.0,
+                "peak_drift_flagged": False,
+                "amplitude_drift_slope": 0.0,
+                "amplitude_drift_r_squared": 0.0,
+                "amplitude_drift_flagged": False,
             }
             correlation = quick_corr
         else:
@@ -1482,6 +1677,13 @@ def _evaluate_single_combination(
             theoretical_peaks=theo_peaks_count,
             theoretical_spectrum=theoretical_scaled,
             wavelengths=wavelengths,
+            # Drift metrics (cycle jump proxies)
+            peak_drift_slope=float(score_result.get('peak_drift_slope', 0.0)),
+            peak_drift_r_squared=float(score_result.get('peak_drift_r_squared', 0.0)),
+            peak_drift_flagged=bool(score_result.get('peak_drift_flagged', False)),
+            amplitude_drift_slope=float(score_result.get('amplitude_drift_slope', 0.0)),
+            amplitude_drift_r_squared=float(score_result.get('amplitude_drift_r_squared', 0.0)),
+            amplitude_drift_flagged=bool(score_result.get('amplitude_drift_flagged', False)),
         )
     except Exception as e:
         logger.debug(f'Error evaluating combination (L={lipid}, A={aqueous}, R={roughness_angstrom}Å): {e}')
