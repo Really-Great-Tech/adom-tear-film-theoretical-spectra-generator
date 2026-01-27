@@ -745,6 +745,9 @@ with st.sidebar:
     new_spectra_path = PROJECT_ROOT / 'new spectra'
     new_spectra = get_new_spectra_paths(new_spectra_path) if new_spectra_path.exists() else {}
     
+    more_good_path = PROJECT_ROOT / 'exploration' / 'more_good_spectras' / 'Corrected_Spectra'
+    more_good_spectra = sorted(list(more_good_path.glob('(Run)spectra_*.txt'))) if more_good_path.exists() else []
+    
     st.markdown('''
     <p style="color: #1e40af; font-weight: 600; margin-bottom: 10px; font-size: 0.8rem;">📂 DATA STATUS</p>
     ''', unsafe_allow_html=True)
@@ -765,10 +768,10 @@ with st.sidebar:
         </div>
         ''', unsafe_allow_html=True)
     with col3:
-        st.markdown('''
+        st.markdown(f'''
         <div style="background: #eff6ff; border: 1px solid #bfdbfe; border-radius: 8px; padding: 10px; text-align: center;">
-            <div style="font-size: 1.3rem; font-weight: 700; color: #1e40af;">170</div>
-            <div style="color: #64748b; font-size: 0.65rem; text-transform: uppercase;">Shlomo Spectra</div>
+            <div style="font-size: 1.3rem; font-weight: 700; color: #1e40af;">{len(more_good_spectra)}</div>
+            <div style="color: #64748b; font-size: 0.65rem; text-transform: uppercase;">More Good</div>
         </div>
         ''', unsafe_allow_html=True)
     with col4:
@@ -788,8 +791,8 @@ with st.sidebar:
     st.markdown('### 📂 Spectrum Source')
     
     spectrum_sources = {
+        'More Good Spectras': PROJECT_ROOT / 'exploration' / 'more_good_spectras' / 'Corrected_Spectra',
         'New Spectra': PROJECT_ROOT / 'exploration' / 'new_spectra',
-        # Shlomo spectra are now in-repo for deployment
         'Shlomo Raw Spectra': PROJECT_ROOT / 'exploration' / 'spectra_from_shlomo',
         'Sample Data (Good Fit)': PROJECT_ROOT / 'exploration' / 'sample_data' / 'good_fit',
         'Sample Data (Bad Fit)': PROJECT_ROOT / 'exploration' / 'sample_data' / 'bad_fit',
@@ -910,14 +913,24 @@ with st.sidebar:
         bestfit_file = None
         selected_path = Path(selected_file)
         if '_BestFit' not in selected_path.name:
-            # Try to find corresponding BestFit file in the same directory
+            # Try to find corresponding BestFit file
             bestfit_name = selected_path.name.replace('.txt', '_BestFit.txt')
+            
+            # 1. Try to find corresponding BestFit file in the same directory
             bestfit_path = selected_path.parent / bestfit_name
             if bestfit_path.exists():
                 bestfit_file = bestfit_path
                 st.session_state.bestfit_file = str(bestfit_file)
-            # Also check if we're in a new spectra folder - BestFit might have slightly different naming
-            elif selected_source == 'New Spectra':
+            
+            # 2. Also check in a sibling 'BestFit' directory (common in 'More Good Spectras' structure)
+            if not bestfit_file:
+                sibling_bestfit_path = selected_path.parent.parent / 'BestFit' / bestfit_name
+                if sibling_bestfit_path.exists():
+                    bestfit_file = sibling_bestfit_path
+                    st.session_state.bestfit_file = str(bestfit_file)
+            
+            # 3. Also check if we're in a new spectra folder - BestFit might have slightly different naming
+            if not bestfit_file and selected_source == 'New Spectra':
                 # Try alternative patterns for BestFit files
                 for alt_file in selected_path.parent.glob('*_BestFit.txt'):
                     # Check if the base name matches (before timestamp)
