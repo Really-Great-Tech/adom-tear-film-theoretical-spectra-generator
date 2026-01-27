@@ -85,6 +85,13 @@ class PyElliResult:
     theoretical_peaks: int = 0  # Number of peaks detected in theoretical spectrum
     theoretical_spectrum: np.ndarray = None
     wavelengths: np.ndarray = None
+    # Drift metrics (cycle jump proxies) - single-spectrum indicators
+    peak_drift_slope: float = 0.0  # Linear trend of Δλ vs wavelength (nm/nm)
+    peak_drift_r_squared: float = 0.0  # R² of peak drift fit
+    peak_drift_flagged: bool = False  # True if systematic peak drift detected
+    amplitude_drift_slope: float = 0.0  # Linear trend of amplitude ratio vs wavelength
+    amplitude_drift_r_squared: float = 0.0  # R² of amplitude drift fit
+    amplitude_drift_flagged: bool = False  # True if systematic amplitude drift detected
 
 
 # =============================================================================
