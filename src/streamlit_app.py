@@ -1177,13 +1177,8 @@ def main():
     # Load theoretical spectrum calculator
     single_spectrum, wavelengths = make_single_spectrum_calculator(config)
 
-    # Load measurement files
+    # Measurement file selection (using source + file dropdown pattern like pyelli)
     measurements_enabled = config.get('measurements', {}).get('enabled', False)
-    measurements = {}
-    
-    if measurements_enabled:
-        measurements_dir = get_project_path(config['paths']['measurements'])
-        measurements = load_measurement_files(measurements_dir, config)
 
     params = config["parameters"]
     lipid_cfg = params["lipid"]
@@ -1318,70 +1313,119 @@ def main():
         key="rough_slider",
     )
 
-    # Measurement file selection
-    selected_file = None
-    if measurements_enabled and measurements:
+    # Measurement file selection (using source + file dropdown pattern like pyelli)
+    selected_measurement = None
+    selected_file_path = None
+    bestfit_file_path = None
+    
+    if measurements_enabled:
         st.sidebar.markdown("## Measurement Data")
-        measurement_files = list(measurements.keys())
-        selected_file = st.sidebar.selectbox(
-            "Select measurement file:",
-            options=["None"] + measurement_files,
-            index=1 if measurement_files else 0
+        
+        # Define spectrum sources (matching pyelli pattern)
+        spectrum_sources = {
+            'More Good Spectras': PROJECT_ROOT / 'exploration' / 'more_good_spectras' / 'Corrected_Spectra',
+            'New Spectra': PROJECT_ROOT / 'exploration' / 'new_spectra',
+            'Shlomo Raw Spectra': PROJECT_ROOT / 'exploration' / 'spectra_from_shlomo',
+            'Sample Data (Good Fit)': PROJECT_ROOT / 'exploration' / 'sample_data' / 'good_fit',
+            'Sample Data (Bad Fit)': PROJECT_ROOT / 'exploration' / 'sample_data' / 'bad_fit',
+        }
+        
+        selected_source = st.sidebar.selectbox(
+            'Select Source',
+            list(spectrum_sources.keys()),
+            key='lta_source_select'
         )
-
-        if selected_file != "None":
-            selected_measurement = measurements[selected_file]
-            st.sidebar.write(f"**{selected_file}**")
-            st.sidebar.write(f"Data points: {len(selected_measurement)}")
-            st.sidebar.write(f"Wavelength range: {selected_measurement['wavelength'].min():.1f} - {selected_measurement['wavelength'].max():.1f} nm")
-            
-            # Check for corresponding BestFit file
-            # Reconstruct file path from selected_file key
-            bestfit_file_path = None
-            exploration_dir = PROJECT_ROOT / "exploration" / "sample_data"
-            shlomo_dir = PROJECT_ROOT / "exploration" / "spectra_from_shlomo"
-            new_spectra_dir = PROJECT_ROOT / "exploration" / "new_spectra"
-            
-            # Construct the measurement file path from selected_file key
-            if selected_file.startswith("shlomo/"):
-                # Remove "shlomo/" prefix and add .txt
-                meas_file_path = shlomo_dir / (selected_file[7:] + ".txt")  # Remove "shlomo/" prefix (7 chars)
-            elif selected_file.startswith("New/"):
-                # Remove "New/" prefix and add .txt
-                meas_file_path = new_spectra_dir / (selected_file[4:] + ".txt")
+        
+        source_path = spectrum_sources[selected_source]
+        
+        # Get spectrum files based on source structure
+        spectrum_files = []
+        if source_path.exists():
+            if selected_source in ['Sample Data (Good Fit)', 'Sample Data (Bad Fit)']:
+                # These are organized in subfolders
+                for subdir in sorted(source_path.iterdir()):
+                    if subdir.is_dir():
+                        for f in subdir.glob('(Run)spectra_*.txt'):
+                            if '_BestFit' not in f.name:
+                                spectrum_files.append(f)
+            elif selected_source == 'New Spectra':
+                # New spectra are organized in subfolders
+                for subdir in sorted(source_path.iterdir()):
+                    if subdir.is_dir():
+                        for f in subdir.glob('(Run)spectra_*.txt'):
+                            if '_BestFit' not in f.name:
+                                spectrum_files.append(f)
             else:
-                # Add .txt to the selected_file key
-                meas_file_path = exploration_dir / (selected_file + ".txt")
-            
-            # Check if measurement file exists and find corresponding BestFit
-            if meas_file_path.exists():
-                bestfit_name = meas_file_path.name.replace('.txt', '_BestFit.txt')
-                bestfit_path = meas_file_path.parent / bestfit_name
-                if bestfit_path.exists():
-                    bestfit_file_path = bestfit_path
-            
-            # Toggle to show LTA BestFit
-            show_bestfit = False
-            show_both_theoretical = False
-            if bestfit_file_path:
-                st.sidebar.markdown("---")
-                st.sidebar.markdown("### 🔬 LTA BestFit Comparison")
-                view_mode = st.sidebar.radio(
-                    'Theoretical Spectrum View',
-                    ['LTA Theoretical Only', 'LTA BestFit Only', 'Both (LTA + BestFit)'],
-                    key='theoretical_view_mode',
-                    help='Compare LTA-generated theoretical spectra with LTA BestFit results'
-                )
-                show_bestfit = view_mode in ['LTA BestFit Only', 'Both (LTA + BestFit)']
-                show_both_theoretical = view_mode == 'Both (LTA + BestFit)'
-                st.session_state.show_bestfit = show_bestfit
-                st.session_state.show_both_theoretical = show_both_theoretical
-                st.session_state.bestfit_file_path = str(bestfit_file_path)
-            else:
-                st.session_state.show_bestfit = False
-                st.session_state.show_both_theoretical = False
-                st.session_state.bestfit_file_path = None
+                # Flat structure (More Good Spectras, Shlomo, etc.)
+                spectrum_files = sorted([
+                    f for f in source_path.glob('(Run)spectra_*.txt')
+                    if '_BestFit' not in f.name
+                ])
         else:
+            st.sidebar.warning(f'⚠️ Source path not found: `{source_path}`')
+        
+        # File selection dropdown (default to first spectrum, no explicit "None" option)
+        if spectrum_files:
+            selected_file_path = st.sidebar.selectbox(
+                f'Select Spectrum ({len(spectrum_files)} files)',
+                spectrum_files,
+                format_func=lambda x: x.name,
+                key='lta_file_select'
+            )
+            
+            if selected_file_path:
+                # Load the selected measurement file
+                meas_config = config.get("measurements", {})
+                try:
+                    selected_measurement = load_measurement_spectrum(selected_file_path, meas_config)
+                    if not selected_measurement.empty:
+                        st.sidebar.write(f"**{selected_file_path.name}**")
+                        st.sidebar.write(f"Data points: {len(selected_measurement)}")
+                        st.sidebar.write(f"Wavelength range: {selected_measurement['wavelength'].min():.1f} - {selected_measurement['wavelength'].max():.1f} nm")
+                    else:
+                        selected_measurement = None
+                        st.sidebar.warning("Could not load spectrum data from file")
+                except Exception as e:
+                    selected_measurement = None
+                    st.sidebar.error(f"Error loading file: {e}")
+                
+                # Find corresponding BestFit file
+                if selected_file_path:
+                    # 1. Check in same directory
+                    bestfit_name = selected_file_path.name.replace('.txt', '_BestFit.txt')
+                    bestfit_path = selected_file_path.parent / bestfit_name
+                    if bestfit_path.exists():
+                        bestfit_file_path = bestfit_path
+                    
+                    # 2. Check in sibling 'BestFit' directory (for More Good Spectras structure)
+                    if not bestfit_file_path:
+                        sibling_bestfit_path = selected_file_path.parent.parent / 'BestFit' / bestfit_name
+                        if sibling_bestfit_path.exists():
+                            bestfit_file_path = sibling_bestfit_path
+                
+                # Toggle to show LTA BestFit
+                show_bestfit = False
+                show_both_theoretical = False
+                if bestfit_file_path:
+                    st.sidebar.markdown("---")
+                    st.sidebar.markdown("### 🔬 LTA BestFit Comparison")
+                    view_mode = st.sidebar.radio(
+                        'Theoretical Spectrum View',
+                        ['LTA Theoretical Only', 'LTA BestFit Only', 'Both (LTA + BestFit)'],
+                        key='theoretical_view_mode',
+                        help='Compare LTA-generated theoretical spectra with LTA BestFit results'
+                    )
+                    show_bestfit = view_mode in ['LTA BestFit Only', 'Both (LTA + BestFit)']
+                    show_both_theoretical = view_mode == 'Both (LTA + BestFit)'
+                    st.session_state.show_bestfit = show_bestfit
+                    st.session_state.show_both_theoretical = show_both_theoretical
+                    st.session_state.bestfit_file_path = str(bestfit_file_path)
+                else:
+                    st.session_state.show_bestfit = False
+                    st.session_state.show_both_theoretical = False
+                    st.session_state.bestfit_file_path = None
+        else:
+            st.sidebar.info("No spectra found in the selected source.")
             st.session_state.show_bestfit = False
             st.session_state.show_both_theoretical = False
             st.session_state.bestfit_file_path = None
@@ -1492,13 +1536,14 @@ def main():
 
     # Tab 1: Spectrum Comparison
     with tab1:
-        if measurements_enabled and selected_file and selected_file != "None":
-            selected_measurement = measurements[selected_file].copy()
+        if measurements_enabled and selected_measurement is not None:
+            # Create a copy for this tab
+            measurement_df = selected_measurement.copy()
             
             # Apply smoothing to measured spectrum if enabled
             if smoothing_type != "none":
-                selected_measurement = apply_smoothing(
-                    selected_measurement, smoothing_type,
+                measurement_df = apply_smoothing(
+                    measurement_df, smoothing_type,
                     boxcar_width_nm, boxcar_passes, gaussian_kernel
                 )
             
@@ -1516,9 +1561,10 @@ def main():
                     bestfit_df = None
             
             # Create comparison plot
+            file_display_name = selected_file_path.name if selected_file_path else "Unknown"
             fig = create_comparison_plot(
-                wavelengths, spectrum, selected_measurement,
-                lipid_val, aqueous_val, rough_val, config, selected_file,
+                wavelengths, spectrum, measurement_df,
+                lipid_val, aqueous_val, rough_val, config, file_display_name,
                 bestfit_df=bestfit_df,
                 show_bestfit=show_bestfit_tab,
                 show_both_theoretical=show_both_theoretical_tab
@@ -1527,7 +1573,7 @@ def main():
             st.plotly_chart(fig, use_container_width=True)
             
             # Calculate and display fit metrics
-            interpolated_measured = interpolate_measurement_to_theoretical(selected_measurement, wavelengths)
+            interpolated_measured = interpolate_measurement_to_theoretical(measurement_df, wavelengths)
             
             # Determine which theoretical to use for metrics
             if show_bestfit_tab and not show_both_theoretical_tab and bestfit_df is not None:
@@ -1768,8 +1814,9 @@ def main():
         st.markdown(f"## Spectrum Analysis ({wl_min:.0f}-{wl_max:.0f}nm)")
         st.caption("Detrended signals with peak and valley detection in the wavelength range of interest")
         
-        if measurements_enabled and selected_file and selected_file != "None":
-            selected_measurement = measurements[selected_file]
+        if measurements_enabled and selected_measurement is not None:
+            # Use the selected measurement
+            measurement_df_tab2 = selected_measurement.copy()
             
             # Load BestFit if available
             bestfit_df_tab2 = None
@@ -1794,9 +1841,9 @@ def main():
             ].reset_index(drop=True)
             
             # Filter measured spectrum to wavelength range
-            measured_filtered = selected_measurement[
-                (selected_measurement['wavelength'] >= wl_min) & 
-                (selected_measurement['wavelength'] <= wl_max)
+            measured_filtered = measurement_df_tab2[
+                (measurement_df_tab2['wavelength'] >= wl_min) & 
+                (measurement_df_tab2['wavelength'] <= wl_max)
             ].reset_index(drop=True)
             
             # Filter BestFit if available
@@ -1968,8 +2015,9 @@ def main():
                         marker=dict(color=valley_color, size=8, symbol='circle')
                     ))
             
+            file_display_name_tab2 = selected_file_path.name if selected_file_path else "Unknown"
             fig.update_layout(
-                title=f"Peak and Valley Detection for {selected_file}",
+                title=f"Peak and Valley Detection for {file_display_name_tab2}",
                 xaxis_title="Wavelength (nm)",
                 yaxis_title="Intensity (Detrended)",
                 xaxis_range=[wl_min, wl_max],
@@ -2125,29 +2173,26 @@ def main():
         
         with col2:
             st.markdown("### Analysis Settings")
+            file_display_name_tab3 = selected_file_path.name if selected_file_path else None
             st.json({
                 "detrending_cutoff_frequency": float(cutoff_freq),
                 "peak_detection_prominence": float(peak_prominence),
-                "selected_measurement": selected_file if selected_file and selected_file != "None" else None
+                "selected_measurement": file_display_name_tab3
             })
 
-        # Measurement data info
-        if measurements_enabled:
-            st.markdown("### Available Measurement Files")
-            if measurements:
-                for filename, df in measurements.items():
-                    st.write(f"**{filename}**: {len(df)} data points, λ = {df['wavelength'].min():.1f}-{df['wavelength'].max():.1f} nm")
-            else:
-                st.info(f"No measurement files found in: {get_project_path(config['paths']['measurements'])}")
-        else:
-            st.info("Measurement comparison is disabled. Enable in config.yaml under 'measurements.enabled' to compare with experimental data.")
+        # Measurement data info (brief summary of currently selected spectrum)
+        if measurements_enabled and selected_file_path and selected_measurement is not None:
+            st.markdown("### Selected Measurement Summary")
+            st.write(f"**File:** {selected_file_path.name}")
+            st.write(f"Data points: {len(selected_measurement)}; λ = {selected_measurement['wavelength'].min():.1f}-{selected_measurement['wavelength'].max():.1f} nm")
 
     with tab4:
         st.markdown("## Grid Search Ranking")
-        if not (measurements_enabled and selected_file and selected_file != "None"):
+        if not (measurements_enabled and selected_measurement is not None):
             st.info("Select a measurement spectrum to run the grid search.")
         else:
-            selected_measurement = measurements[selected_file]
+            # Use the selected measurement for grid search
+            measurement_df_tab4 = selected_measurement.copy()
             controls = st.columns(3)
             top_k_display = int(
                 controls[0].number_input("Top results", min_value=5, max_value=100, value=10, step=5)
@@ -2267,14 +2312,15 @@ def main():
             
             # Quality gates validation (informational only, doesn't block search)
             # Only show once per measurement file to avoid repetition
-            quality_check_key = f"quality_check_{selected_file}"
+            file_display_name_tab4 = selected_file_path.name if selected_file_path else "Unknown"
+            quality_check_key = f"quality_check_{file_display_name_tab4}"
             quality_cfg = analysis_cfg.get("quality_gates", {})
             quality_enabled = quality_cfg.get("enabled", False)
             
             # Only run quality check if we haven't shown it for this measurement yet
             if quality_enabled and not st.session_state.get(quality_check_key, False):
                 with st.spinner("Validating measurement quality..."):
-                    measurement_features_temp = prepare_measurement(selected_measurement, analysis_cfg)
+                    measurement_features_temp = prepare_measurement(measurement_df_tab4, analysis_cfg)
                     quality_result, quality_failures = measurement_quality_score(
                         measurement_features_temp,
                         min_peaks=quality_cfg.get("min_peaks"),
@@ -2316,7 +2362,7 @@ def main():
                     # Mark as shown for this measurement
                     st.session_state[quality_check_key] = True
             
-            cache_key = f"grid_search_{selected_file}_{search_strategy}"
+            cache_key = f"grid_search_{file_display_name_tab4}_{search_strategy}"
             
             # Check if full search was confirmed and should override max_results and auto-run
             should_run_full_search = st.session_state.get("confirm_full_search_executed", False)
@@ -2328,7 +2374,7 @@ def main():
             if run_pressed:
                 start_time = time.time()
                 with st.spinner("Scoring theoretical spectra..."):
-                    measurement_features = prepare_measurement(selected_measurement, analysis_cfg)
+                    measurement_features = prepare_measurement(measurement_df_tab4, analysis_cfg)
                     quality_cfg = analysis_cfg.get("quality_gates", {})
                     measurement_quality_result = None
                     if quality_cfg:
@@ -2784,8 +2830,8 @@ def main():
                                 try:
                                     pdf_bytes = generate_main_app_pdf_report(
                                         results_df=results_df,
-                                        measurement_file=selected_file,
-                                        measured_df=selected_measurement,
+                                        measurement_file=file_display_name_tab4,
+                                        measured_df=measurement_df_tab4,
                                         single_spectrum_func=single_spectrum,
                                         wavelengths=wavelengths,
                                         analysis_cfg=analysis_cfg,
@@ -2797,7 +2843,7 @@ def main():
                                     
                                     # Generate filename with timestamp
                                     timestamp = time.strftime("%Y%m%d_%H%M%S")
-                                    safe_filename = selected_file.replace('/', '_').replace('\\', '_')
+                                    safe_filename = file_display_name_tab4.replace('/', '_').replace('\\', '_')
                                     pdf_filename = f"tear_film_report_{safe_filename}_{timestamp}.pdf"
                                     
                                     st.download_button(
