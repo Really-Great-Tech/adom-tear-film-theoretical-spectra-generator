@@ -12,4 +12,5 @@ services:
       - ./exploration/sample_data:/app/exploration/sample_data
       - ./exploration/new_spectra:/app/exploration/new_spectra
       - ./exploration/spectra_from_shlomo:/app/exploration/spectra_from_shlomo
+      - ./exploration/more_good_spectras:/app/exploration/more_good_spectras
       - ./exploration/measurements:/app/exploration/measurements
