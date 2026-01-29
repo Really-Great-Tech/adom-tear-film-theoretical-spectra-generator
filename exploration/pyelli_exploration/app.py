@@ -1314,6 +1314,29 @@ with st.sidebar:
                 key='grid_mu_step'
             )
         
+        # Cycle jump detection thresholds (used in Amplitude Analysis display)
+        st.markdown('---')
+        st.markdown('<p class="section-header">⚠️ Cycle Jump Thresholds</p>', unsafe_allow_html=True)
+        st.caption('Thresholds for flagging systematic drift (cycle jump candidates). Used in Amplitude Analysis.')
+        drift_th_peak = st.number_input(
+            'Peak drift slope threshold', min_value=0.0, max_value=0.5, step=0.01, format='%.2f',
+            value=float(st.session_state.get('drift_peak_slope_threshold', 0.05)),
+            key='drift_peak_slope_threshold',
+            help='|slope| above this (nm/nm) flags peak position drift'
+        )
+        drift_th_amp = st.number_input(
+            'Amplitude drift slope threshold', min_value=0.0, max_value=0.5, step=0.005, format='%.3f',
+            value=float(st.session_state.get('drift_amplitude_slope_threshold', 0.01)),
+            key='drift_amplitude_slope_threshold',
+            help='|slope| above this flags amplitude ratio drift'
+        )
+        drift_th_r2 = st.number_input(
+            'R² threshold (drift)', min_value=0.0, max_value=1.0, step=0.05, format='%.2f',
+            value=float(st.session_state.get('drift_r_squared_threshold', 0.5)),
+            key='drift_r_squared_threshold',
+            help='R² above this indicates systematic (not random) drift'
+        )
+        
         # Grid Search settings and button
         st.markdown('---')
         st.markdown('### 🔍 Grid Search')
@@ -2057,13 +2080,19 @@ with tabs[0]:
                 elif score >= 0.3: return '🟠 Fair'
                 else: return '🔴 Poor'
             
+            # Use sidebar cycle jump thresholds for drift indicator
+            th_peak = st.session_state.get('drift_peak_slope_threshold', 0.05)
+            th_amp = st.session_state.get('drift_amplitude_slope_threshold', 0.01)
+            th_r2 = st.session_state.get('drift_r_squared_threshold', 0.5)
             def get_drift_flag(result):
-                """Return drift indicator: ⚠️ if flagged, ✅ if not, - if not analyzed."""
-                if not hasattr(result, 'peak_drift_flagged'):
+                """Return drift indicator: ⚠️ if flagged, ✅ if not, - if not analyzed. Uses sidebar thresholds."""
+                if not hasattr(result, 'peak_drift_slope'):
                     return '-'
-                if result.peak_drift_flagged or result.amplitude_drift_flagged:
-                    return '⚠️'
-                return '✅'
+                peak_flagged = (abs(getattr(result, 'peak_drift_slope', 0)) > th_peak and
+                                getattr(result, 'peak_drift_r_squared', 0) > th_r2)
+                amp_flagged = (abs(getattr(result, 'amplitude_drift_slope', 0)) > th_amp and
+                              getattr(result, 'amplitude_drift_r_squared', 0) > th_r2)
+                return '⚠️' if (peak_flagged or amp_flagged) else '✅'
             
             results_df = pd.DataFrame([{
                 'Rank': i+1,
@@ -2089,6 +2118,11 @@ with tabs[0]:
             current_selected_rank = st.session_state.get('selected_rank', 1)
             max_rank = min(len(st.session_state.autofit_results), 10)
             rank_options = list(range(1, max_rank + 1))
+            
+            # Sync dropdown key with selected_rank before creating the widget (e.g. after "Select Rank N" in Amplitude tab).
+            # Setting the key after the widget is instantiated causes a Streamlit error, so we set it here.
+            if 'selected_rank_dropdown' not in st.session_state or st.session_state.selected_rank_dropdown != current_selected_rank:
+                st.session_state.selected_rank_dropdown = current_selected_rank
             
             # Find index for current selection (default to 0 if not in range)
             default_index = min(current_selected_rank - 1, len(rank_options) - 1) if current_selected_rank in rank_options else 0
@@ -2475,13 +2509,16 @@ with tabs[1]:
                     safe_meas_amp = np.where(np.abs(matched_meas_amp) > 1e-10, matched_meas_amp, 1e-10)
                     amplitude_ratios = matched_theo_amp / safe_meas_amp
                     
-                    # Get drift metrics from score_result_amp
+                    # Get drift metrics from score_result_amp; flag using sidebar thresholds
                     peak_drift_slope = score_result_amp.get('peak_drift_slope', 0.0)
                     peak_drift_r2 = score_result_amp.get('peak_drift_r_squared', 0.0)
-                    peak_drift_flagged = score_result_amp.get('peak_drift_flagged', False)
                     amp_drift_slope = score_result_amp.get('amplitude_drift_slope', 0.0)
                     amp_drift_r2 = score_result_amp.get('amplitude_drift_r_squared', 0.0)
-                    amp_drift_flagged = score_result_amp.get('amplitude_drift_flagged', False)
+                    th_peak_amp = st.session_state.get('drift_peak_slope_threshold', 0.05)
+                    th_amp_amp = st.session_state.get('drift_amplitude_slope_threshold', 0.01)
+                    th_r2_amp = st.session_state.get('drift_r_squared_threshold', 0.5)
+                    peak_drift_flagged = (abs(peak_drift_slope) > th_peak_amp and peak_drift_r2 > th_r2_amp)
+                    amp_drift_flagged = (abs(amp_drift_slope) > th_amp_amp and amp_drift_r2 > th_r2_amp)
                     
                     # Create subplot with 2 rows
                     fig_drift = make_subplots(
@@ -2564,25 +2601,39 @@ with tabs[1]:
                     
                     st.plotly_chart(fig_drift, use_container_width=True)
                     
-                    # Show warning if flagged
-                    if peak_drift_flagged or amp_drift_flagged:
+                    # Gate warning + alternatives on rank 1 being flagged (not current rank), so the section
+                    # stays visible when user selects an alternative rank and they can switch between them.
+                    rank1 = st.session_state.autofit_results[0] if st.session_state.autofit_results else None
+                    if rank1 is not None and hasattr(rank1, 'peak_drift_slope'):
+                        rank1_peak_flagged = (abs(rank1.peak_drift_slope) > th_peak_amp and rank1.peak_drift_r_squared > th_r2_amp)
+                        rank1_amp_flagged = (abs(rank1.amplitude_drift_slope) > th_amp_amp and rank1.amplitude_drift_r_squared > th_r2_amp)
+                        rank1_any_flagged = rank1_peak_flagged or rank1_amp_flagged
+                    else:
+                        rank1_any_flagged = False
+                    
+                    if rank1_any_flagged:
                         flagged_types = []
-                        if peak_drift_flagged:
+                        if rank1_peak_flagged:
                             flagged_types.append('peak position drift')
-                        if amp_drift_flagged:
+                        if rank1_amp_flagged:
                             flagged_types.append('amplitude drift')
-                        st.warning(f'⚠️ **Cycle Jump Warning:** Systematic {" and ".join(flagged_types)} detected. This fit may be a wrong frequency multiple.')
+                        st.warning(f'⚠️ **Cycle Jump Warning:** Rank 1 has systematic {" and ".join(flagged_types)}. It may be a wrong frequency multiple.')
                         
-                        # === ALTERNATIVE OPTIONS: Show top unflagged results from grid search ===
+                        # === ALTERNATIVE OPTIONS: Show top unflagged results (shortcut to ranks in table); always visible when rank 1 is flagged ===
                         if st.session_state.autofit_results and len(st.session_state.autofit_results) > 1:
-                            # Find alternatives without drift flags (skip rank 1)
+                            # Find alternatives without drift flags (skip rank 1), using sidebar thresholds
+                            th_peak_alt = st.session_state.get('drift_peak_slope_threshold', 0.05)
+                            th_amp_alt = st.session_state.get('drift_amplitude_slope_threshold', 0.01)
+                            th_r2_alt = st.session_state.get('drift_r_squared_threshold', 0.5)
+                            def _is_drift_flagged(r):
+                                if not hasattr(r, 'peak_drift_slope'):
+                                    return False
+                                p = abs(getattr(r, 'peak_drift_slope', 0)) > th_peak_alt and getattr(r, 'peak_drift_r_squared', 0) > th_r2_alt
+                                a = abs(getattr(r, 'amplitude_drift_slope', 0)) > th_amp_alt and getattr(r, 'amplitude_drift_r_squared', 0) > th_r2_alt
+                                return p or a
                             unflagged_alternatives = []
                             for i, r in enumerate(st.session_state.autofit_results[1:10], start=2):  # Ranks 2-10
-                                if hasattr(r, 'peak_drift_flagged') and hasattr(r, 'amplitude_drift_flagged'):
-                                    if not r.peak_drift_flagged and not r.amplitude_drift_flagged:
-                                        unflagged_alternatives.append((i, r))
-                                else:
-                                    # If drift attributes not available, include as potential alternative
+                                if not _is_drift_flagged(r):
                                     unflagged_alternatives.append((i, r))
                                 if len(unflagged_alternatives) >= 4:
                                     break
