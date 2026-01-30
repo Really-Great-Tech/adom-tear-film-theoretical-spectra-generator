@@ -121,6 +121,8 @@ from src.analysis.measurement_utils import (
     detect_peaks,
     detect_valleys,
 )
+from src.analysis.metrics import _match_peaks
+from plotly.subplots import make_subplots
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -1312,6 +1314,29 @@ with st.sidebar:
                 key='grid_mu_step'
             )
         
+        # Cycle jump detection thresholds (used in Amplitude Analysis display)
+        st.markdown('---')
+        st.markdown('<p class="section-header">⚠️ Cycle Jump Thresholds</p>', unsafe_allow_html=True)
+        st.caption('Thresholds for flagging systematic drift (cycle jump candidates). Used in Amplitude Analysis.')
+        drift_th_peak = st.number_input(
+            'Peak drift slope threshold', min_value=0.0, max_value=0.5, step=0.01, format='%.2f',
+            value=float(st.session_state.get('drift_peak_slope_threshold', 0.05)),
+            key='drift_peak_slope_threshold',
+            help='|slope| above this (nm/nm) flags peak position drift'
+        )
+        drift_th_amp = st.number_input(
+            'Amplitude drift slope threshold', min_value=0.0, max_value=0.5, step=0.005, format='%.3f',
+            value=float(st.session_state.get('drift_amplitude_slope_threshold', 0.01)),
+            key='drift_amplitude_slope_threshold',
+            help='|slope| above this flags amplitude ratio drift'
+        )
+        drift_th_r2 = st.number_input(
+            'R² threshold (drift)', min_value=0.0, max_value=1.0, step=0.05, format='%.2f',
+            value=float(st.session_state.get('drift_r_squared_threshold', 0.5)),
+            key='drift_r_squared_threshold',
+            help='R² above this indicates systematic (not random) drift'
+        )
+        
         # Grid Search settings and button
         st.markdown('---')
         st.markdown('### 🔍 Grid Search')
@@ -2055,13 +2080,19 @@ with tabs[0]:
                 elif score >= 0.3: return '🟠 Fair'
                 else: return '🔴 Poor'
             
+            # Use sidebar cycle jump thresholds for drift indicator
+            th_peak = st.session_state.get('drift_peak_slope_threshold', 0.05)
+            th_amp = st.session_state.get('drift_amplitude_slope_threshold', 0.01)
+            th_r2 = st.session_state.get('drift_r_squared_threshold', 0.5)
             def get_drift_flag(result):
-                """Return drift indicator: ⚠️ if flagged, ✅ if not, - if not analyzed."""
-                if not hasattr(result, 'peak_drift_flagged'):
+                """Return drift indicator: ⚠️ if flagged, ✅ if not, - if not analyzed. Uses sidebar thresholds."""
+                if not hasattr(result, 'peak_drift_slope'):
                     return '-'
-                if result.peak_drift_flagged or result.amplitude_drift_flagged:
-                    return '⚠️'
-                return '✅'
+                peak_flagged = (abs(getattr(result, 'peak_drift_slope', 0)) > th_peak and
+                                getattr(result, 'peak_drift_r_squared', 0) > th_r2)
+                amp_flagged = (abs(getattr(result, 'amplitude_drift_slope', 0)) > th_amp and
+                              getattr(result, 'amplitude_drift_r_squared', 0) > th_r2)
+                return '⚠️' if (peak_flagged or amp_flagged) else '✅'
             
             results_df = pd.DataFrame([{
                 'Rank': i+1,
@@ -2087,6 +2118,11 @@ with tabs[0]:
             current_selected_rank = st.session_state.get('selected_rank', 1)
             max_rank = min(len(st.session_state.autofit_results), 10)
             rank_options = list(range(1, max_rank + 1))
+            
+            # Sync dropdown key with selected_rank before creating the widget (e.g. after "Select Rank N" in Amplitude tab).
+            # Setting the key after the widget is instantiated causes a Streamlit error, so we set it here.
+            if 'selected_rank_dropdown' not in st.session_state or st.session_state.selected_rank_dropdown != current_selected_rank:
+                st.session_state.selected_rank_dropdown = current_selected_rank
             
             # Find index for current selection (default to 0 if not in range)
             default_index = min(current_selected_rank - 1, len(rank_options) - 1) if current_selected_rank in rank_options else 0
@@ -2399,6 +2435,41 @@ with tabs[1]:
                         marker=dict(size=8, symbol='circle', color=valley_color)
                     ))
             
+            # === DRIFT VISUALIZATION: Connect matched peaks with color-coded lines ===
+            # Use the appropriate theoretical peaks based on toggle selection
+            if show_both_amp and has_bestfit_amp:
+                drift_theo_peaks_df = theo_pyelli_peaks_df  # Use PyElli for drift viz
+            else:
+                drift_theo_peaks_df = theo_peaks_df
+            
+            if len(meas_peaks_df) > 0 and len(drift_theo_peaks_df) > 0:
+                meas_peak_wavelengths = meas_peaks_df['wavelength'].to_numpy()
+                theo_peak_wavelengths = drift_theo_peaks_df['wavelength'].to_numpy()
+                matched_meas_idx, matched_theo_idx, deltas = _match_peaks(
+                    meas_peak_wavelengths, theo_peak_wavelengths, tolerance_nm=20.0
+                )
+                
+                # Draw drift lines between matched peaks
+                for i, (m_idx, t_idx, delta) in enumerate(zip(matched_meas_idx, matched_theo_idx, deltas)):
+                    # Color by drift magnitude: green (<5nm), yellow (5-10nm), red (>10nm)
+                    if delta < 5:
+                        color = '#22c55e'  # Green - good alignment
+                    elif delta < 10:
+                        color = '#eab308'  # Yellow - moderate drift
+                    else:
+                        color = '#ef4444'  # Red - significant drift
+                    
+                    fig_amp.add_trace(go.Scatter(
+                        x=[meas_peak_wavelengths[m_idx], theo_peak_wavelengths[t_idx]],
+                        y=[meas_peaks_df['amplitude'].iloc[m_idx], drift_theo_peaks_df['amplitude'].iloc[t_idx]],
+                        mode='lines',
+                        line=dict(color=color, width=1.5, dash='dot'),
+                        showlegend=(i == 0),
+                        name='Peak Drift' if i == 0 else None,
+                        legendgroup='drift',
+                        hovertemplate=f'Δλ = {delta:.1f} nm<extra></extra>'
+                    ))
+            
             fig_amp.update_layout(
                 height=600,
                 title='',
@@ -2413,6 +2484,190 @@ with tabs[1]:
             )
             
             st.plotly_chart(fig_amp, width='stretch')
+            
+            # === DRIFT ANALYSIS PLOT ===
+            # Show detailed drift analysis if we have matched peaks
+            if len(meas_peaks_df) > 0 and len(drift_theo_peaks_df) > 0 and len(matched_meas_idx) >= 3:
+                with st.expander('🔄 Drift Analysis Plot (Cycle Jump Indicators)', expanded=False):
+                    st.markdown('''
+                    <div style="background: #fef3c7; border: 1px solid #f59e0b; border-radius: 8px; padding: 12px; margin-bottom: 16px; font-size: 0.85rem; color: #92400e;">
+                        <strong>Note:</strong> These plots show how peak position error (Δλ) and amplitude ratio evolve across the spectrum.
+                        A systematic trend (high R²) suggests the chosen thickness/frequency may be a wrong multiple (cycle jump candidate).
+                    </div>
+                    ''', unsafe_allow_html=True)
+                    
+                    # Get matched peak data for drift plots
+                    matched_meas_wl = meas_peak_wavelengths[matched_meas_idx]
+                    matched_theo_wl = theo_peak_wavelengths[matched_theo_idx]
+                    delta_wavelengths = matched_theo_wl - matched_meas_wl  # Signed Δλ
+                    
+                    # Get matched amplitudes
+                    matched_meas_amp = meas_peaks_df['amplitude'].iloc[matched_meas_idx].to_numpy()
+                    matched_theo_amp = drift_theo_peaks_df['amplitude'].iloc[matched_theo_idx].to_numpy()
+                    
+                    # Calculate amplitude ratios (protect against division by zero)
+                    safe_meas_amp = np.where(np.abs(matched_meas_amp) > 1e-10, matched_meas_amp, 1e-10)
+                    amplitude_ratios = matched_theo_amp / safe_meas_amp
+                    
+                    # Get drift metrics from score_result_amp; flag using sidebar thresholds
+                    peak_drift_slope = score_result_amp.get('peak_drift_slope', 0.0)
+                    peak_drift_r2 = score_result_amp.get('peak_drift_r_squared', 0.0)
+                    amp_drift_slope = score_result_amp.get('amplitude_drift_slope', 0.0)
+                    amp_drift_r2 = score_result_amp.get('amplitude_drift_r_squared', 0.0)
+                    th_peak_amp = st.session_state.get('drift_peak_slope_threshold', 0.05)
+                    th_amp_amp = st.session_state.get('drift_amplitude_slope_threshold', 0.01)
+                    th_r2_amp = st.session_state.get('drift_r_squared_threshold', 0.5)
+                    peak_drift_flagged = (abs(peak_drift_slope) > th_peak_amp and peak_drift_r2 > th_r2_amp)
+                    amp_drift_flagged = (abs(amp_drift_slope) > th_amp_amp and amp_drift_r2 > th_r2_amp)
+                    
+                    # Create subplot with 2 rows
+                    fig_drift = make_subplots(
+                        rows=2, cols=1,
+                        subplot_titles=(
+                            f'Peak Position Drift (Δλ vs Wavelength) — Slope: {peak_drift_slope:.4f} nm/nm, R²: {peak_drift_r2:.3f}',
+                            f'Amplitude Ratio Drift — Slope: {amp_drift_slope:.4f}, R²: {amp_drift_r2:.3f}'
+                        ),
+                        vertical_spacing=0.18
+                    )
+                    
+                    # Row 1: Peak drift scatter + regression line
+                    scatter_color = '#ef4444' if peak_drift_flagged else '#3b82f6'
+                    fig_drift.add_trace(go.Scatter(
+                        x=matched_meas_wl,
+                        y=delta_wavelengths,
+                        mode='markers',
+                        name='Δλ (theo - meas)',
+                        marker=dict(size=10, color=scatter_color, symbol='circle'),
+                        hovertemplate='λ: %{x:.1f} nm<br>Δλ: %{y:.2f} nm<extra></extra>'
+                    ), row=1, col=1)
+                    
+                    # Add regression line for peak drift
+                    if len(matched_meas_wl) >= 2:
+                        x_range = np.array([matched_meas_wl.min(), matched_meas_wl.max()])
+                        y_mean = np.mean(delta_wavelengths)
+                        x_mean = np.mean(matched_meas_wl)
+                        y_regression = peak_drift_slope * (x_range - x_mean) + y_mean
+                        line_color = '#ef4444' if peak_drift_flagged else '#64748b'
+                        fig_drift.add_trace(go.Scatter(
+                            x=x_range,
+                            y=y_regression,
+                            mode='lines',
+                            name='Trend line',
+                            line=dict(color=line_color, width=2, dash='dash'),
+                            hoverinfo='skip'
+                        ), row=1, col=1)
+                    
+                    # Row 2: Amplitude ratio scatter + regression line
+                    scatter_color_amp = '#ef4444' if amp_drift_flagged else '#3b82f6'
+                    fig_drift.add_trace(go.Scatter(
+                        x=matched_meas_wl,
+                        y=amplitude_ratios,
+                        mode='markers',
+                        name='Amp Ratio (theo/meas)',
+                        marker=dict(size=10, color=scatter_color_amp, symbol='diamond'),
+                        hovertemplate='λ: %{x:.1f} nm<br>Ratio: %{y:.3f}<extra></extra>'
+                    ), row=2, col=1)
+                    
+                    # Add regression line for amplitude drift
+                    if len(matched_meas_wl) >= 2:
+                        y_mean_amp = np.mean(amplitude_ratios)
+                        y_regression_amp = amp_drift_slope * (x_range - x_mean) + y_mean_amp
+                        line_color_amp = '#ef4444' if amp_drift_flagged else '#64748b'
+                        fig_drift.add_trace(go.Scatter(
+                            x=x_range,
+                            y=y_regression_amp,
+                            mode='lines',
+                            name='Trend line',
+                            line=dict(color=line_color_amp, width=2, dash='dash'),
+                            showlegend=False,
+                            hoverinfo='skip'
+                        ), row=2, col=1)
+                    
+                    # Add horizontal reference lines
+                    fig_drift.add_hline(y=0, line_dash='dot', line_color='#94a3b8', row=1, col=1)
+                    fig_drift.add_hline(y=1.0, line_dash='dot', line_color='#94a3b8', row=2, col=1)
+                    
+                    fig_drift.update_layout(
+                        height=500,
+                        showlegend=True,
+                        legend=dict(orientation='h', yanchor='bottom', y=1.08, xanchor='right', x=1),
+                        margin=dict(t=80, b=40, l=60, r=30),
+                        paper_bgcolor='#ffffff',
+                        plot_bgcolor='#ffffff'
+                    )
+                    fig_drift.update_xaxes(title_text='Wavelength (nm)', row=2, col=1)
+                    fig_drift.update_yaxes(title_text='Δλ (nm)', row=1, col=1)
+                    fig_drift.update_yaxes(title_text='Amplitude Ratio', row=2, col=1)
+                    
+                    st.plotly_chart(fig_drift, use_container_width=True)
+                    
+                    # Gate warning + alternatives on rank 1 being flagged (not current rank), so the section
+                    # stays visible when user selects an alternative rank and they can switch between them.
+                    rank1 = st.session_state.autofit_results[0] if st.session_state.autofit_results else None
+                    if rank1 is not None and hasattr(rank1, 'peak_drift_slope'):
+                        rank1_peak_flagged = (abs(rank1.peak_drift_slope) > th_peak_amp and rank1.peak_drift_r_squared > th_r2_amp)
+                        rank1_amp_flagged = (abs(rank1.amplitude_drift_slope) > th_amp_amp and rank1.amplitude_drift_r_squared > th_r2_amp)
+                        rank1_any_flagged = rank1_peak_flagged or rank1_amp_flagged
+                    else:
+                        rank1_any_flagged = False
+                    
+                    if rank1_any_flagged:
+                        flagged_types = []
+                        if rank1_peak_flagged:
+                            flagged_types.append('peak position drift')
+                        if rank1_amp_flagged:
+                            flagged_types.append('amplitude drift')
+                        st.warning(f'⚠️ **Cycle Jump Warning:** Rank 1 has systematic {" and ".join(flagged_types)}. It may be a wrong frequency multiple.')
+                        
+                        # === ALTERNATIVE OPTIONS: Show top unflagged results (shortcut to ranks in table); always visible when rank 1 is flagged ===
+                        if st.session_state.autofit_results and len(st.session_state.autofit_results) > 1:
+                            # Find alternatives without drift flags (skip rank 1), using sidebar thresholds
+                            th_peak_alt = st.session_state.get('drift_peak_slope_threshold', 0.05)
+                            th_amp_alt = st.session_state.get('drift_amplitude_slope_threshold', 0.01)
+                            th_r2_alt = st.session_state.get('drift_r_squared_threshold', 0.5)
+                            def _is_drift_flagged(r):
+                                if not hasattr(r, 'peak_drift_slope'):
+                                    return False
+                                p = abs(getattr(r, 'peak_drift_slope', 0)) > th_peak_alt and getattr(r, 'peak_drift_r_squared', 0) > th_r2_alt
+                                a = abs(getattr(r, 'amplitude_drift_slope', 0)) > th_amp_alt and getattr(r, 'amplitude_drift_r_squared', 0) > th_r2_alt
+                                return p or a
+                            unflagged_alternatives = []
+                            for i, r in enumerate(st.session_state.autofit_results[1:10], start=2):  # Ranks 2-10
+                                if not _is_drift_flagged(r):
+                                    unflagged_alternatives.append((i, r))
+                                if len(unflagged_alternatives) >= 4:
+                                    break
+                            
+                            if unflagged_alternatives:
+                                st.markdown('---')
+                                st.markdown('**🔄 Alternative Options Without Drift Flags:**')
+                                st.markdown('<p style="color: #64748b; font-size: 0.85rem;">These results may be better fits if rank 1 is a cycle jump.</p>', unsafe_allow_html=True)
+                                
+                                # Create columns for alternative cards
+                                alt_cols = st.columns(len(unflagged_alternatives))
+                                for col, (rank, result) in zip(alt_cols, unflagged_alternatives):
+                                    with col:
+                                        # Score color
+                                        score_color = '#22c55e' if result.score >= 0.7 else ('#eab308' if result.score >= 0.5 else '#ef4444')
+                                        st.markdown(f'''
+                                        <div style="background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 8px; padding: 12px; text-align: center;">
+                                            <div style="font-weight: 600; color: #334155; margin-bottom: 8px;">Rank {rank}</div>
+                                            <div style="font-size: 1.2rem; font-weight: 700; color: {score_color};">{result.score:.3f}</div>
+                                            <div style="font-size: 0.75rem; color: #64748b; margin-top: 8px;">
+                                                L={result.lipid_nm:.0f} A={result.aqueous_nm:.0f}<br>
+                                                R={result.mucus_nm:.0f}Å
+                                            </div>
+                                        </div>
+                                        ''', unsafe_allow_html=True)
+                                        if st.button(f'Select Rank {rank}', key=f'select_alt_{rank}', use_container_width=True):
+                                            st.session_state.selected_rank = rank
+                                            st.session_state.forced_lipid = result.lipid_nm
+                                            st.session_state.forced_aqueous = result.aqueous_nm
+                                            st.session_state.forced_mucus = result.mucus_nm
+                                            st.session_state.widget_key_version += 1
+                                            st.rerun()
+                            else:
+                                st.info('No unflagged alternatives found in top 10 results.')
             
             # Settings and metrics below the plot
             st.markdown('---')
