@@ -75,15 +75,15 @@ analysis:
     min_peaks: 3
     min_signal_amplitude: 0.02
     min_wavelength_span_nm: 150.0
-  candidate_filtering:
-    # PyElli-style multi-stage candidate filtering
-    # Reorders results to prioritize candidates with valid peak alignment
-    enabled: true
-    min_match_ratio: 0.5         # Require at least 50% of measured peaks matched
-    max_peak_excess: 2           # Max extra theoretical peaks allowed
-    min_oscillation_ratio: 0.7   # Minimum theo/meas oscillation amplitude ratio
-    max_oscillation_ratio: 1.5   # Maximum theo/meas oscillation amplitude ratio
-    max_mean_delta_nm: 100.0     # Maximum mean peak delta for valid alignment
+  # candidate_filtering:  # Reserved for future use - not yet implemented
+  #   # PyElli-style multi-stage candidate filtering
+  #   # Reorders results to prioritize candidates with valid peak alignment
+  #   enabled: true
+  #   min_match_ratio: 0.5         # Require at least 50% of measured peaks matched
+  #   max_peak_excess: 2           # Max extra theoretical peaks allowed
+  #   min_oscillation_ratio: 0.7   # Minimum theo/meas oscillation amplitude ratio
+  #   max_oscillation_ratio: 1.5   # Maximum theo/meas oscillation amplitude ratio
+  #   max_mean_delta_nm: 100.0     # Maximum mean peak delta for valid alignment
   edge_case_detection:
     enabled: true
     threshold_high_score: 0.9    # Flag scores >= this as exceptional (algorithm outperforming)
