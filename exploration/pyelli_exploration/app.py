@@ -1480,7 +1480,7 @@ if selected_file and Path(selected_file).exists():
                     top_k=10,
                     enable_roughness=True,
                     search_strategy='Dynamic Search',
-                    max_combinations=4000,
+                    max_combinations=30000,
                 )
 
             # Show progress in the placeholder above the tabs
