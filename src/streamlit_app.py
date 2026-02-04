@@ -279,7 +279,7 @@ def load_measurement_files(measurements_dir: pathlib.Path, config: Dict[str, Any
 
     if not all_file_path_objs:
         st.warning(f"No measurement files found matching pattern: {file_pattern}")
-        return measurements
+        return measurements 
 
     for file_path_obj in sorted(all_file_path_objs):
         try:

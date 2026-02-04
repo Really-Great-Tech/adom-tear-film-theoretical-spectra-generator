@@ -185,21 +185,22 @@ def peak_delta_score(
     tau_nm: float,
     penalty_unpaired: float,
     extra_penalty_unmatched_measured: float = 0.02,
+    use_soft_penalty: bool = True,
 ) -> MetricResult:
     """
     Score based on peak alignment quality (position delta between matched peaks).
     
-    Enhanced with PyElli-style penalties:
-    - Base penalty for any unpaired peaks
-    - Extra penalty for unmatched MEASURED peaks (failed to find them in theoretical)
+    Uses soft multiplicative penalty instead of subtractive to avoid zeroing out
+    candidates with good fit quality but imperfect peak matching.
     
     Args:
         measurement: Prepared measurement spectrum
         theoretical: Prepared theoretical spectrum
         tolerance_nm: Peak matching tolerance in nm
         tau_nm: Decay constant for delta scoring (lower = stricter)
-        penalty_unpaired: Base penalty per unpaired peak
+        penalty_unpaired: Base penalty per unpaired peak (used in soft mode as dampening)
         extra_penalty_unmatched_measured: Extra penalty for unmatched measured peaks
+        use_soft_penalty: If True, use multiplicative dampening; if False, use subtractive
     """
     meas_peaks = measurement.peaks["wavelength"].to_numpy(dtype=float)
     theo_peaks = theoretical.peaks["wavelength"].to_numpy(dtype=float)
@@ -215,20 +216,33 @@ def peak_delta_score(
         if total_unmatched == 0:
             score = 1.0
         else:
-            score = 0.0
+            # No matches but have peaks - still give partial credit for having peaks
+            score = 0.2 if use_soft_penalty else 0.0
     else:
         mean_delta = float(np.mean(deltas))
         score = float(np.exp(-mean_delta / max(tau_nm, 1e-6)))
 
-    # Base penalty for all unpaired peaks
-    penalty = penalty_unpaired * float(total_unmatched)
-    
-    # Extra penalty for unmatched MEASURED peaks (from PyElli)
-    # These are peaks we failed to find in theoretical - more critical
-    if unmatched_measurement > 0:
-        penalty += extra_penalty_unmatched_measured * float(unmatched_measurement)
-    
-    score = max(0.0, min(1.0, score - penalty))
+    if use_soft_penalty:
+        # Soft penalty: multiplicative dampening based on match ratio
+        # This prevents good-fit-but-imperfect-peak-matching candidates from zeroing out
+        total_peaks = max(len(meas_peaks), len(theo_peaks))
+        if total_peaks > 0:
+            match_ratio = len(matched_meas) / total_peaks
+            # Dampening factor: ranges from 0.3 (no matches) to 1.0 (all matched)
+            dampening = 0.3 + 0.7 * match_ratio
+            score *= dampening
+            
+            # Extra dampening for unmatched measured peaks (more important)
+            if unmatched_measurement > 0 and len(meas_peaks) > 0:
+                meas_match_ratio = len(matched_meas) / len(meas_peaks)
+                extra_dampening = 0.5 + 0.5 * meas_match_ratio
+                score *= extra_dampening
+    else:
+        # Original subtractive penalty (legacy behavior)
+        penalty = penalty_unpaired * float(total_unmatched)
+        if unmatched_measurement > 0:
+            penalty += extra_penalty_unmatched_measured * float(unmatched_measurement)
+        score = max(0.0, min(1.0, score - penalty))
 
     diagnostics = {
         "matched_pairs": float(len(matched_meas)),
@@ -262,6 +276,7 @@ def correlation_score(
     theoretical: PreparedTheoreticalSpectrum,
     *,
     min_correlation: float = 0.85,
+    use_direct_mapping: bool = True,
 ) -> MetricResult:
     """
     Score based on Pearson correlation between measured and theoretical spectra.
@@ -273,6 +288,8 @@ def correlation_score(
         measurement: Prepared measurement spectrum
         theoretical: Prepared theoretical spectrum
         min_correlation: Minimum acceptable correlation (below this, heavily penalized)
+        use_direct_mapping: If True, use correlation directly as score (preserves ranking);
+                           if False, use compressed range transformation
         
     Returns:
         MetricResult with correlation-based score
@@ -287,16 +304,28 @@ def correlation_score(
     if np.isnan(correlation):
         correlation = 0.0
     
-    # Score calculation based on PyElli approach:
-    # - Negative correlation = 0 (anti-correlated fits rejected)
-    # - Below min_correlation = partial score (max 0.3)
-    # - Above min_correlation = scales from 0.7 to 1.0
-    if correlation < 0:
-        score = 0.0
-    elif correlation < min_correlation:
-        score = (correlation / min_correlation) * 0.3
+    if use_direct_mapping:
+        # Direct mapping: correlation value IS the score (with floor for negative)
+        # This preserves the ranking power of correlation differences
+        # 0.94 correlation → 0.94 score, 0.87 correlation → 0.87 score
+        if correlation < 0:
+            score = 0.0
+        elif correlation < min_correlation:
+            # Below threshold: dampen but don't collapse completely
+            score = correlation * 0.8  # 0.80 → 0.64, 0.70 → 0.56
+        else:
+            score = correlation
     else:
-        score = 0.7 + 0.3 * ((correlation - min_correlation) / (1.0 - min_correlation))
+        # Legacy: compressed range transformation
+        # - Negative correlation = 0 (anti-correlated fits rejected)
+        # - Below min_correlation = partial score (max 0.3)
+        # - Above min_correlation = scales from 0.7 to 1.0
+        if correlation < 0:
+            score = 0.0
+        elif correlation < min_correlation:
+            score = (correlation / min_correlation) * 0.3
+        else:
+            score = 0.7 + 0.3 * ((correlation - min_correlation) / (1.0 - min_correlation))
     
     score = float(np.clip(score, 0.0, 1.0))
     
@@ -369,19 +398,84 @@ def amplitude_score(
     return MetricResult(score=score, diagnostics=diagnostics)
 
 
+def _calculate_regional_rmse(
+    residual: np.ndarray,
+    mask: np.ndarray,
+) -> float:
+    """Calculate RMSE for a specific wavelength region."""
+    if not mask.any():
+        return 0.0
+    return float(np.sqrt(np.mean(residual[mask] ** 2)))
+
+
 def residual_score(
     measurement: PreparedMeasurement,
     theoretical: PreparedTheoreticalSpectrum,
     *,
     tau_rmse: float,
     max_rmse: Optional[float] = None,
+    use_regional_weighting: bool = True,
+    regional_weights: Optional[Dict[str, float]] = None,
 ) -> MetricResult:
-    # Use RAW (non-detrended) spectra for residual calculation - visual quality depends on raw alignment
-    # Detrended spectra remove baseline, which can hide misalignment issues
-    fit_metrics = calculate_fit_metrics(measurement.reflectance, theoretical.aligned_reflectance)
-    rmse = float(fit_metrics.get("RMSE", 0.0))
+    """
+    Score based on residual (RMSE) between measured and theoretical spectra.
+    
+    PyElli-inspired improvement: Regional RMSE weighting prioritizes early
+    wavelengths (600-750nm) where fit quality is most visually impactful.
+    
+    Args:
+        measurement: Prepared measurement spectrum
+        theoretical: Prepared theoretical spectrum
+        tau_rmse: Decay constant for RMSE scoring (lower = stricter)
+        max_rmse: Hard cutoff - score = 0 if RMSE exceeds this
+        use_regional_weighting: If True, weight RMSE by spectral region
+        regional_weights: Custom weights for regions (very_early, early, mid, late)
+    """
+    wavelengths = measurement.wavelengths
+    measured = measurement.reflectance
+    theo = theoretical.aligned_reflectance
+    residual = measured - theo
+    
+    # Global fit metrics for diagnostics
+    fit_metrics = calculate_fit_metrics(measured, theo)
+    global_rmse = float(fit_metrics.get("RMSE", 0.0))
     r2 = float(fit_metrics.get("R²", 0.0))
     tau = max(float(tau_rmse), 1e-9)
+    
+    if use_regional_weighting and len(wavelengths) > 0:
+        # Regional RMSE weighting - prioritize early wavelengths (PyElli approach)
+        # Early wavelength accuracy is most visually impactful
+        weights = regional_weights or {
+            'very_early': 0.30,  # 600-680nm - 30% weight (most critical)
+            'early': 0.20,      # 680-750nm - 20% weight
+            'mid': 0.25,        # 750-950nm - 25% weight
+            'late': 0.25,       # >950nm    - 25% weight
+        }
+        
+        very_early_mask = wavelengths <= 680
+        early_mask = (wavelengths > 680) & (wavelengths <= 750)
+        mid_mask = (wavelengths > 750) & (wavelengths <= 950)
+        late_mask = wavelengths > 950
+        
+        very_early_rmse = _calculate_regional_rmse(residual, very_early_mask)
+        early_rmse = _calculate_regional_rmse(residual, early_mask)
+        mid_rmse = _calculate_regional_rmse(residual, mid_mask)
+        late_rmse = _calculate_regional_rmse(residual, late_mask)
+        
+        # Weighted RMSE calculation
+        weighted_rmse = (
+            weights.get('very_early', 0.30) * very_early_rmse +
+            weights.get('early', 0.20) * early_rmse +
+            weights.get('mid', 0.25) * mid_rmse +
+            weights.get('late', 0.25) * late_rmse
+        )
+        rmse = weighted_rmse
+    else:
+        rmse = global_rmse
+        very_early_rmse = global_rmse
+        early_rmse = global_rmse
+        mid_rmse = global_rmse
+        late_rmse = global_rmse
     
     # Base score from RMSE (lower RMSE = higher score)
     rmse_score = float(np.exp(-rmse / tau))
@@ -400,6 +494,11 @@ def residual_score(
     
     diagnostics = {
         "rmse": rmse,
+        "rmse_global": global_rmse,
+        "rmse_very_early": very_early_rmse,
+        "rmse_early": early_rmse,
+        "rmse_mid": mid_rmse,
+        "rmse_late": late_rmse,
         "mae": float(fit_metrics.get("MAE", 0.0)),
         "r2": r2,
         "mape_pct": float(fit_metrics.get("MAPE (%)", 0.0)),
@@ -419,6 +518,121 @@ def composite_score(component_scores: Dict[str, float], weights: Dict[str, float
         weight = weights.get(key, 0.0)
         combined += weight * score
     return combined / total_weight
+
+
+def apply_bonus_penalty_adjustments(
+    base_composite: float,
+    rmse: float,
+    correlation: float,
+    matched_peaks: int,
+    meas_peak_count: int,
+    *,
+    bonus_cfg: Optional[Dict[str, float]] = None,
+) -> Tuple[float, Dict[str, float]]:
+    """
+    Apply PyElli-style bonus/penalty adjustments to composite score.
+    
+    Creates strong separation between excellent and mediocre fits by applying
+    multiplicative bonuses for excellent metrics and penalties for poor metrics.
+    
+    Args:
+        base_composite: Initial weighted composite score
+        rmse: RMSE value from residual scoring
+        correlation: Correlation coefficient from correlation scoring
+        matched_peaks: Number of matched peaks
+        meas_peak_count: Total measured peaks (for match ratio calculation)
+        bonus_cfg: Optional config for bonus/penalty thresholds
+        
+    Returns:
+        Tuple of (adjusted_score, adjustment_diagnostics)
+    """
+    cfg = bonus_cfg or {}
+    
+    # Configurable thresholds with sensible defaults based on PyElli analysis
+    excellent_rmse_threshold = float(cfg.get('excellent_rmse', 0.0015))
+    good_rmse_threshold = float(cfg.get('good_rmse', 0.002))
+    poor_rmse_threshold = float(cfg.get('poor_rmse', 0.003))
+    
+    excellent_corr_threshold = float(cfg.get('excellent_correlation', 0.98))
+    good_corr_threshold = float(cfg.get('good_correlation', 0.95))
+    poor_corr_threshold = float(cfg.get('poor_correlation', 0.5))
+    
+    min_match_ratio = float(cfg.get('min_match_ratio', 0.5))
+    
+    adjusted = base_composite
+    applied_adjustments: Dict[str, float] = {}
+    
+    # === BONUSES FOR EXCELLENT FITS ===
+    # Use smaller bonuses and don't cap at 1.0 to preserve ranking differentiation
+    
+    # Bonus for excellent RMSE (LTA achieves ~0.0006-0.0011)
+    if rmse <= excellent_rmse_threshold:
+        bonus = 1.10  # 10% bonus (reduced from 30%)
+        adjusted *= bonus
+        applied_adjustments['rmse_excellent_bonus'] = bonus
+    elif rmse <= good_rmse_threshold:
+        bonus = 1.05  # 5% bonus (reduced from 15%)
+        adjusted *= bonus
+        applied_adjustments['rmse_good_bonus'] = bonus
+    
+    # Bonus for excellent correlation (LTA achieves 0.99+)
+    if correlation >= excellent_corr_threshold:
+        bonus = 1.08  # 8% bonus (reduced from 20%)
+        adjusted *= bonus
+        applied_adjustments['corr_excellent_bonus'] = bonus
+    elif correlation >= good_corr_threshold:
+        bonus = 1.04  # 4% bonus (reduced from 10%)
+        adjusted *= bonus
+        applied_adjustments['corr_good_bonus'] = bonus
+    
+    # Combined bonus for excellent correlation AND low RMSE
+    if correlation >= excellent_corr_threshold and rmse <= excellent_rmse_threshold:
+        bonus = 1.05  # 5% bonus (reduced from 15%)
+        adjusted *= bonus
+        applied_adjustments['combined_excellent_bonus'] = bonus
+    
+    # Bonus for high peak match ratio
+    if meas_peak_count > 0:
+        match_ratio = matched_peaks / float(meas_peak_count)
+        if match_ratio >= 0.9 and matched_peaks >= 5:
+            bonus = 1.03  # 3% bonus (reduced from 10%)
+            adjusted *= bonus
+            applied_adjustments['peak_match_bonus'] = bonus
+    
+    # === PENALTIES FOR POOR FITS ===
+    
+    # Penalty for low/negative correlation
+    if correlation < poor_corr_threshold:
+        penalty = 0.3  # 70% penalty
+        adjusted *= penalty
+        applied_adjustments['corr_poor_penalty'] = penalty
+    elif correlation < cfg.get('min_correlation', 0.85):
+        penalty = 0.6  # 40% penalty
+        adjusted *= penalty
+        applied_adjustments['corr_below_min_penalty'] = penalty
+    
+    # Penalty for high RMSE
+    if rmse > poor_rmse_threshold:
+        penalty = 0.4  # 60% penalty
+        adjusted *= penalty
+        applied_adjustments['rmse_poor_penalty'] = penalty
+    
+    # Penalty for insufficient peak matches
+    if meas_peak_count > 0:
+        match_ratio = matched_peaks / float(meas_peak_count)
+        if match_ratio < min_match_ratio:
+            # Scale penalty based on how far below threshold
+            penalty_factor = 1.0 - (match_ratio / min_match_ratio)
+            penalty = 1.0 - 0.5 * penalty_factor  # Up to 50% penalty
+            adjusted *= penalty
+            applied_adjustments['peak_match_penalty'] = penalty
+    
+    # Don't cap at 1.0 to preserve ranking differentiation among excellent candidates
+    # Final score can exceed 1.0 slightly, which helps rank the best candidates
+    adjusted = float(np.clip(adjusted, 0.0, 1.5))
+    applied_adjustments['final_adjustment_ratio'] = adjusted / max(base_composite, 1e-9)
+    
+    return adjusted, applied_adjustments
 
 
 def measurement_quality_score(
@@ -549,7 +763,7 @@ def score_spectrum(
         coverage_penalty_factor=float(peak_count_cfg.get("coverage_penalty_factor", 0.5)),
     )
     
-    # Peak delta score with enhanced unpaired penalties
+    # Peak delta score with soft penalty (avoids zeroing out good fits)
     delta_result = peak_delta_score(
         measurement,
         theoretical,
@@ -557,6 +771,7 @@ def score_spectrum(
         tau_nm=float(peak_delta_cfg.get("tau_nm", 15.0)),
         penalty_unpaired=float(peak_delta_cfg.get("penalty_unpaired", 0.04)),
         extra_penalty_unmatched_measured=float(peak_delta_cfg.get("extra_penalty_unmatched_measured", 0.02)),
+        use_soft_penalty=bool(peak_delta_cfg.get("use_soft_penalty", True)),
     )
     
     # Correlation score (critical for rejecting anti-correlated fits)
@@ -564,6 +779,7 @@ def score_spectrum(
         measurement,
         theoretical,
         min_correlation=float(correlation_cfg.get("min_correlation", 0.85)),
+        use_direct_mapping=bool(correlation_cfg.get("use_direct_mapping", True)),
     )
     
     # Amplitude score (oscillation matching)
@@ -577,12 +793,13 @@ def score_spectrum(
     # Phase overlap score (FFT-based)
     phase_result = phase_overlap_score(measurement, theoretical)
     
-    # Residual score
+    # Residual score with regional weighting (PyElli-inspired)
     residual_result = residual_score(
         measurement,
         theoretical,
         tau_rmse=float(residual_cfg.get("tau_rmse", 0.015)),
         max_rmse=residual_cfg.get("max_rmse"),
+        use_regional_weighting=bool(residual_cfg.get("use_regional_weighting", True)),
     )
 
     component_scores: Dict[str, float] = {
@@ -617,8 +834,31 @@ def score_spectrum(
         component_scores["temporal_continuity"] = temporal_result.score
         diagnostics["temporal_continuity"] = temporal_result.diagnostics
 
-    composite = composite_score(component_scores, weights_cfg)
-    component_scores["composite"] = composite
+    # Calculate base composite score
+    base_composite = composite_score(component_scores, weights_cfg)
+    
+    # Apply PyElli-style bonus/penalty adjustments
+    bonus_cfg = metrics_cfg.get("bonus_penalty", {})
+    rmse = residual_result.diagnostics.get("rmse", 0.0)
+    correlation = corr_result.diagnostics.get("correlation", 0.0)
+    matched_peaks = int(count_result.diagnostics.get("matched_peaks", 0))
+    meas_peak_count = int(count_result.diagnostics.get("measurement_peaks", 0))
+    
+    if bonus_cfg.get("enabled", True):
+        adjusted_composite, adjustment_diagnostics = apply_bonus_penalty_adjustments(
+            base_composite,
+            rmse,
+            correlation,
+            matched_peaks,
+            meas_peak_count,
+            bonus_cfg=bonus_cfg,
+        )
+        diagnostics["bonus_penalty"] = adjustment_diagnostics
+    else:
+        adjusted_composite = base_composite
+    
+    component_scores["composite"] = adjusted_composite
+    component_scores["composite_base"] = base_composite  # Store pre-adjustment score
 
     return SpectrumScore(
         lipid_nm=lipid_nm,
@@ -641,5 +881,6 @@ __all__ = [
     "measurement_quality_score",
     "temporal_continuity_score",
     "composite_score",
+    "apply_bonus_penalty_adjustments",
     "score_spectrum",
 ]
