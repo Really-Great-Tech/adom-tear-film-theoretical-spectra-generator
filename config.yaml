@@ -75,6 +75,15 @@ analysis:
     min_peaks: 3
     min_signal_amplitude: 0.02
     min_wavelength_span_nm: 150.0
+  # candidate_filtering:  # Reserved for future use - not yet implemented
+  #   # PyElli-style multi-stage candidate filtering
+  #   # Reorders results to prioritize candidates with valid peak alignment
+  #   enabled: true
+  #   min_match_ratio: 0.5         # Require at least 50% of measured peaks matched
+  #   max_peak_excess: 2           # Max extra theoretical peaks allowed
+  #   min_oscillation_ratio: 0.7   # Minimum theo/meas oscillation amplitude ratio
+  #   max_oscillation_ratio: 1.5   # Maximum theo/meas oscillation amplitude ratio
+  #   max_mean_delta_nm: 100.0     # Maximum mean peak delta for valid alignment
   edge_case_detection:
     enabled: true
     threshold_high_score: 0.9    # Flag scores >= this as exceptional (algorithm outperforming)
@@ -104,15 +113,17 @@ analysis:
       aqueous: {min: 800, max: 12000, step: 200} # Accepted range for aqueous
       roughness: {min: 600, max: 2750, step: 500}  # Accepted range for roughness
     refine:
-      lipid: {window_nm: 20, step_nm: 5}
-      aqueous: {window_nm: 40, step_nm: 10}
-      roughness: {window_A: 200, step_A: 25}
+      # Wider windows and finer steps for better precision (PyElli-inspired)
+      lipid: {window_nm: 30, step_nm: 2}       # Was 20/5 - finer steps find optimal
+      aqueous: {window_nm: 100, step_nm: 5}    # Was 40/10 - wider window, finer step
+      roughness: {window_A: 300, step_A: 15}   # Was 200/25 - wider window, finer step
       max_refine_candidates: 5000
   metrics:
     # PyElli-inspired scoring parameters for better ranking performance
     residual:
-      tau_rmse: 0.015
-      max_rmse: 0.1
+      tau_rmse: 0.002           # Tightened from 0.015 - LTA achieves RMSE ~0.0006-0.0011
+      max_rmse: 0.005           # Hard cutoff - reject very bad fits (was 0.1)
+      use_regional_weighting: true  # Weight early wavelengths more heavily
     peak_count:
       wavelength_tolerance_nm: 20.0  # Increased from 5.0 to match LTA's effective tolerance
       max_allowed_excess: 2          # Max extra theoretical peaks before severe penalty
@@ -122,10 +133,12 @@ analysis:
     peak_delta:
       tolerance_nm: 20.0             # Increased from 5.0 to match LTA tolerance
       tau_nm: 15.0                   # Stricter delta scoring
-      penalty_unpaired: 0.04         # Base penalty per unpaired peak
+      penalty_unpaired: 0.04         # Base penalty per unpaired peak (used in legacy mode)
       extra_penalty_unmatched_measured: 0.02  # Extra penalty for unmatched measured peaks
+      use_soft_penalty: true         # Use multiplicative dampening instead of subtractive
     correlation:
       min_correlation: 0.85          # Minimum acceptable correlation (below = heavily penalized)
+      use_direct_mapping: true       # Use correlation directly as score (preserves ranking power)
     amplitude:
       optimal_ratio: 1.0             # Target theoretical/measured oscillation ratio
       tolerance: 0.3                 # Acceptable deviation from optimal
@@ -137,15 +150,26 @@ analysis:
       tau_lipid_nm: 10.0
       tau_aqueous_nm: 30.0
       tau_roughness_A: 150.0
+    bonus_penalty:
+      # Dynamic bonus/penalty system (reduced aggressiveness)
+      # With improved base scoring, bonuses should be gentler
+      enabled: true
+      excellent_rmse: 0.001       # Bonus for RMSE <= this (very strict)
+      good_rmse: 0.0015           # Smaller bonus for RMSE <= this
+      poor_rmse: 0.005            # Penalty for RMSE > this (more lenient)
+      excellent_correlation: 0.98 # Bonus for correlation >= this
+      good_correlation: 0.95      # Smaller bonus for correlation >= this
+      poor_correlation: 0.5       # Heavy penalty for correlation < this
+      min_match_ratio: 0.4        # Penalty if fewer than 40% of peaks matched (relaxed)
     composite:
       weights:
-        # PyElli-inspired weights for proper ranking performance
-        # Based on reverse engineering of LTA BestFit scoring
-        residual: 0.25          # RMSE/MAE fit quality (25%)
-        peak_count: 0.25        # Peak count matching with penalties (25%)
+        # Improved weights prioritizing fit quality over peak counting
+        # Correlation and residual are the most reliable quality indicators
+        correlation: 0.30       # Shape similarity - PRIMARY ranking criterion (30%)
+        residual: 0.30          # RMSE/MAE fit quality (30%)
         amplitude: 0.20         # Oscillation amplitude matching (20%)
-        correlation: 0.15       # Shape similarity - rejects anti-correlated (15%)
-        peak_delta: 0.15        # Peak position alignment (15%)
+        peak_count: 0.10        # Peak count matching - secondary (10%)
+        peak_delta: 0.10        # Peak position alignment - soft penalty now (10%)
         phase_overlap: 0.0      # Disabled - correlation covers shape matching
         quality: 0.0            # Disabled - focus on fit quality
         temporal_continuity: 0.0  # Disabled for single measurements
