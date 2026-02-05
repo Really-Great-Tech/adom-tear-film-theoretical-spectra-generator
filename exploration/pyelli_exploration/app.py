@@ -1752,6 +1752,87 @@ with tabs[0]:
                         st.caption('**Mixed:** RMSE and correlation disagree (e.g. we have lower RMSE but lower correlation, or vice versa). For direct waveform match, prefer **lower RMSE** and **higher correlation**. Composite score can differ because it also weights peak count and alignment.')
                 else:
                     st.caption('Compare RMSE (lower = better) and correlation (higher = better) above. Those are the direct waveform-fit metrics; composite score can sometimes disagree when it weights other factors.')
+                st.markdown('---')
+                st.markdown('**Loss landscape**')
+                st.caption('1D: loss vs aqueous (lipid fixed at Shlomo\'s). 2D: aqueous vs lipid, color = RMSE (loss). Identifies local minima and whether Shlomo\'s point lies in a low-loss region.')
+                if st.button('Generate 1D & 2D loss landscape', key='btn_loss_landscape'):
+                    with st.spinner('Computing loss over grid (1D + 2D)...'):
+                        grid_search = computed_data['grid_search']
+                        wavelengths = computed_data['wavelengths']
+                        measured = computed_data['measured']
+                        wl_display = computed_data['wl_display']
+                        meas_display = computed_data['meas_display']
+                        wl_min, wl_max = wavelength_range
+                        wl_mask = (wavelengths >= wl_min) & (wavelengths <= wl_max)
+                        focus_mask = (wavelengths >= wl_min) & (wavelengths <= wl_max)
+                        roughness_nm = computed_data['display_mucus'] / 10.0
+                        L_s = sp['lipid_shlomo_nm']
+                        A_s = sp['aqueous_shlomo_nm']
+                        L_o = computed_data['display_lipid']
+                        A_o = computed_data['display_aqueous']
+                        def loss_at(lipid_nm, aqueous_nm):
+                            try:
+                                theo = grid_search.calculate_theoretical_spectrum(wavelengths, lipid_nm, aqueous_nm, roughness_nm)
+                                if focus_mask.sum() > 0 and np.std(theo[focus_mask]) > 1e-10:
+                                    scale = np.dot(measured[focus_mask], theo[focus_mask]) / np.dot(theo[focus_mask], theo[focus_mask])
+                                    theo = theo * scale
+                                theo_d = theo[wl_mask]
+                                res = calculate_peak_based_score(wl_display, meas_display, theo_d)
+                                return res.get('rmse', 1.0)
+                            except Exception:
+                                return float('nan')
+                        aq_lo = max(800, min(A_s, A_o) - 600)
+                        aq_hi = min(12000, max(A_s, A_o) + 600)
+                        lip_lo = max(9, min(L_s, L_o) - 40)
+                        lip_hi = min(250, max(L_s, L_o) + 40)
+                        # 1D: lipid = Shlomo's, sweep aqueous
+                        aqueous_1d = np.linspace(aq_lo, aq_hi, 50)
+                        loss_1d = np.array([loss_at(L_s, aq) for aq in aqueous_1d])
+                        # 2D: grid
+                        lipid_2d = np.linspace(lip_lo, lip_hi, 22)
+                        aqueous_2d = np.linspace(aq_lo, aq_hi, 22)
+                        loss_2d = np.zeros((len(lipid_2d), len(aqueous_2d)))
+                        for i, lip in enumerate(lipid_2d):
+                            for j, aq in enumerate(aqueous_2d):
+                                loss_2d[i, j] = loss_at(lip, aq)
+                        cache_key = f'loss_landscape_{Path(selected_file).name}'
+                        st.session_state[cache_key] = {
+                            '1d': (aqueous_1d, loss_1d),
+                            '2d': (lipid_2d, aqueous_2d, loss_2d),
+                            'shlomo': (L_s, A_s),
+                            'ours': (L_o, A_o),
+                        }
+                    st.rerun()
+                cache_key = f'loss_landscape_{Path(selected_file).name}'
+                if cache_key in st.session_state:
+                    land = st.session_state[cache_key]
+                    aqueous_1d, loss_1d = land['1d']
+                    lipid_2d, aqueous_2d, loss_2d = land['2d']
+                    L_s, A_s = land['shlomo']
+                    L_o, A_o = land['ours']
+                    fig_1d = go.Figure()
+                    fig_1d.add_trace(go.Scatter(x=aqueous_1d, y=loss_1d, mode='lines', name='RMSE (loss)', line=dict(color='#059669', width=2)))
+                    fig_1d.add_vline(x=A_s, line_dash='dash', line_color='#db2777', annotation_text='Shlomo')
+                    fig_1d.add_vline(x=A_o, line_dash='dot', line_color='#2563eb', annotation_text='Ours')
+                    fig_1d.update_layout(title='1D: Loss vs aqueous thickness (lipid fixed at Shlomo\'s)', xaxis_title='Aqueous (nm)', yaxis_title='RMSE (loss)', height=320)
+                    st.plotly_chart(fig_1d, use_container_width=True)
+                    # 2D heatmap: rows = lipid, cols = aqueous; heatmap expects (y, x) = (lipid, aqueous)
+                    fig_2d = go.Figure(go.Heatmap(x=aqueous_2d, y=lipid_2d, z=loss_2d, colorscale='Viridis', colorbar=dict(title='RMSE')))
+                    fig_2d.add_trace(go.Scatter(
+                        x=[A_s], y=[L_s], mode='markers+text', name='Shlomo', showlegend=False,
+                        marker=dict(symbol='x', size=22, color='#db2777', line=dict(width=2, color='white')),
+                        text=['Shlomo'], textposition='top center', textfont=dict(size=14, color='#be185d', family='Arial Black')
+                    ))
+                    fig_2d.add_trace(go.Scatter(
+                        x=[A_o], y=[L_o], mode='markers+text', name='Ours', showlegend=False,
+                        marker=dict(symbol='circle', size=20, color='#2563eb', line=dict(width=2, color='white')),
+                        text=['Ours'], textposition='top center', textfont=dict(size=14, color='#1d4ed8', family='Arial Black')
+                    ))
+                    fig_2d.update_layout(
+                        title='2D: Loss landscape (aqueous × lipid); lower = better fit',
+                        xaxis_title='Aqueous (nm)', yaxis_title='Lipid (nm)', height=400
+                    )
+                    st.plotly_chart(fig_2d, use_container_width=True)
         
         # Spectrum comparison plot (before metrics)
         has_bestfit_plot = computed_data.get('has_bestfit', False) and computed_data.get('bestfit_display') is not None
