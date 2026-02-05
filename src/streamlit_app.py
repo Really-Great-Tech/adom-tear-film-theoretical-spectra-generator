@@ -11,6 +11,7 @@ Features:
 from __future__ import annotations
 
 import pathlib
+import sys
 import numpy as np
 import pandas as pd
 import streamlit as st
@@ -62,6 +63,14 @@ from tear_film_generator import (
     PROJECT_ROOT,
     get_project_path,
 )
+
+# Shlomo ground truth (for More Good Spectras loss landscape and comparison)
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+try:
+    from exploration.pyelli_exploration.shlomo_ground_truth import get_shlomo_params
+except ImportError:
+    get_shlomo_params = None  # no Shlomo data when exploration not available
 
 from pdf_report import generate_main_app_pdf_report
 
@@ -1574,6 +1583,149 @@ def main():
             
             # Calculate and display fit metrics
             interpolated_measured = interpolate_measurement_to_theoretical(measurement_df, wavelengths)
+            
+            # ---------- Shlomo comparison & loss landscape (same as PyElli when loading More Good Spectras) ----------
+            sp = get_shlomo_params(selected_file_path.name) if (get_shlomo_params and selected_file_path) else None
+            if sp is not None:
+                L_s = sp["lipid_shlomo_nm"]
+                A_s = sp["aqueous_shlomo_nm"]
+                L_o = float(lipid_val)
+                A_o = float(aqueous_val)
+                with st.expander("📋 Shlomo comparison (ground truth)", expanded=True):
+                    st.markdown("**Parameters**")
+                    c1, c2, c3 = st.columns(3)
+                    with c1:
+                        st.metric("Shlomo lipid (nm)", f"{L_s:.2f}")
+                        st.metric("Shlomo aqueous (nm)", f"{A_s:.0f}")
+                    with c2:
+                        st.metric("Ours (sliders) lipid (nm)", f"{L_o:.2f}")
+                        st.metric("Ours aqueous (nm)", f"{A_o:.0f}")
+                    with c3:
+                        st.metric("Lipid error |ours − Shlomo| (nm)", f"{abs(L_o - L_s):.2f}")
+                        st.metric("Aqueous error |ours − Shlomo| (nm)", f"{abs(A_o - A_s):.0f}")
+                    st.markdown("---")
+                    st.markdown("**Waveform loss (RMSE, R², correlation)**")
+                    # Loss at Shlomo's (L_s, A_s)
+                    try:
+                        theo_s = single_spectrum(L_s, A_s, rough_val)
+                        meas_s = interpolate_measurement_to_theoretical(measurement_df, wavelengths)
+                        met_s = calculate_fit_metrics(meas_s, theo_s)
+                        corr_s = float(np.corrcoef(meas_s, theo_s)[0, 1]) if np.std(meas_s) > 1e-10 and np.std(theo_s) > 1e-10 else 0.0
+                        if np.isnan(corr_s):
+                            corr_s = 0.0
+                    except Exception:
+                        met_s = {"RMSE": float("nan"), "R²": 0.0}
+                        corr_s = 0.0
+                    # Loss at Ours (current sliders)
+                    met_o = calculate_fit_metrics(interpolated_measured, spectrum)
+                    corr_o = float(np.corrcoef(interpolated_measured, spectrum)[0, 1]) if np.std(interpolated_measured) > 1e-10 and np.std(spectrum) > 1e-10 else 0.0
+                    if np.isnan(corr_o):
+                        corr_o = 0.0
+                    has_bestfit_here = bestfit_df is not None
+                    if has_bestfit_here:
+                        bestfit_interp_shlomo = interpolate_measurement_to_theoretical(bestfit_df, wavelengths)
+                        met_lta = calculate_fit_metrics(interpolated_measured, bestfit_interp_shlomo)
+                        corr_lta = float(np.corrcoef(interpolated_measured, bestfit_interp_shlomo)[0, 1]) if np.std(interpolated_measured) > 1e-10 and np.std(bestfit_interp_shlomo) > 1e-10 else 0.0
+                        if np.isnan(corr_lta):
+                            corr_lta = 0.0
+                    ncol = 3 if has_bestfit_here else 2
+                    cols_w = st.columns(ncol)
+                    with cols_w[0]:
+                        st.markdown("*At Shlomo's values*")
+                        st.metric("RMSE", f"{met_s.get('RMSE', 0):.6f}")
+                        st.metric("R²", f"{met_s.get('R²', 0):.4f}")
+                        st.metric("Correlation", f"{corr_s:.3f}")
+                    with cols_w[1]:
+                        st.markdown("*At ours (sliders)*")
+                        st.metric("RMSE", f"{met_o.get('RMSE', 0):.6f}")
+                        st.metric("R²", f"{met_o.get('R²', 0):.4f}")
+                        st.metric("Correlation", f"{corr_o:.3f}")
+                    if has_bestfit_here:
+                        with cols_w[2]:
+                            st.markdown("*LTA BestFit*")
+                            st.metric("RMSE", f"{met_lta.get('RMSE', 0):.6f}")
+                            st.metric("R²", f"{met_lta.get('R²', 0):.4f}")
+                            st.metric("Correlation", f"{corr_lta:.3f}")
+                    st.markdown("---")
+                    st.markdown("**Loss landscape**")
+                    st.caption("1D: loss vs aqueous (lipid fixed at Shlomo's). 2D: aqueous × lipid; lower RMSE = better fit.")
+                    if st.button("Generate 1D & 2D loss landscape", key="lta_btn_loss_landscape"):
+                        with st.spinner("Computing loss over grid (1D + 2D)..."):
+                            # Reverse-engineer LTA (L,A) when BestFit available
+                            lta_pt = None
+                            if bestfit_df is not None:
+                                bestfit_interp_rev = interpolate_measurement_to_theoretical(bestfit_df, wavelengths)
+                                best_corr = -1.0
+                                for lip in np.arange(9, 251, 25):
+                                    for aq in np.arange(800, 10001, 500):
+                                        try:
+                                            theo_rev = single_spectrum(float(lip), float(aq), rough_val)
+                                            if np.std(theo_rev) > 1e-10 and np.std(bestfit_interp_rev) > 1e-10:
+                                                c = float(np.corrcoef(theo_rev, bestfit_interp_rev)[0, 1])
+                                                if not np.isnan(c) and c > best_corr:
+                                                    best_corr = c
+                                                    lta_pt = (float(lip), float(aq))
+                                        except Exception:
+                                            pass
+                            def loss_at(lipid_nm, aqueous_nm):
+                                try:
+                                    theo = single_spectrum(float(lipid_nm), float(aqueous_nm), rough_val)
+                                    m = calculate_fit_metrics(interpolated_measured, theo)
+                                    return m["RMSE"]
+                                except Exception:
+                                    return float("nan")
+                            aq_vals = [A_s, A_o]
+                            lip_vals = [L_s, L_o]
+                            if lta_pt is not None:
+                                aq_vals.append(lta_pt[1])
+                                lip_vals.append(lta_pt[0])
+                            aq_lo = max(800, min(aq_vals) - 600)
+                            aq_hi = min(12000, max(aq_vals) + 600)
+                            lip_lo = max(9, min(lip_vals) - 40)
+                            lip_hi = min(250, max(lip_vals) + 40)
+                            aqueous_1d = np.linspace(aq_lo, aq_hi, 50)
+                            loss_1d = np.array([loss_at(L_s, aq) for aq in aqueous_1d])
+                            lipid_2d = np.linspace(lip_lo, lip_hi, 22)
+                            aqueous_2d = np.linspace(aq_lo, aq_hi, 22)
+                            loss_2d = np.zeros((len(lipid_2d), len(aqueous_2d)))
+                            for i, lip in enumerate(lipid_2d):
+                                for j, aq in enumerate(aqueous_2d):
+                                    loss_2d[i, j] = loss_at(lip, aq)
+                            cache_key = f"lta_loss_landscape_{selected_file_path.name}"
+                            st.session_state[cache_key] = {
+                                "1d": (aqueous_1d, loss_1d),
+                                "2d": (lipid_2d, aqueous_2d, loss_2d),
+                                "shlomo": (L_s, A_s),
+                                "ours": (L_o, A_o),
+                                "lta": lta_pt,
+                            }
+                        st.rerun()
+                    cache_key = f"lta_loss_landscape_{selected_file_path.name}"
+                    if cache_key in st.session_state:
+                        land = st.session_state[cache_key]
+                        aqueous_1d, loss_1d = land["1d"]
+                        lipid_2d, aqueous_2d, loss_2d = land["2d"]
+                        L_s_, A_s_ = land["shlomo"]
+                        L_o_, A_o_ = land["ours"]
+                        lta_pt = land.get("lta")
+                        fig_1d = go.Figure()
+                        fig_1d.add_trace(go.Scatter(x=aqueous_1d, y=loss_1d, mode="lines", name="RMSE (loss)", line=dict(color="#059669", width=2)))
+                        fig_1d.add_vline(x=A_s_, line_dash="dash", line_color="#db2777", annotation_text="Shlomo")
+                        fig_1d.add_vline(x=A_o_, line_dash="dot", line_color="#2563eb", annotation_text="Ours")
+                        if lta_pt is not None:
+                            fig_1d.add_vline(x=lta_pt[1], line_dash="dashdot", line_color="#ea580c", annotation_text="LTA")
+                        fig_1d.update_layout(title="1D: Loss vs aqueous thickness (lipid fixed at Shlomo's)", xaxis_title="Aqueous (nm)", yaxis_title="RMSE (loss)", height=320)
+                        st.plotly_chart(fig_1d, use_container_width=True)
+                        fig_2d = go.Figure(go.Heatmap(x=aqueous_2d, y=lipid_2d, z=loss_2d, colorscale="Viridis", colorbar=dict(title="RMSE")))
+                        fig_2d.add_trace(go.Scatter(x=[A_s_], y=[L_s_], mode="markers+text", name="Shlomo", showlegend=False, marker=dict(symbol="x", size=22, color="#db2777", line=dict(width=2, color="white")), text=["Shlomo"], textposition="top center", textfont=dict(size=14, color="#be185d", family="Arial Black")))
+                        fig_2d.add_trace(go.Scatter(x=[A_o_], y=[L_o_], mode="markers+text", name="Ours", showlegend=False, marker=dict(symbol="circle", size=20, color="#2563eb", line=dict(width=2, color="white")), text=["Ours"], textposition="top center", textfont=dict(size=14, color="#1d4ed8", family="Arial Black")))
+                        if lta_pt is not None:
+                            L_lta, A_lta = lta_pt
+                            fig_2d.add_trace(go.Scatter(x=[A_lta], y=[L_lta], mode="markers+text", name="LTA", showlegend=False, marker=dict(symbol="diamond", size=18, color="#ea580c", line=dict(width=2, color="white")), text=["LTA"], textposition="top center", textfont=dict(size=14, color="#c2410c", family="Arial Black")))
+                        fig_2d.update_layout(title="2D: Loss landscape (aqueous × lipid); lower = better fit", xaxis_title="Aqueous (nm)", yaxis_title="Lipid (nm)", height=400)
+                        st.plotly_chart(fig_2d, use_container_width=True)
+                        if lta_pt is not None:
+                            st.caption("LTA position is LTA-model equivalent (reverse-engineered from LTA BestFit spectrum).")
             
             # Determine which theoretical to use for metrics
             if show_bestfit_tab and not show_both_theoretical_tab and bestfit_df is not None:

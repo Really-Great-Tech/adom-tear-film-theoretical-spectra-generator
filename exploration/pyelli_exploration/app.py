@@ -1818,19 +1818,12 @@ with tabs[0]:
                     st.plotly_chart(fig_1d, use_container_width=True)
                     # 2D heatmap: rows = lipid, cols = aqueous; heatmap expects (y, x) = (lipid, aqueous)
                     fig_2d = go.Figure(go.Heatmap(x=aqueous_2d, y=lipid_2d, z=loss_2d, colorscale='Viridis', colorbar=dict(title='RMSE')))
-                    fig_2d.add_trace(go.Scatter(
-                        x=[A_s], y=[L_s], mode='markers+text', name='Shlomo', showlegend=False,
-                        marker=dict(symbol='x', size=22, color='#db2777', line=dict(width=2, color='white')),
-                        text=['Shlomo'], textposition='top center', textfont=dict(size=14, color='#be185d', family='Arial Black')
-                    ))
-                    fig_2d.add_trace(go.Scatter(
-                        x=[A_o], y=[L_o], mode='markers+text', name='Ours', showlegend=False,
-                        marker=dict(symbol='circle', size=20, color='#2563eb', line=dict(width=2, color='white')),
-                        text=['Ours'], textposition='top center', textfont=dict(size=14, color='#1d4ed8', family='Arial Black')
-                    ))
+                    fig_2d.add_trace(go.Scatter(x=[A_s], y=[L_s], mode='markers+text', name='Shlomo', marker=dict(symbol='x', size=14, color='#db2777'), text=['Shlomo'], textposition='top center'))
+                    fig_2d.add_trace(go.Scatter(x=[A_o], y=[L_o], mode='markers+text', name='Ours', marker=dict(symbol='circle', size=12, color='#2563eb'), text=['Ours'], textposition='top center'))
                     fig_2d.update_layout(
                         title='2D: Loss landscape (aqueous × lipid); lower = better fit',
-                        xaxis_title='Aqueous (nm)', yaxis_title='Lipid (nm)', height=400
+                        xaxis_title='Aqueous (nm)', yaxis_title='Lipid (nm)', height=400,
+                        legend=dict(yanchor='top', y=0.98, x=1.02)
                     )
                     st.plotly_chart(fig_2d, use_container_width=True)
         
