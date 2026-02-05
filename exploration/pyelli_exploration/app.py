@@ -114,6 +114,7 @@ from exploration.pyelli_exploration.pyelli_grid_search import (
     PyElliGridSearch,
     calculate_peak_based_score,
 )
+from exploration.pyelli_exploration.shlomo_ground_truth import get_shlomo_params
 from src.analysis.measurement_utils import (
     detrend_signal,
     boxcar_smooth,
@@ -1608,6 +1609,34 @@ if selected_file and Path(selected_file).exists():
         else:
             correlation = 0.0
         
+        # Shlomo ground truth (More Good Spectras): loss at Shlomo's values + lipid/aqueous error
+        shlomo_params = get_shlomo_params(Path(selected_file).name) if selected_file else None
+        deviation_at_shlomo = None
+        lipid_error_nm = None
+        aqueous_error_nm = None
+        if shlomo_params:
+            lipid_error_nm = abs(display_lipid - shlomo_params["lipid_shlomo_nm"])
+            aqueous_error_nm = abs(display_aqueous - shlomo_params["aqueous_shlomo_nm"])
+            # Generate theoretical at Shlomo's L/A (same roughness) and score for deviation comparison
+            try:
+                theo_shlomo = grid_search.calculate_theoretical_spectrum(
+                    wavelengths, shlomo_params["lipid_shlomo_nm"], shlomo_params["aqueous_shlomo_nm"], roughness_nm
+                )
+                if focus_mask.sum() > 0 and np.std(theo_shlomo[focus_mask]) > 1e-10:
+                    scale_s = np.dot(measured[focus_mask], theo_shlomo[focus_mask]) / np.dot(theo_shlomo[focus_mask], theo_shlomo[focus_mask])
+                    theo_shlomo_aligned = theo_shlomo * scale_s
+                else:
+                    theo_shlomo_aligned = theo_shlomo
+                theo_shlomo_display = theo_shlomo_aligned[wl_mask]
+                score_shlomo = calculate_peak_based_score(wl_display, meas_display, theo_shlomo_display)
+                deviation_at_shlomo = {
+                    "score": score_shlomo.get("score"),
+                    "rmse": score_shlomo.get("rmse"),
+                    "correlation": score_shlomo.get("correlation"),
+                }
+            except Exception:
+                pass
+        
         # Determine which theoretical to show based on toggle
         if show_bestfit and not show_both_theoretical and bestfit_display is not None:
             # Show only BestFit, replace theoretical
@@ -1645,6 +1674,10 @@ if selected_file and Path(selected_file).exists():
             'show_bestfit': show_bestfit,
             'show_both_theoretical': show_both_theoretical,
             'has_bestfit': bestfit_display is not None,
+            'shlomo_params': shlomo_params,
+            'lipid_error_nm': lipid_error_nm,
+            'aqueous_error_nm': aqueous_error_nm,
+            'deviation_at_shlomo': deviation_at_shlomo,
         }
     except Exception as e:
         st.error(f'Error loading spectrum: {e}')
@@ -1660,6 +1693,65 @@ with tabs[0]:
     if computed_data:
         # Display filename at the top
         st.markdown(f'### 📈 `{Path(selected_file).name}`')
+        
+        # Shlomo ground truth comparison (Yash: loss at our optimum vs at Shlomo's values + lipid/aqueous error)
+        sp = computed_data.get('shlomo_params')
+        if sp:
+            with st.expander('📋 Shlomo comparison (ground truth)', expanded=True):
+                st.markdown('**Parameters**')
+                col1, col2, col3 = st.columns(3)
+                with col1:
+                    st.metric('Shlomo lipid (nm)', f"{sp['lipid_shlomo_nm']:.2f}")
+                    st.metric('Shlomo aqueous (nm)', f"{sp['aqueous_shlomo_nm']:.0f}")
+                with col2:
+                    st.metric('Our lipid (nm)', f"{computed_data['display_lipid']:.2f}")
+                    st.metric('Our aqueous (nm)', f"{computed_data['display_aqueous']:.0f}")
+                with col3:
+                    le = computed_data.get('lipid_error_nm')
+                    ae = computed_data.get('aqueous_error_nm')
+                    if le is not None:
+                        st.metric('Lipid error |ours − Shlomo| (nm)', f"{le:.2f}")
+                    if ae is not None:
+                        st.metric('Aqueous error |ours − Shlomo| (nm)', f"{ae:.0f}")
+                st.markdown('---')
+                st.markdown('**Waveform loss (same metric we use for grid search)**')
+                loss_ours = computed_data.get('pyelli_score_result')
+                dev_shlomo = computed_data.get('deviation_at_shlomo')
+                col_a, col_b = st.columns(2)
+                with col_a:
+                    st.markdown('*Loss at our best-fit* (L, A from grid search)')
+                    if loss_ours:
+                        st.metric('Score (higher = better)', f"{loss_ours.get('score', 0):.3f}")
+                        st.metric('RMSE (lower = better)', f"{loss_ours.get('rmse', 0):.6f}")
+                        st.metric('Correlation', f"{loss_ours.get('correlation', 0):.3f}")
+                with col_b:
+                    st.markdown('*Loss at Shlomo\'s values* (theoretical at his L, A)')
+                    if dev_shlomo and isinstance(dev_shlomo, dict):
+                        st.metric('Score (higher = better)', f"{dev_shlomo.get('score', 0):.3f}")
+                        st.metric('RMSE (lower = better)', f"{dev_shlomo.get('rmse', 0):.6f}")
+                        st.metric('Correlation', f"{dev_shlomo.get('correlation', 0):.3f}")
+                st.markdown('---')
+                st.markdown('**What the losses tell us**')
+                if loss_ours and dev_shlomo and isinstance(dev_shlomo, dict):
+                    rmse_ours = loss_ours.get('rmse', 1.0)
+                    rmse_shlomo = dev_shlomo.get('rmse', 1.0)
+                    corr_ours = loss_ours.get('correlation', 0)
+                    corr_shlomo = dev_shlomo.get('correlation', 0)
+                    # Use RMSE and correlation as the primary waveform-fit criteria (they match what we see visually)
+                    ours_better_rmse = rmse_ours < rmse_shlomo
+                    ours_better_corr = corr_ours > corr_shlomo
+                    shlomo_better_rmse = rmse_shlomo < rmse_ours
+                    shlomo_better_corr = corr_shlomo > corr_ours
+                    if ours_better_rmse and ours_better_corr:
+                        st.info('By **RMSE and correlation**, our optimum has a better waveform fit than at Shlomo\'s values. So for our physics engine, our (L, A) fit the measured spectrum better. That suggests either Shlomo\'s labels are suboptimal for this sample, or we\'re missing a constraint his method uses (e.g. context from neighboring films).')
+                    elif shlomo_better_rmse and shlomo_better_corr:
+                        st.warning('By **RMSE and correlation**, the waveform fit is **better** at Shlomo\'s values than at our optimum — our fit is worse here. Our grid search may have landed in a different basin, or his method captures something our metric doesn\'t. Worth checking the spectrum and amplitude plots.')
+                    elif abs(rmse_ours - rmse_shlomo) < 1e-6 and abs(corr_ours - corr_shlomo) < 0.02:
+                        st.success('Both points have **similar** waveform fit (RMSE and correlation). We may be in the same solution basin; the parameter difference could be within acceptable variation or different but valid optima.')
+                    else:
+                        st.caption('**Mixed:** RMSE and correlation disagree (e.g. we have lower RMSE but lower correlation, or vice versa). For direct waveform match, prefer **lower RMSE** and **higher correlation**. Composite score can differ because it also weights peak count and alignment.')
+                else:
+                    st.caption('Compare RMSE (lower = better) and correlation (higher = better) above. Those are the direct waveform-fit metrics; composite score can sometimes disagree when it weights other factors.')
         
         # Spectrum comparison plot (before metrics)
         has_bestfit_plot = computed_data.get('has_bestfit', False) and computed_data.get('bestfit_display') is not None
