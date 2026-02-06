@@ -1,0 +1,2 @@
+filename,lipid_fit,aqueous_fit,roughness_fit,score,corr,osc_ratio,dev_score,gt_lipid,gt_aqueous
+(Run)spectra_15-13-12-259.txt,89.0,4030.0,6810.0,0.6565382489403534,0.929063669909137,1.4014634004957043,10.18220462145812,33.1159803,2771.1086549
