@@ -86,8 +86,22 @@ def display_quality_metrics_card(
             metric_idx += 1
 
             with col:
-                status_icon = "✅" if result.passed else "❌"
-                status_color = "#16a34a" if result.passed else "#dc2626"
+                # Use sub-metric status for cards
+                sub_quality_colors = {
+                    "Excellent": "#16a34a",  # green
+                    "Good": "#2563eb",  # blue
+                    "Marginal": "#d97706",  # orange
+                    "Reject": "#dc2626",  # red
+                }
+                sub_quality_icons = {
+                    "Excellent": "✅",
+                    "Good": "✓",
+                    "Marginal": "⚠️",
+                    "Reject": "❌",
+                }
+
+                status_color = sub_quality_colors.get(result.status, "#64748b")
+                status_icon = sub_quality_icons.get(result.status, "")
 
                 st.markdown(
                     f"""
@@ -97,7 +111,7 @@ def display_quality_metrics_card(
                     </div>
                     <div style="font-size: 0.85rem; color: #64748b;">
                         Value: <span style="font-weight: 600; color: {status_color};">{result.value:.4f}</span>
-                        <br>Threshold: {result.threshold:.4f}
+                        <br>Status: <span style="color: {status_color}; font-weight: 600;">{result.status}</span>
                     </div>
                 </div>
                 """,

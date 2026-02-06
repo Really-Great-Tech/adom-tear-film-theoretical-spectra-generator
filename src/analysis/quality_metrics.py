@@ -25,7 +25,8 @@ class QualityMetricResult:
     value: float
     threshold: float
     metric_name: str
-    details: Dict[str, float]
+    status: str  # "Excellent", "Good", "Marginal", "Reject"
+    details: Dict[str, any]
 
 
 @dataclass
@@ -119,17 +120,17 @@ def calculate_snr(
     # Use robust method as the primary value
     snr = robust_snr if use_robust_method else standard_snr
 
-    # Thresholds (calibrated for Robust SNR)
-    if snr >= 200:
+    # Thresholds (Refined Specification)
+    if snr >= 20:
         quality = "Excellent"
-    elif snr >= 100:
+    elif snr >= 10:
         quality = "Good"
-    elif snr >= 50:
+    elif snr >= 3:
         quality = "Marginal"
     else:
         quality = "Reject"
 
-    passed = snr >= 50.0  # Threshold for "Marginal"
+    passed = snr >= 3.0  # Threshold for "Marginal"
 
     details = {
         "snr": snr,
@@ -144,8 +145,9 @@ def calculate_snr(
     return QualityMetricResult(
         passed=passed,
         value=snr,
-        threshold=50.0,
+        threshold=3.0,
         metric_name="SNR",
+        status=quality,
         details=details,
     )
 
@@ -240,11 +242,22 @@ def check_peak_quality(
         "checks_failed": len(checks_failed),
     }
 
+    # Determine status
+    if not passed:
+        status = "Reject"
+    elif len(checks_passed) == 3:
+        status = "Excellent"
+    elif len(checks_passed) == 2:
+        status = "Good"
+    else:
+        status = "Marginal"
+
     return QualityMetricResult(
         passed=passed,
         value=float(peak_count),
         threshold=float(min_peak_count),
         metric_name="Peak Quality",
+        status=status,
         details=details,
     )
 
@@ -344,11 +357,22 @@ def calculate_fit_residual_quality(
         "checks_failed": len(checks_failed),
     }
 
+    # Determine status
+    if not passed:
+        status = "Reject"
+    elif len(checks_passed) == 4:
+        status = "Excellent"
+    elif len(checks_passed) == 3:
+        status = "Good"
+    else:
+        status = "Marginal"
+
     return QualityMetricResult(
         passed=passed,
         value=r_squared,
         threshold=min_r_squared,
         metric_name="Fit Residual Quality",
+        status=status,
         details=details,
     )
 
@@ -406,45 +430,48 @@ def check_signal_integrity(
     # Negative value check
     negative_count = int(np.sum(reflectance < 0))
 
-    # Check all criteria
-    checks_passed = []
-    checks_failed = []
+    # Categorize findings per specification names
+    critical_errors = []
+    indicative_warnings = []
 
-    if dynamic_range > min_dynamic_range:
-        checks_passed.append("dynamic_range")
-    else:
-        checks_failed.append(
-            f"dynamic_range ({dynamic_range:.4f} <= {min_dynamic_range})"
+    # 1. Negative value check (= 0%)
+    if negative_count > 0:
+        critical_errors.append(f"Negative value check ({negative_count} points)")
+
+    # 2. Saturation detection (< 1%)
+    if saturation_fraction >= max_saturation_fraction:
+        critical_errors.append(
+            f"Saturation detection ({saturation_fraction * 100:.1f}%)"
         )
 
-    if saturation_fraction < max_saturation_fraction:
-        checks_passed.append("saturation")
-    else:
-        checks_failed.append(
-            f"saturation ({saturation_fraction * 100:.2f}% >= {max_saturation_fraction * 100}%)"
+    # 3. Dynamic range (> 0.05)
+    if dynamic_range <= min_dynamic_range:
+        indicative_warnings.append(f"Dynamic range ({dynamic_range:.3f})")
+
+    # 4. Baseline stability (< 10%)
+    if baseline_drift_percent >= max_baseline_drift_percent:
+        indicative_warnings.append(
+            f"Baseline stability ({baseline_drift_percent:.1f}%)"
         )
 
-    if baseline_drift_percent < max_baseline_drift_percent:
-        checks_passed.append("baseline_stability")
+    # Final Decision
+    if len(critical_errors) > 0:
+        status = "Reject"
+        passed = False
+    elif len(indicative_warnings) > 0:
+        status = "Marginal"  # Orange in UI
+        passed = True  # Still passes the hard gate
     else:
-        checks_failed.append(
-            f"baseline_drift ({baseline_drift_percent:.2f}% >= {max_baseline_drift_percent}%)"
-        )
-
-    if negative_count == 0:
-        checks_passed.append("no_negative_values")
-    else:
-        checks_failed.append(f"negative_values ({negative_count} points < 0)")
-
-    passed = len(checks_failed) == 0
+        status = "Excellent"
+        passed = True
 
     details = {
         "dynamic_range": dynamic_range,
         "saturation_fraction": saturation_fraction,
         "baseline_drift_percent": baseline_drift_percent,
         "negative_count": float(negative_count),
-        "checks_passed": len(checks_passed),
-        "checks_failed": len(checks_failed),
+        "critical_errors": critical_errors,
+        "indicative_warnings": indicative_warnings,
     }
 
     return QualityMetricResult(
@@ -452,6 +479,7 @@ def check_signal_integrity(
         value=dynamic_range,
         threshold=min_dynamic_range,
         metric_name="Signal Integrity",
+        status=status,
         details=details,
     )
 
@@ -527,11 +555,20 @@ def check_spectral_completeness(
         "checks_failed": len(checks_failed),
     }
 
+    # Determine status
+    if not passed:
+        status = "Reject"
+    elif len(checks_passed) == 3:
+        status = "Excellent"
+    else:
+        status = "Good"
+
     return QualityMetricResult(
         passed=passed,
         value=wavelength_span,
         threshold=min_wavelength_span_nm,
         metric_name="Spectral Completeness",
+        status=status,
         details=details,
     )
 
@@ -630,20 +667,23 @@ def assess_spectrum_quality(
                 f"Fit quality poor: {fit_result.details.get('checks_failed', 0)} checks failed"
             )
 
-    # Metric 4: Signal Integrity
+    # Metric 4: Signal Integrity (Evaluative)
     integrity_result = check_signal_integrity(
         reflectance,
         min_dynamic_range=config.get("min_dynamic_range", 0.05),
         max_saturation_fraction=config.get("max_saturation_fraction", 0.01),
-        saturation_limit=config.get("saturation_limit", 0.99),
         max_baseline_drift_percent=config.get("max_baseline_drift_percent", 10.0),
     )
     metrics["signal_integrity"] = integrity_result
 
+    # Handle Critical vs Indicative Findings
     if not integrity_result.passed:
-        failures.append(
-            f"Signal integrity issues: {integrity_result.details.get('checks_failed', 0)} checks failed"
-        )
+        for error in integrity_result.details.get("critical_errors", []):
+            failures.append(f"FAILURE: {error}")
+
+    # Always show indicative findings as warnings
+    for note in integrity_result.details.get("indicative_warnings", []):
+        warnings.append(f"Warning: {note}")
 
     # Metric 5: Spectral Completeness
     completeness_result = check_spectral_completeness(
@@ -661,17 +701,20 @@ def assess_spectrum_quality(
 
     # Determine overall quality
     passed_all_checks = all(m.passed for m in metrics.values())
+    has_warnings = len(warnings) > 0 or any(
+        m.status == "Marginal" for m in metrics.values()
+    )
 
-    if passed_all_checks:
-        # Use SNR to determine quality level
-        snr_quality = snr_result.details.get("quality_level", "Good")
-        overall_quality = snr_quality
-    elif len(failures) == 0 and len(warnings) > 0:
-        overall_quality = "Good"
-    elif snr_result.value >= 3.0 and len(failures) <= 2:
-        overall_quality = "Marginal"
-    else:
+    if not passed_all_checks:
         overall_quality = "Reject"
+    elif has_warnings:
+        overall_quality = "Good"
+    else:
+        # Check if everything is Excellent
+        if all(m.status == "Excellent" for m in metrics.values()):
+            overall_quality = "Excellent"
+        else:
+            overall_quality = "Good"
 
     return SpectrumQualityReport(
         overall_quality=overall_quality,
