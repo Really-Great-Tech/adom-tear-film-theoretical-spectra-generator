@@ -12,6 +12,10 @@ from typing import Dict, List, Optional, Tuple
 import numpy as np
 from scipy.signal import find_peaks
 
+# Analysis Constants as per Shlomo feedback
+ANALYSIS_WAVELENGTH_MIN = 600.0
+ANALYSIS_WAVELENGTH_MAX = 1200.0
+
 
 @dataclass
 class QualityMetricResult:
@@ -54,83 +58,93 @@ def calculate_snr(
     wavelengths: np.ndarray,
     reflectance: np.ndarray,
     *,
+    use_robust_method: bool = True,
     signal_center_fraction: float = 0.6,
     baseline_edge_fraction: float = 0.1,
 ) -> QualityMetricResult:
-    """Calculate Signal-to-Noise Ratio (SNR) using HORIBA FSD Standard.
+    """Calculate Signal-to-Noise Ratio (SNR).
 
     Metric 1: Signal-to-Noise Ratio (SNR)
 
-    Formula: SNR = (max(signal) - mean(baseline)) / std(baseline)
+    Default Method (Robust): Uses high-frequency noise estimate from first-order differences.
+    Alternative Method (Standard): SNR = (max(signal) - mean(baseline)) / std(baseline)
 
     Args:
         wavelengths: Wavelength array in nm
         reflectance: Reflectance values
-        signal_center_fraction: Fraction of wavelength range for signal region (default 0.6 = 60%)
-        baseline_edge_fraction: Fraction of wavelength range for baseline/noise region at edges (default 0.1 = 10%)
+        use_robust_method: Whether to use the high-frequency residue method (default True)
+        signal_center_fraction: Fraction for center signal region (Standard method only)
+        baseline_edge_fraction: Fraction for edge baseline regions (Standard method only)
 
     Returns:
         QualityMetricResult with SNR assessment
 
-    Quality Thresholds:
-        SNR >= 20: Excellent
-        SNR 10-20: Good
-        SNR 3-10: Marginal
-        SNR < 3: Reject
+    Quality Thresholds (Robust Method):
+        SNR >= 200: Excellent
+        SNR 100-200: Good
+        SNR 50-100: Marginal
+        SNR < 50: Reject
     """
-    n = len(wavelengths)
+    if len(reflectance) < 2:
+        return QualityMetricResult(
+            passed=False, value=0.0, threshold=50.0, metric_name="SNR", details={}
+        )
 
-    # Define regions
-    edge_size = int(n * baseline_edge_fraction)
+    # 1. Robust Method (High-frequency noise residue)
+    diffs = np.diff(reflectance)
+    noise_std = float(np.std(diffs) / np.sqrt(2))
+    signal_range = float(np.max(reflectance) - np.min(reflectance))
+
+    robust_snr = signal_range / noise_std if noise_std > 0 else 0.0
+
+    # 2. Standard Method (Edge-based) - kept in details for reference
+    n = len(reflectance)
+    edge_size = max(1, int(n * baseline_edge_fraction))
     center_start = int(n * (1 - signal_center_fraction) / 2)
     center_end = n - center_start
 
-    # Signal region: Center 60% of wavelength range
-    signal_region = reflectance[center_start:center_end]
-
-    # Baseline/noise region: First and last 10% of wavelength range
-    baseline_region = np.concatenate(
-        [reflectance[:edge_size], reflectance[-edge_size:]]
+    signal_max = float(np.max(reflectance[center_start:center_end]))
+    baseline_mean = float(
+        np.mean(np.concatenate([reflectance[:edge_size], reflectance[-edge_size:]]))
+    )
+    baseline_std = float(
+        np.std(
+            np.concatenate([reflectance[:edge_size], reflectance[-edge_size:]]), ddof=1
+        )
+    )
+    standard_snr = (
+        (signal_max - baseline_mean) / baseline_std if baseline_std > 1e-10 else 0.0
     )
 
-    # Calculate SNR
-    signal_max = float(np.max(signal_region))
-    baseline_mean = float(np.mean(baseline_region))
-    baseline_std = float(np.std(baseline_region, ddof=1))
+    # Use robust method as the primary value
+    snr = robust_snr if use_robust_method else standard_snr
 
-    # Avoid division by zero
-    if baseline_std < 1e-10:
-        snr = 0.0
-        quality = "Reject"
+    # Thresholds (calibrated for Robust SNR)
+    if snr >= 200:
+        quality = "Excellent"
+    elif snr >= 100:
+        quality = "Good"
+    elif snr >= 50:
+        quality = "Marginal"
     else:
-        snr = (signal_max - baseline_mean) / baseline_std
+        quality = "Reject"
 
-        # Determine quality level
-        if snr >= 20:
-            quality = "Excellent"
-        elif snr >= 10:
-            quality = "Good"
-        elif snr >= 3:
-            quality = "Marginal"
-        else:
-            quality = "Reject"
-
-    passed = snr >= 3.0  # Minimum acceptable SNR
+    passed = snr >= 50.0  # Threshold for "Marginal"
 
     details = {
         "snr": snr,
-        "signal_max": signal_max,
-        "baseline_mean": baseline_mean,
-        "baseline_std": baseline_std,
+        "snr_robust": robust_snr,
+        "snr_standard": standard_snr,
+        "noise_std": noise_std,
+        "signal_range": signal_range,
         "quality_level": quality,
-        "signal_region_start_nm": float(wavelengths[center_start]),
-        "signal_region_end_nm": float(wavelengths[center_end - 1]),
+        "method": "Robust (High-Freq)" if use_robust_method else "Standard (Edge)",
     }
 
     return QualityMetricResult(
         passed=passed,
         value=snr,
-        threshold=3.0,
+        threshold=50.0,
         metric_name="SNR",
         details=details,
     )
@@ -548,6 +562,22 @@ def assess_spectrum_quality(
     """
     config = config or {}
 
+    # CRITICAL: Apply the Shlomo rule - only analyze 600nm - 1200nm
+    mask = (wavelengths >= ANALYSIS_WAVELENGTH_MIN) & (
+        wavelengths <= ANALYSIS_WAVELENGTH_MAX
+    )
+    wavelengths = wavelengths[mask]
+    reflectance = reflectance[mask]
+
+    if len(wavelengths) < 10:
+        return SpectrumQualityReport(
+            overall_quality="Reject",
+            passed_all_checks=False,
+            metrics={},
+            warnings=["Spectrum does not cover the 600-1200nm usable range"],
+            failures=["Insufficient wavelength coverage for analysis"],
+        )
+
     metrics = {}
     warnings = []
     failures = []
@@ -556,13 +586,14 @@ def assess_spectrum_quality(
     snr_result = calculate_snr(
         wavelengths,
         reflectance,
-        signal_center_fraction=config.get("signal_center_fraction", 0.6),
-        baseline_edge_fraction=config.get("baseline_edge_fraction", 0.1),
+        use_robust_method=config.get("use_robust_snr", True),
     )
     metrics["snr"] = snr_result
 
     if not snr_result.passed:
-        failures.append(f"SNR too low: {snr_result.value:.2f} < {snr_result.threshold}")
+        failures.append(
+            f"SNR too low (Robust): {snr_result.value:.2f} < {snr_result.threshold}"
+        )
     elif snr_result.details.get("quality_level") == "Marginal":
         warnings.append(f"SNR marginal: {snr_result.value:.2f}")
 

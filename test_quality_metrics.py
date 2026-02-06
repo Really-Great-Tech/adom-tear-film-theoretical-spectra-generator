@@ -24,25 +24,25 @@ def create_test_spectrum(quality_level="good"):
         # High SNR, clear fringes, no issues
         base = 0.5
         amplitude = 0.3
-        noise_level = 0.001
+        noise_level = 0.0005
         num_fringes = 8
     elif quality_level == "good":
         # Good SNR, clear fringes
         base = 0.5
         amplitude = 0.2
-        noise_level = 0.01
+        noise_level = 0.001
         num_fringes = 6
     elif quality_level == "marginal":
         # Low SNR, fewer fringes
         base = 0.5
         amplitude = 0.1
-        noise_level = 0.05
+        noise_level = 0.002
         num_fringes = 4
     else:  # "reject"
         # Very low SNR, almost no fringes
         base = 0.5
         amplitude = 0.02
-        noise_level = 0.1
+        noise_level = 0.005
         num_fringes = 2
 
     # Create interference pattern
