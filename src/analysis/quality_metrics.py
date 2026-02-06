@@ -120,17 +120,17 @@ def calculate_snr(
     # Use robust method as the primary value
     snr = robust_snr if use_robust_method else standard_snr
 
-    # Thresholds (Refined Specification)
-    if snr >= 20:
+    # Thresholds (Scientifically Calibrated to Batch Benchmarks)
+    if snr >= 300:
         quality = "Excellent"
-    elif snr >= 10:
+    elif snr >= 200:
         quality = "Good"
-    elif snr >= 3:
+    elif snr >= 150:
         quality = "Marginal"
     else:
         quality = "Reject"
 
-    passed = snr >= 3.0  # Threshold for "Marginal"
+    passed = snr >= 150.0  # Threshold for "Marginal"
 
     details = {
         "snr": snr,
@@ -145,7 +145,7 @@ def calculate_snr(
     return QualityMetricResult(
         passed=passed,
         value=snr,
-        threshold=3.0,
+        threshold=150.0,
         metric_name="SNR",
         status=quality,
         details=details,

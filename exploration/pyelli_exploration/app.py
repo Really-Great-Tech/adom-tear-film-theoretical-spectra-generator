@@ -3916,13 +3916,13 @@ with tabs[2]:
                         )
                     )
 
-                    # Add threshold line (Refined spec: 3.0 is Marginal)
+                    # Add threshold line (Robust Gate: 150.0 is Marginal)
                     fig_sw.add_hline(
-                        y=3.0,
+                        y=150.0,
                         line_dash="dash",
                         line_color="#dc2626",
                         line_width=2,
-                        annotation_text="Threshold (3.0)",
+                        annotation_text="Threshold (150.0)",
                         annotation_position="bottom right",
                     )
 
