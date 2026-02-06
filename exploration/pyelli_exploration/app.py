@@ -3884,10 +3884,14 @@ with tabs[1]:
             # === SNR DETAIL ANALYSIS (Sliding Window) ===
             st.markdown("---")
             with st.expander("🔬 SNR Detail Analysis (Sliding Window)", expanded=False):
+                # Define window parameters centrally
+                snr_win_w = 50.0
+                snr_win_s = 10.0
+
                 st.markdown(
-                    """
+                    f"""
                 <div style="background: #f0f9ff; border: 1px solid #bae6fd; border-radius: 8px; padding: 12px; margin-bottom: 16px; font-size: 0.85rem; color: #0369a1;">
-                    <strong>Sliding Window SNR:</strong> Calculated using a 50nm sliding window. This helps identify 
+                    <strong>Sliding Window SNR:</strong> Calculated using a {snr_win_w:.0f}nm sliding window. This helps identify 
                     specific wavelength regions where the signal is degraded by hardware noise or sensor saturation.
                 </div>
                 """,
@@ -3907,19 +3911,73 @@ with tabs[1]:
                     computed_data["wl_display"],
                     m_detrended,
                     noise_estimation_width_nm=5.0,
-                    window_width_nm=50.0,
+                    window_width_nm=snr_win_w,
+                    step_nm=snr_win_s,
                 )
 
                 if len(snr_wl_prof) > 0:
                     fig_snr = go.Figure()
+
+                    # Shaded regions for each window - opacity proportional to SNR
+                    window_width = snr_win_w
+                    max_snr_val = (
+                        np.max(snr_vals_prof) if len(snr_vals_prof) > 0 else 1.0
+                    )
+                    for center, val in zip(snr_wl_prof, snr_vals_prof):
+                        # Scale opacity based on SNR quality (higher SNR = stronger blue)
+                        # Range: 0.005 (low quality) to 0.03 (high quality)
+                        dynamic_opacity = 0.005 + (0.025 * (val / max_snr_val))
+                        fig_snr.add_vrect(
+                            x0=center - window_width / 2,
+                            x1=center + window_width / 2,
+                            fillcolor="blue",
+                            opacity=dynamic_opacity,
+                            layer="below",
+                            line_width=0,
+                        )
+
+                    # Add window boundary markers (light ticks at the bottom)
+                    for center in snr_wl_prof:
+                        fig_snr.add_shape(
+                            type="line",
+                            x0=center - window_width / 2,
+                            x1=center - window_width / 2,
+                            y0=0,
+                            y1=0.05,
+                            yref="paper",
+                            line=dict(color="rgba(0,0,0,0.1)", width=1),
+                        )
+                        fig_snr.add_shape(
+                            type="line",
+                            x0=center + window_width / 2,
+                            x1=center + window_width / 2,
+                            y0=0,
+                            y1=0.05,
+                            yref="paper",
+                            line=dict(color="rgba(0,0,0,0.1)", width=1),
+                        )
+
+                    # Main SNR line
                     fig_snr.add_trace(
                         go.Scatter(
                             x=snr_wl_prof,
                             y=snr_vals_prof,
                             mode="lines+markers",
                             name="Windowed SNR",
-                            line=dict(color="#0ea5e9", width=2),
-                            marker=dict(size=4),
+                            line=dict(color="#0ea5e9", width=2.5),
+                            marker=dict(size=6, symbol="diamond"),
+                            customdata=np.stack(
+                                [
+                                    snr_wl_prof - window_width / 2,
+                                    snr_wl_prof + window_width / 2,
+                                ],
+                                axis=-1,
+                            ),
+                            hovertemplate=(
+                                "<b>Window Center:</b> %{x:.1f} nm<br>"
+                                "<b>Range:</b> %{customdata[0]:.1f} - %{customdata[1]:.1f} nm<br>"
+                                "<b>SNR:</b> %{y:.1f}<extra></extra>"
+                            ),
                         )
                     )
 
@@ -3929,16 +3987,18 @@ with tabs[1]:
                         line_dash="dash",
                         line_color="red",
                         annotation_text="Threshold (5.0)",
+                        annotation_position="top left",
                     )
 
                     fig_snr.update_layout(
-                        title="SNR vs Wavelength (50nm Windows)",
+                        title=f"SNR vs Wavelength ({snr_win_w:.0f}nm Sliding Windows)",
                         xaxis_title="Wavelength (nm)",
                         yaxis_title="SNR Ratio (Variance)",
-                        height=300,
-                        margin=dict(t=40, b=40, l=60, r=30),
+                        height=400,
+                        margin=dict(t=50, b=50, l=60, r=30),
                         paper_bgcolor="#ffffff",
                         plot_bgcolor="#ffffff",
+                        hovermode="x unified",
                     )
                     st.plotly_chart(fig_snr, use_container_width=True)
 

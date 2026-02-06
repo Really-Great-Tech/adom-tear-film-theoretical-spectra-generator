@@ -333,8 +333,8 @@ def calculate_snr_profile(
     wavelengths: np.ndarray,
     detrended_signal: np.ndarray,
     noise_estimation_width_nm: float = 5.0,
-    window_width_nm: float = 50.0,
-    step_nm: float = 10.0,
+    window_width_nm: float = 100.0,
+    step_nm: float = 50.0,
 ) -> Tuple[np.ndarray, np.ndarray]:
     """
     Calculate SNR profile using a sliding window.
