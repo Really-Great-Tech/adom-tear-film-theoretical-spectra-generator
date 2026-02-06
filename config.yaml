@@ -75,6 +75,7 @@ analysis:
     min_peaks: 3
     min_signal_amplitude: 0.02
     min_wavelength_span_nm: 150.0
+    min_snr: 5.0
   edge_case_detection:
     enabled: true
     threshold_high_score: 0.9    # Flag scores >= this as exceptional (algorithm outperforming)
