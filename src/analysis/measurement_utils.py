@@ -34,6 +34,8 @@ class PreparedMeasurement:
     fft_frequencies: np.ndarray
     fft_spectrum: np.ndarray
     snr: float
+    snr_wl: Optional[np.ndarray] = None
+    snr_values: Optional[np.ndarray] = None
 
 
 @dataclass(frozen=True)
@@ -327,6 +329,67 @@ def calculate_snr(
     return float(sig_var / noise_var)
 
 
+def calculate_snr_profile(
+    wavelengths: np.ndarray,
+    detrended_signal: np.ndarray,
+    noise_estimation_width_nm: float = 5.0,
+    window_width_nm: float = 50.0,
+    step_nm: float = 10.0,
+) -> Tuple[np.ndarray, np.ndarray]:
+    """
+    Calculate SNR profile using a sliding window.
+
+    Returns:
+        Tuple of (center_wavelengths, snr_values)
+    """
+    if len(detrended_signal) < 10 or np.std(detrended_signal) < 1e-12:
+        return np.array([]), np.array([])
+
+    # Isolate stable fringes by smoothing (globally for efficiency)
+    clean_signal = boxcar_smooth(
+        detrended_signal, wavelengths, width_nm=noise_estimation_width_nm
+    )
+    noise = detrended_signal - clean_signal
+
+    w_min = np.min(wavelengths)
+    w_max = np.max(wavelengths)
+
+    # Calculate window centers
+    centers = np.arange(
+        w_min + window_width_nm / 2, w_max - window_width_nm / 2, step_nm
+    )
+
+    if len(centers) == 0:
+        # Fallback if range is too small
+        return np.array([np.mean(wavelengths)]), np.array(
+            [calculate_snr(wavelengths, detrended_signal)]
+        )
+
+    snr_vals = []
+    valid_centers = []
+
+    for c in centers:
+        mask = (wavelengths >= c - window_width_nm / 2) & (
+            wavelengths <= c + window_width_nm / 2
+        )
+        if mask.sum() < 5:
+            continue
+
+        win_clean = clean_signal[mask]
+        win_noise = noise[mask]
+
+        cv = np.var(win_clean)
+        nv = np.var(win_noise)
+
+        valid_centers.append(c)
+        if nv <= 0:
+            snr_vals.append(1000.0)
+        else:
+            snr_vals.append(float(cv / nv))
+
+    return np.array(valid_centers), np.array(snr_vals)
+
+
 def gaussian_smooth(
     intensity: np.ndarray,
     kernel_size: int = 11,
@@ -488,6 +551,9 @@ def prepare_measurement(
     # Calculate SNR on the detrended signal
     snr = calculate_snr(wavelengths, detrended)
 
+    # Calculate SNR profile
+    snr_wl, snr_vals = calculate_snr_profile(wavelengths, detrended)
+
     return PreparedMeasurement(
         wavelengths=wavelengths,
         reflectance=reflectance,
@@ -499,6 +565,8 @@ def prepare_measurement(
         fft_frequencies=fft_freqs,
         fft_spectrum=fft_values,
         snr=snr,
+        snr_wl=snr_wl,
+        snr_values=snr_vals,
     )
 
 
