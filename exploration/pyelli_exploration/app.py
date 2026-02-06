@@ -3855,6 +3855,103 @@ with tabs[2]:
 
             st.plotly_chart(fig, use_container_width=True)
 
+            # --- SLIDING WINDOW SNR CHART ---
+            snr_metric = report.metrics.get("snr")
+            if snr_metric and "sliding_window_snr" in snr_metric.details:
+                sw_data = snr_metric.details["sliding_window_snr"]
+
+                if len(sw_data.get("centers", [])) > 0:
+                    sw_window = sw_data.get("window_nm", 50.0)
+                    st.markdown("---")
+                    st.markdown("### 🏁 Local Signal Quality")
+                    st.info(
+                        f"**Sliding Window SNR**: Calculated using a {sw_window:.0f}nm sliding window. "
+                        "This helps identify specific wavelength regions where the signal is degraded by hardware noise or sensor saturation."
+                    )
+
+                    fig_sw = go.Figure()
+
+                    # 1. The Intensity Shade (Bar underlay)
+                    # Use a bar chart with bargap=0 to create a continuous intensity area
+                    fig_sw.add_trace(
+                        go.Bar(
+                            x=sw_data["centers"],
+                            y=sw_data["snr_values"],
+                            marker=dict(
+                                color=sw_data["snr_values"],
+                                colorscale="Blues",
+                                cmin=0,
+                                showscale=True,
+                                colorbar=dict(
+                                    title="SNR Intensity",
+                                    thickness=15,
+                                    len=0.8,
+                                    y=0.5,
+                                    x=1.05,
+                                ),
+                            ),
+                            width=sw_data.get("stride_nm", 25.0),
+                            opacity=0.5,
+                            showlegend=False,
+                            name="Intensity",
+                            hoverinfo="skip",
+                        )
+                    )
+
+                    # 2. The Line (Trend overlay)
+                    fig_sw.add_trace(
+                        go.Scatter(
+                            x=sw_data["centers"],
+                            y=sw_data["snr_values"],
+                            mode="lines+markers",
+                            name="SNR Profile",
+                            line=dict(color="#1e40af", width=2),
+                            marker=dict(size=4, color="#1e40af"),
+                            hovertemplate=(
+                                "<b>Wavelength Range</b>: %{customdata[0]:.1f} - %{customdata[1]:.1f} nm<br>"
+                                + "<b>SNR</b>: %{y:.1f}<br>"
+                                + "<extra></extra>"
+                            ),
+                            customdata=sw_data["ranges"],
+                        )
+                    )
+
+                    # Add threshold line (Refined spec: 3.0 is Marginal)
+                    fig_sw.add_hline(
+                        y=3.0,
+                        line_dash="dash",
+                        line_color="#dc2626",
+                        line_width=2,
+                        annotation_text="Threshold (3.0)",
+                        annotation_position="bottom right",
+                    )
+
+                    fig_sw.update_layout(
+                        title=f"SNR vs Wavelength ({sw_window:.0f}nm Sliding Windows)",
+                        xaxis_title="Wavelength (nm)",
+                        yaxis_title="SNR Ratio (Variance)",
+                        template="plotly_white",
+                        height=450,
+                        hovermode="closest",
+                        bargap=0,  # Makes bars touch for continuous look
+                        margin=dict(l=20, r=80, t=50, b=20),
+                    )
+
+                    st.plotly_chart(fig_sw, use_container_width=True)
+
+                    # Metrics beneath the chart
+                    m_cols = st.columns(3)
+                    with m_cols[0]:
+                        st.markdown(
+                            f"**MIN SNR IN WINDOW**\n### {sw_data['min_snr']:.1f}"
+                        )
+                    with m_cols[1]:
+                        st.markdown(f"**AVG SNR**\n### {sw_data['avg_snr']:.1f}")
+                    with m_cols[2]:
+                        st.markdown(
+                            f"**MAX SNR IN WINDOW**\n### {sw_data['max_snr']:.1f}"
+                        )
+
         except ImportError as e:
             st.error(f"❌ Quality metrics module not available: {e}")
             st.info(

@@ -152,6 +152,80 @@ def calculate_snr(
     )
 
 
+def calculate_sliding_window_snr(
+    wavelengths: np.ndarray,
+    reflectance: np.ndarray,
+    window_nm: float = 100.0,
+    stride_nm: Optional[float] = None,
+) -> Dict[str, any]:
+    """Calculate Robust SNR in a sliding window across the spectrum.
+
+    Args:
+        wavelengths: Wavelength array (nm)
+        reflectance: Reflectance array
+        window_nm: Size of the sliding window in nm
+        stride_nm: Step size between windows in nm (defaults to window_nm / 2)
+
+    Returns:
+        Dict with 'centers', 'snr_values', 'min_snr', 'max_snr', 'avg_snr'
+    """
+    if len(wavelengths) < 2:
+        return {"centers": np.array([]), "snr_values": np.array([])}
+
+    stride_nm = stride_nm or (window_nm / 2)
+
+    centers = []
+    snr_values = []
+    ranges = []
+
+    # Filter to analysis range
+    mask = (wavelengths >= ANALYSIS_WAVELENGTH_MIN) & (
+        wavelengths <= ANALYSIS_WAVELENGTH_MAX
+    )
+    w_range = wavelengths[mask]
+    r_range = reflectance[mask]
+
+    if len(w_range) < 2:
+        return {"centers": np.array([]), "snr_values": np.array([])}
+
+    current_center = np.min(w_range) + (window_nm / 2)
+    max_w = np.max(w_range)
+
+    while current_center <= max_w - (window_nm / 2):
+        w_min = current_center - (window_nm / 2)
+        w_max = current_center + (window_nm / 2)
+
+        win_mask = (w_range >= w_min) & (w_range <= w_max)
+        if np.sum(win_mask) > 5:
+            win_ref = r_range[win_mask]
+            # Use robust method for the window
+            diffs = np.diff(win_ref)
+            noise_std = np.std(diffs) / np.sqrt(2)
+            if noise_std > 0:
+                sig_range = np.max(win_ref) - np.min(win_ref)
+                snr = sig_range / noise_std
+
+                centers.append(current_center)
+                snr_values.append(float(snr))
+                ranges.append((float(w_min), float(w_max)))
+
+        current_center += stride_nm
+
+    if not snr_values:
+        return {"centers": np.array([]), "snr_values": np.array([])}
+
+    return {
+        "centers": np.array(centers),
+        "snr_values": np.array(snr_values),
+        "ranges": ranges,
+        "min_snr": float(np.min(snr_values)),
+        "max_snr": float(np.max(snr_values)),
+        "avg_snr": float(np.mean(snr_values)),
+        "window_nm": window_nm,
+        "stride_nm": stride_nm,
+    }
+
+
 def check_peak_quality(
     wavelengths: np.ndarray,
     reflectance: np.ndarray,
@@ -625,6 +699,15 @@ def assess_spectrum_quality(
         reflectance,
         use_robust_method=config.get("use_robust_snr", True),
     )
+
+    # Calculate Sliding Window SNR for details (uses function default if not in config)
+    snr_kw = {}
+    if "snr_window_nm" in config:
+        snr_kw["window_nm"] = config["snr_window_nm"]
+
+    window_snr = calculate_sliding_window_snr(wavelengths, reflectance, **snr_kw)
+    snr_result.details["sliding_window_snr"] = window_snr
+
     metrics["snr"] = snr_result
 
     if not snr_result.passed:
@@ -683,7 +766,7 @@ def assess_spectrum_quality(
 
     # Always show indicative findings as warnings
     for note in integrity_result.details.get("indicative_warnings", []):
-        warnings.append(f"Warning: {note}")
+        warnings.append(f"Signal integrity Warning: {note}")
 
     # Metric 5: Spectral Completeness
     completeness_result = check_spectral_completeness(
@@ -729,6 +812,7 @@ __all__ = [
     "QualityMetricResult",
     "SpectrumQualityReport",
     "calculate_snr",
+    "calculate_sliding_window_snr",
     "check_peak_quality",
     "calculate_fit_residual_quality",
     "check_signal_integrity",
