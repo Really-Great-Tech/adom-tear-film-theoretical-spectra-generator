@@ -125,6 +125,8 @@ from src.analysis.measurement_utils import (
     gaussian_smooth,
     detect_peaks,
     detect_valleys,
+    calculate_snr,
+    calculate_snr_profile,
 )
 from src.analysis.metrics import _match_peaks
 from plotly.subplots import make_subplots
@@ -1938,8 +1940,14 @@ else:
 
 with tabs[0]:
     if computed_data:
-        # Display filename at the top
-        st.markdown(f"### 📈 `{Path(selected_file).name}`")
+        # Display filename and SNR at the top
+        head_col1, head_col2 = st.columns([0.8, 0.2])
+        with head_col1:
+            st.markdown(f"### 📈 `{Path(selected_file).name}`")
+        with head_col2:
+            snr_val = computed_data["pyelli_score_result"].get("snr", 0.0)
+            snr_color = "🟢" if snr_val >= 5.0 else "🔴"
+            st.metric("Measurement SNR", f"{snr_color} {snr_val:.1f}")
 
         # Shlomo ground truth comparison (Yash: loss at our optimum vs at Shlomo's values + lipid/aqueous error)
         sp = computed_data.get("shlomo_params")
@@ -2465,9 +2473,8 @@ with tabs[0]:
         )
 
         if show_both_metrics:
-            # Show both PyElli and BestFit metrics side by side
             st.markdown("#### PyElli Theoretical")
-            mcols_pyelli = st.columns(6)
+            mcols_pyelli = st.columns(5)
             with mcols_pyelli[0]:
                 score_icon = (
                     "🟢"
@@ -2497,12 +2504,9 @@ with tabs[0]:
                     "Parameters",
                     f"L={computed_data['display_lipid']}, A={computed_data['display_aqueous']}, R={computed_data['display_mucus']:.0f}Å",
                 )
-            with mcols_pyelli[5]:
-                snr_val = computed_data["pyelli_score_result"].get("snr", 0.0)
-                st.metric("SNR", f"{snr_val:.1f}")
 
             st.markdown("#### LTA BestFit")
-            mcols_bestfit = st.columns(5)
+            mcols_bestfit = st.columns(4)
             with mcols_bestfit[0]:
                 score_icon = (
                     "🟢"
@@ -2527,9 +2531,6 @@ with tabs[0]:
                     computed_data["bestfit_score_result"].get("matched_peaks", 0)
                 )
                 st.metric("Matched Peaks", f"{matched_peaks}")
-            with mcols_bestfit[4]:
-                snr_val = computed_data["bestfit_score_result"].get("snr", 0.0)
-                st.metric("SNR", f"{snr_val:.1f}")
 
             # === DEVIATION SCORE: PyElli vs LTA Comparison ===
             st.markdown("---")
@@ -2676,7 +2677,7 @@ with tabs[0]:
                 )
         else:
             # Show single set of metrics
-            mcols = st.columns(8)
+            mcols = st.columns(7)
             with mcols[0]:
                 st.metric("Lipid", f"{computed_data['display_lipid']} nm")
             with mcols[1]:
@@ -2699,9 +2700,6 @@ with tabs[0]:
             with mcols[6]:
                 matched_peaks = int(score_result.get("matched_peaks", 0))
                 st.metric("Matched Peaks", f"{matched_peaks}")
-            with mcols[7]:
-                snr_val = score_result.get("snr", 0.0)
-                st.metric("SNR", f"{snr_val:.1f}")
 
         # === DRIFT ANALYSIS (Cycle Jump Indicators) ===
         # Get drift metrics from the appropriate score result
@@ -2945,11 +2943,18 @@ with tabs[0]:
 
 with tabs[1]:
     if computed_data:
-        st.markdown("### 📊 Amplitude Analysis")
-        st.markdown(
-            '<p style="color: #94a3b8; margin-bottom: 1rem;">Detrended amplitude signals with peak alignment to verify fit quality</p>',
-            unsafe_allow_html=True,
-        )
+        # Display header and SNR at the top
+        amp_head_col1, amp_head_col2 = st.columns([0.8, 0.2])
+        with amp_head_col1:
+            st.markdown("### 📊 Amplitude Analysis")
+            st.markdown(
+                '<p style="color: #94a3b8; margin-bottom: 1rem;">Detrended amplitude signals with peak alignment to verify fit quality</p>',
+                unsafe_allow_html=True,
+            )
+        with amp_head_col2:
+            snr_val = computed_data["pyelli_score_result"].get("snr", 0.0)
+            snr_color = "🟢" if snr_val >= 5.0 else "🔴"
+            st.metric("Measurement SNR", f"{snr_color} {snr_val:.1f}")
 
         # Get default values for settings (will be used for initial plot)
         # Use correct defaults: cutoff_frequency=0.008, peak_prominence=0.0001
@@ -3874,6 +3879,80 @@ with tabs[1]:
                     st.metric(
                         "Peak Score",
                         f"{score_icon_amp} {score_result_amp['score']:.3f}",
+                    )
+
+            # === SNR DETAIL ANALYSIS (Sliding Window) ===
+            st.markdown("---")
+            with st.expander("🔬 SNR Detail Analysis (Sliding Window)", expanded=False):
+                st.markdown(
+                    """
+                <div style="background: #f0f9ff; border: 1px solid #bae6fd; border-radius: 8px; padding: 12px; margin-bottom: 16px; font-size: 0.85rem; color: #0369a1;">
+                    <strong>Sliding Window SNR:</strong> Calculated using a 50nm sliding window. This helps identify 
+                    specific wavelength regions where the signal is degraded by hardware noise or sensor saturation.
+                </div>
+                """,
+                    unsafe_allow_html=True,
+                )
+
+                # Recalculate detrended signal for SNR profile if not available
+                # Use default cutoff 0.008
+                m_detrended = detrend_signal(
+                    computed_data["wl_display"],
+                    computed_data["meas_display"],
+                    0.008,
+                    filter_order=3,
+                )
+
+                snr_wl_prof, snr_vals_prof = calculate_snr_profile(
+                    computed_data["wl_display"],
+                    m_detrended,
+                    noise_estimation_width_nm=5.0,
+                    window_width_nm=50.0,
+                )
+
+                if len(snr_wl_prof) > 0:
+                    fig_snr = go.Figure()
+                    fig_snr.add_trace(
+                        go.Scatter(
+                            x=snr_wl_prof,
+                            y=snr_vals_prof,
+                            mode="lines+markers",
+                            name="Windowed SNR",
+                            line=dict(color="#0ea5e9", width=2),
+                            marker=dict(size=4),
+                        )
+                    )
+
+                    # Add threshold line
+                    fig_snr.add_hline(
+                        y=5.0,
+                        line_dash="dash",
+                        line_color="red",
+                        annotation_text="Threshold (5.0)",
+                    )
+
+                    fig_snr.update_layout(
+                        title="SNR vs Wavelength (50nm Windows)",
+                        xaxis_title="Wavelength (nm)",
+                        yaxis_title="SNR Ratio (Variance)",
+                        height=300,
+                        margin=dict(t=40, b=40, l=60, r=30),
+                        paper_bgcolor="#ffffff",
+                        plot_bgcolor="#ffffff",
+                    )
+                    st.plotly_chart(fig_snr, use_container_width=True)
+
+                    # Summary stats
+                    s_col1, s_col2, s_col3 = st.columns(3)
+                    with s_col1:
+                        st.metric("Min SNR in window", f"{np.min(snr_vals_prof):.1f}")
+                    with s_col2:
+                        st.metric("Avg SNR", f"{np.mean(snr_vals_prof):.1f}")
+                    with s_col3:
+                        st.metric("Max SNR in window", f"{np.max(snr_vals_prof):.1f}")
+                else:
+                    st.warning(
+                        "Could not calculate SNR profile (wavelength range too small)."
                     )
 
         except Exception as e:
