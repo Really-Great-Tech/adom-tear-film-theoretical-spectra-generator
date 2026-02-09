@@ -3669,6 +3669,19 @@ def main():
                     window_nm=100.0,
                 )
                 display_sliding_window_snr_chart(sw_res)
+                
+                # Metrics beneath the chart
+                m_cols = st.columns(3)
+                with m_cols[0]:
+                    st.markdown(
+                        f"**MIN SNR IN WINDOW**\n### {sw_res['min_snr']:.1f}"
+                    )
+                with m_cols[1]:
+                    st.markdown(f"**AVG SNR**\n### {sw_res['avg_snr']:.1f}")
+                with m_cols[2]:
+                    st.markdown(
+                        f"**MAX SNR IN WINDOW**\n### {sw_res['max_snr']:.1f}"
+                    )
             except Exception as e:
                 st.error(f"Error calculating SNR profile: {e}")
 
@@ -3686,7 +3699,6 @@ def main():
                 Low quality scores usually indicate measurement artifacts, excessive noise, or physical samples that don't match our current optical model.
                 """
                 )
-
 
 if __name__ == "__main__":
     main()
