@@ -3742,15 +3742,19 @@ with tabs[2]:
                 st.markdown("""
                 ### Metric 1: Signal-to-Noise Ratio (SNR)
                 Quantifies measurement quality by comparing signal strength to baseline noise.
-                - **Formula**: `SNR = (max(signal) - mean(baseline)) / std(baseline)`
-                - **Thresholds**: 
-                  - SNR ≥ 20: **Excellent**
-                  - SNR 10-20: **Good**
-                  - SNR 3-10: **Marginal**
-                  - SNR < 3: **Reject**
+                - **Formula (HORIBA FSD Standard)**: `SNR = (max(signal) - mean(baseline)) / std(baseline)`
+                - **Implementation**: Signal is detrended first to separate interference fringes from spectral envelope
+                - **Signal region**: Center 60% of wavelength range (e.g., 700-1000nm for 600-1120nm range)
+                - **Baseline region**: First and last 10% of wavelength range (edges)
+                - **Thresholds (Calibrated for Detrended Interference Spectra)**:
+                  - SNR ≥ 2.5: **Excellent** (Top ~15%)
+                  - SNR 1.5-2.5: **Good** (Top ~50%)
+                  - SNR 1.0-1.5: **Marginal** (Top ~80%)
+                  - SNR < 1.0: **Reject** (Bottom ~20%)
                 
                 ### Metric 2: Peak/Fringe Detection Quality
                 Verifies sufficient interference fringes exist for reliable thickness extraction.
+                - **Implementation**: Peaks detected on detrended signal (matches amplitude analysis)
                 - Minimum peak count (≥ 3 peaks)
                 - Peak prominence consistency (CV < 1.0)
                 - Peak spacing regularity (CV < 0.5)

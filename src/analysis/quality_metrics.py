@@ -59,7 +59,9 @@ def calculate_snr(
     wavelengths: np.ndarray,
     reflectance: np.ndarray,
     *,
-    use_robust_method: bool = True,
+    use_detrended: bool = True,
+    cutoff_frequency: float = 0.008,
+    filter_order: int = 3,
     signal_center_fraction: float = 0.6,
     baseline_edge_fraction: float = 0.1,
 ) -> QualityMetricResult:
@@ -67,85 +69,107 @@ def calculate_snr(
 
     Metric 1: Signal-to-Noise Ratio (SNR)
 
-    Default Method (Robust): Uses high-frequency noise estimate from first-order differences.
-    Alternative Method (Standard): SNR = (max(signal) - mean(baseline)) / std(baseline)
+    Formula (HORIBA FSD Standard): SNR = (max(signal) - mean(baseline)) / std(baseline)
+
+    For interference spectra, the signal should be detrended first to separate
+    the interference fringes from the overall spectral envelope.
 
     Args:
         wavelengths: Wavelength array in nm
         reflectance: Reflectance values
-        use_robust_method: Whether to use the high-frequency residue method (default True)
-        signal_center_fraction: Fraction for center signal region (Standard method only)
-        baseline_edge_fraction: Fraction for edge baseline regions (Standard method only)
+        use_detrended: Whether to detrend before SNR calculation (default True)
+        cutoff_frequency: Cutoff frequency for detrending (default 0.008)
+        filter_order: Filter order for detrending (default 3)
+        signal_center_fraction: Fraction for center signal region (default 0.6 = 60%)
+        baseline_edge_fraction: Fraction for edge baseline regions (default 0.1 = 10%)
 
     Returns:
         QualityMetricResult with SNR assessment
 
-    Quality Thresholds (Robust Method):
-        SNR >= 200: Excellent
-        SNR 100-200: Good
-        SNR 50-100: Marginal
-        SNR < 50: Reject
+    Quality Thresholds (Empirically Derived for Detrended Interference Spectra):
+        SNR >= 2.5: Excellent
+        SNR 1.5-2.5: Good
+        SNR 1.0-1.5: Marginal
+        SNR < 1.0: Reject
     """
     if len(reflectance) < 2:
         return QualityMetricResult(
-            passed=False, value=0.0, threshold=50.0, metric_name="SNR", details={}
+            passed=False,
+            value=0.0,
+            threshold=1.0,
+            metric_name="SNR",
+            status="Reject",
+            details={},
         )
 
-    # 1. Robust Method (High-frequency noise residue)
-    diffs = np.diff(reflectance)
-    noise_std = float(np.std(diffs) / np.sqrt(2))
-    signal_range = float(np.max(reflectance) - np.min(reflectance))
+    # Detrend the signal if requested (recommended for interference spectra)
+    signal_for_snr = reflectance
+    if use_detrended:
+        from analysis.measurement_utils import detrend_signal
 
-    robust_snr = signal_range / noise_std if noise_std > 0 else 0.0
+        signal_for_snr = detrend_signal(
+            wavelengths, reflectance, cutoff_frequency, filter_order
+        )
 
-    # 2. Standard Method (Edge-based) - kept in details for reference
-    n = len(reflectance)
+    # Apply HORIBA FSD Standard formula
+    n = len(signal_for_snr)
     edge_size = max(1, int(n * baseline_edge_fraction))
     center_start = int(n * (1 - signal_center_fraction) / 2)
     center_end = n - center_start
 
-    signal_max = float(np.max(reflectance[center_start:center_end]))
+    # Signal region: Center 60% of wavelength range
+    signal_max = float(np.max(signal_for_snr[center_start:center_end]))
+
+    # Baseline/noise region: First and last 10% of wavelength range (edges)
     baseline_mean = float(
-        np.mean(np.concatenate([reflectance[:edge_size], reflectance[-edge_size:]]))
+        np.mean(
+            np.concatenate([signal_for_snr[:edge_size], signal_for_snr[-edge_size:]])
+        )
     )
     baseline_std = float(
         np.std(
-            np.concatenate([reflectance[:edge_size], reflectance[-edge_size:]]), ddof=1
+            np.concatenate([signal_for_snr[:edge_size], signal_for_snr[-edge_size:]]),
+            ddof=1,
         )
     )
-    standard_snr = (
-        (signal_max - baseline_mean) / baseline_std if baseline_std > 1e-10 else 0.0
-    )
 
-    # Use robust method as the primary value
-    snr = robust_snr if use_robust_method else standard_snr
+    snr = (signal_max - baseline_mean) / baseline_std if baseline_std > 1e-10 else 0.0
 
-    # Thresholds (Scientifically Calibrated to Batch Benchmarks)
-    if snr >= 300:
-        quality = "Excellent"
-    elif snr >= 200:
-        quality = "Good"
-    elif snr >= 150:
-        quality = "Marginal"
+    # Thresholds (Empirically Derived for Detrended Interference Spectra)
+    # Based on batch analysis of 449 real spectra:
+    #   - Median SNR: 1.52
+    #   - 75th percentile: 2.10
+    #   - 90th percentile: 2.73
+    #   - 95th percentile: 3.35
+    # Note: These differ from HORIBA FSD Standard (SNR≥3) because detrending
+    # changes the signal characteristics (centered around zero, lower baseline std)
+    if snr >= 2.5:
+        quality = "Excellent"  # Top ~15% of spectra
+    elif snr >= 1.5:
+        quality = "Good"  # Top ~50% of spectra
+    elif snr >= 1.0:
+        quality = "Marginal"  # Top ~80% of spectra
     else:
-        quality = "Reject"
+        quality = "Reject"  # Bottom ~20% of spectra
 
-    passed = snr >= 150.0  # Threshold for "Marginal"
+    passed = snr >= 1.0  # Threshold for "Marginal"
 
     details = {
         "snr": snr,
-        "snr_robust": robust_snr,
-        "snr_standard": standard_snr,
-        "noise_std": noise_std,
-        "signal_range": signal_range,
+        "signal_max": signal_max,
+        "baseline_mean": baseline_mean,
+        "baseline_std": baseline_std,
         "quality_level": quality,
-        "method": "Robust (High-Freq)" if use_robust_method else "Standard (Edge)",
+        "method": "HORIBA FSD Standard (Detrended)"
+        if use_detrended
+        else "HORIBA FSD Standard (Raw)",
+        "detrended": use_detrended,
     }
 
     return QualityMetricResult(
         passed=passed,
         value=snr,
-        threshold=150.0,
+        threshold=1.0,
         metric_name="SNR",
         status=quality,
         details=details,
@@ -234,6 +258,9 @@ def check_peak_quality(
     min_peak_count: int = 3,
     max_prominence_cv: float = 1.0,
     max_spacing_cv: float = 0.5,
+    detrend: bool = True,
+    cutoff_frequency: float = 0.008,
+    filter_order: int = 3,
 ) -> QualityMetricResult:
     """Check peak/fringe detection quality.
 
@@ -251,12 +278,25 @@ def check_peak_quality(
         min_peak_count: Minimum number of peaks required (default 3)
         max_prominence_cv: Maximum coefficient of variation for prominence (default 1.0)
         max_spacing_cv: Maximum coefficient of variation for spacing (default 0.5)
+        detrend: Whether to detrend the signal before peak detection (default True)
+        cutoff_frequency: Cutoff frequency for detrending filter (default 0.008)
+        filter_order: Order of the Butterworth filter for detrending (default 3)
 
     Returns:
         QualityMetricResult with peak quality assessment
     """
-    # Detect peaks
-    peak_indices, properties = find_peaks(reflectance, prominence=prominence)
+    # CRITICAL FIX: Detrend the signal before finding peaks to match amplitude analysis
+    # This ensures we detect interference fringes, not the overall spectral shape
+    signal_for_peaks = reflectance
+    if detrend:
+        from analysis.measurement_utils import detrend_signal
+
+        signal_for_peaks = detrend_signal(
+            wavelengths, reflectance, cutoff_frequency, filter_order
+        )
+
+    # Detect peaks on the (optionally detrended) signal
+    peak_indices, properties = find_peaks(signal_for_peaks, prominence=prominence)
 
     peak_count = len(peak_indices)
 
@@ -314,6 +354,7 @@ def check_peak_quality(
         "mean_spacing": mean_spacing,
         "checks_passed": len(checks_passed),
         "checks_failed": len(checks_failed),
+        "detrended": detrend,
     }
 
     # Determine status
@@ -697,7 +738,9 @@ def assess_spectrum_quality(
     snr_result = calculate_snr(
         wavelengths,
         reflectance,
-        use_robust_method=config.get("use_robust_snr", True),
+        use_detrended=config.get("use_detrended_snr", True),
+        cutoff_frequency=config.get("snr_cutoff_frequency", 0.008),
+        filter_order=config.get("snr_filter_order", 3),
     )
 
     # Calculate Sliding Window SNR for details (uses function default if not in config)
@@ -711,9 +754,7 @@ def assess_spectrum_quality(
     metrics["snr"] = snr_result
 
     if not snr_result.passed:
-        failures.append(
-            f"SNR too low (Robust): {snr_result.value:.2f} < {snr_result.threshold}"
-        )
+        failures.append(f"SNR too low: {snr_result.value:.2f} < {snr_result.threshold}")
     elif snr_result.details.get("quality_level") == "Marginal":
         warnings.append(f"SNR marginal: {snr_result.value:.2f}")
 
