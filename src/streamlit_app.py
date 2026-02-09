@@ -3637,12 +3637,20 @@ def main():
                 measurement_features,
                 analysis_cfg,
             )
+            
+
+            # before calling display_quality_metrics_card
+            assert (
+                len(measurement_features.reflectance)
+                == len(theoretical_aligned.aligned_reflectance)
+            ), "Aligned theoretical spectrum must match measurement length"
+
 
             # Display the quality card using our display helper
             display_quality_metrics_card(
                 measurement_features.wavelengths,
                 measurement_features.reflectance,
-                fitted_spectrum=theoretical_aligned.aligned,
+                fitted_spectrum=theoretical_aligned.aligned_reflectance,
                 prominence=peak_prominence,
                 config=analysis_cfg.get("quality_metrics", {}),
             )
@@ -3654,11 +3662,11 @@ def main():
             )
 
             try:
-                # Calculate sliding window SNR (50nm window benchmark)
+                # Calculate sliding window SNR (100nm window benchmark)
                 sw_res = calculate_sliding_window_snr(
                     measurement_features.wavelengths,
                     measurement_features.reflectance,
-                    window_nm=50.0,
+                    window_nm=100.0,
                 )
                 display_sliding_window_snr_chart(sw_res)
             except Exception as e:
