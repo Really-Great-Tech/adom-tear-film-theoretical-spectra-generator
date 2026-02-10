@@ -3614,125 +3614,18 @@ with tabs[2]:
 
             sys.path.insert(0, str(PathLib(__file__).parent.parent.parent / "src"))
 
-            from analysis.quality_metrics import assess_spectrum_quality
-
-            # Display function inline since we have the module
-            def display_quality_card(
-                wavelengths, reflectance, fitted_spectrum=None, prominence=0.0001
-            ):
-                report = assess_spectrum_quality(
-                    wavelengths,
-                    reflectance,
-                    fitted_spectrum=fitted_spectrum,
-                    prominence=prominence,
-                )
-
-                # Display overall quality
-                quality_colors = {
-                    "Excellent": "#16a34a",
-                    "Good": "#2563eb",
-                    "Marginal": "#d97706",
-                    "Reject": "#dc2626",
-                }
-                quality_icons = {
-                    "Excellent": "✅",
-                    "Good": "✓",
-                    "Marginal": "⚠️",
-                    "Reject": "❌",
-                }
-
-                color = quality_colors.get(report.overall_quality, "#64748b")
-                icon = quality_icons.get(report.overall_quality, "")
-
-                st.markdown(
-                    f"""
-                <div style="background: {color}15; border: 2px solid {color}; border-radius: 12px; padding: 16px; margin-bottom: 16px;">
-                    <div style="display: flex; align-items: center; justify-content: space-between;">
-                        <div>
-                            <div style="font-size: 0.75rem; color: #64748b; text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 4px;">
-                                Overall Quality
-                            </div>
-                            <div style="font-size: 1.5rem; font-weight: 700; color: {color};">
-                                {icon} {report.overall_quality}
-                            </div>
-                        </div>
-                        <div style="text-align: right;">
-                            <div style="font-size: 0.75rem; color: #64748b;">
-                                {"All checks passed" if report.passed_all_checks else f"{len(report.failures)} checks failed"}
-                            </div>
-                        </div>
-                    </div>
-                </div>
-                """,
-                    unsafe_allow_html=True,
-                )
-
-                # Display metric details
-                with st.expander("📊 Quality Metrics Details", expanded=False):
-                    cols = st.columns(2)
-                    metric_idx = 0
-                    for name, result in report.metrics.items():
-                        col = cols[metric_idx % 2]
-                        metric_idx += 1
-                        with col:
-                            status_icon = "✅" if result.passed else "❌"
-                            st.markdown(
-                                f"""
-                            <div style="background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 8px; padding: 12px; margin-bottom: 12px;">
-                                <div style="font-weight: 600; color: #1e40af; margin-bottom: 8px;">
-                                    {status_icon} {name.replace("_", " ").title()}
-                                </div>
-                                <div style="font-size: 0.85rem; color: #64748b;">
-                                    Value: <span style="font-weight: 600;">{result.value:.4f}</span>
-                                    <br>Threshold: {result.threshold:.4f}
-                                </div>
-                            </div>
-                            """,
-                                unsafe_allow_html=True,
-                            )
-
-                            if name == "snr":
-                                st.caption(
-                                    f"SNR: {result.details.get('snr', 0):.2f} ({result.details.get('quality_level', 'N/A')})"
-                                )
-                            elif name == "peak_quality":
-                                st.caption(
-                                    f"Peaks: {int(result.details.get('peak_count', 0))}, Prom CV: {result.details.get('prominence_cv', 0):.3f}"
-                                )
-                            elif name == "fit_quality":
-                                st.caption(
-                                    f"RMSE: {result.details.get('rmse', 0):.4f}, R²: {result.details.get('r_squared', 0):.4f}"
-                                )
-
-                if report.warnings:
-                    with st.expander("⚠️ Warnings", expanded=False):
-                        for warning in report.warnings:
-                            st.warning(warning)
-
-                if report.failures:
-                    with st.expander("❌ Failures", expanded=len(report.failures) > 0):
-                        for failure in report.failures:
-                            st.error(failure)
-
-                return report
-
-            st.markdown("### 🔍 Spectrum Quality Assessment")
-            st.markdown(
-                '<p style="color: #94a3b8; margin-bottom: 1.5rem;">Automated quality metrics assess whether the measured spectrum is suitable for reliable thickness extraction.</p>',
-                unsafe_allow_html=True,
-            )
-
-            # Get fitted spectrum if available for fit quality metrics
-            fitted_spectrum = None
-            if computed_data and "pyelli_reflectance" in computed_data:
-                fitted_spectrum = computed_data["pyelli_reflectance"]
+            from analysis.quality_display import display_quality_metrics_card
 
             # Display quality metrics
             prominence = st.session_state.get("peak_prom_amp", 0.0001)
 
-            report = display_quality_card(
-                wavelengths,
-                measured,
+            # Pass the theoretical spectrum currently being displayed/tuned as the 'fitted_spectrum'
+            # to enable the Fit Quality metric (RMSE, R2).
+            fitted_spectrum = computed_data.get("theoretical_display")
+
+            report = display_quality_metrics_card(
+                computed_data.get("wl_display"),
+                computed_data.get("meas_display"),
                 fitted_spectrum=fitted_spectrum,
                 prominence=prominence,
             )

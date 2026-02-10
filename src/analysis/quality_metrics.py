@@ -725,6 +725,8 @@ def assess_spectrum_quality(
     )
     wavelengths = wavelengths[mask]
     reflectance = reflectance[mask]
+    if fitted_spectrum is not None and len(fitted_spectrum) == len(mask):
+        fitted_spectrum = fitted_spectrum[mask]
 
     if len(wavelengths) < 10:
         return SpectrumQualityReport(

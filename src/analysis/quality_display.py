@@ -117,6 +117,10 @@ def display_quality_metrics_card(
                     st.caption(
                         f"Span: {result.details.get('wavelength_span_nm', 0):.1f} nm"
                     )
+                elif name == "fit_quality":
+                    st.caption(
+                        f"RMSE: {result.details.get('rmse', 0):.4f}, R²: {result.details.get('r_squared', 0):.4f}"
+                    )
 
     # Display warnings and failures
     if report.warnings:
