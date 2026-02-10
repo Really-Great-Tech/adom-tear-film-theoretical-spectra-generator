@@ -184,6 +184,11 @@ def calculate_sliding_window_snr(
 ) -> Dict[str, any]:
     """Calculate Robust SNR in a sliding window across the spectrum.
 
+    NOTE: This uses the 'Robust' method (high-frequency noise residue) rather than
+    the 'Standard' detrended method used for the global spectrum assessment.
+    Detrending inside small windows can be unstable, so this local version
+    focuses on quantifying hardware noise and sensor saturation.
+
     Args:
         wavelengths: Wavelength array (nm)
         reflectance: Reflectance array

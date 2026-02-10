@@ -3637,14 +3637,11 @@ def main():
                 measurement_features,
                 analysis_cfg,
             )
-            
 
             # before calling display_quality_metrics_card
-            assert (
-                len(measurement_features.reflectance)
-                == len(theoretical_aligned.aligned_reflectance)
+            assert len(measurement_features.reflectance) == len(
+                theoretical_aligned.aligned_reflectance
             ), "Aligned theoretical spectrum must match measurement length"
-
 
             # Display the quality card using our display helper
             display_quality_metrics_card(
@@ -3669,19 +3666,15 @@ def main():
                     window_nm=100.0,
                 )
                 display_sliding_window_snr_chart(sw_res)
-                
+
                 # Metrics beneath the chart
                 m_cols = st.columns(3)
                 with m_cols[0]:
-                    st.markdown(
-                        f"**MIN SNR IN WINDOW**\n### {sw_res['min_snr']:.1f}"
-                    )
+                    st.markdown(f"**MIN SNR IN WINDOW**\n### {sw_res['min_snr']:.1f}")
                 with m_cols[1]:
                     st.markdown(f"**AVG SNR**\n### {sw_res['avg_snr']:.1f}")
                 with m_cols[2]:
-                    st.markdown(
-                        f"**MAX SNR IN WINDOW**\n### {sw_res['max_snr']:.1f}"
-                    )
+                    st.markdown(f"**MAX SNR IN WINDOW**\n### {sw_res['max_snr']:.1f}")
             except Exception as e:
                 st.error(f"Error calculating SNR profile: {e}")
 
@@ -3690,15 +3683,22 @@ def main():
                     """
                 The **Quality Metrics** system assesses several key aspects of the measured signal to ensure reliability:
                 
-                - **SNR**: Evaluates the Signal-to-Noise Ratio using robust statistical methods. Values above 300 are Excellent, below 150 are Rejected.
-                - **Peak Quality**: Checks for a minimum peak count and consistency in peak prominence and spacing.
+                - **SNR**: Quantifies measurement quality by comparing signal strength (interference fringes) to baseline noise.
+                  - **Implementation**: Signal is detrended first to separate interference fringes from spectral envelope.
+                  - **Formula**: (max(signal) - mean(baseline)) / std(baseline) (HORIBA FSD Standard on detrended data).
+                  - **Thresholds**: Excellent ≥ 2.5, Good ≥ 1.5, Marginal ≥ 1.0, Reject < 1.0. (Empirically derived for detrended spectra).
+                - **Peak Quality**: Checks for a minimum peak count and consistency in peak prominence and spacing. Peaks are detected on the detrended signal.
                 - **Signal Integrity**: Validates the dynamic range and ensures baseline drift is within acceptable limits.
                 - **Spectral Completeness**: Verifies that the measurement covers the required wavelength span (600-1200nm) with sufficient point density.
                 - **Fit Quality**: Categorizes how well the current theoretical model matches the measurement (Excellent, Good, Marginal, Poor).
                 
+                **Note on Sliding Window SNR Chart:**
+                The local SNR profile chart above uses a **'Robust' high-frequency noise method** (residue of signal differences) to detect hardware artifacts or noise floor variations in small regions. This differs from the **'Global' detrended SNR** described above, as detrending inside small windows is unstable.
+                
                 Low quality scores usually indicate measurement artifacts, excessive noise, or physical samples that don't match our current optical model.
                 """
                 )
+
 
 if __name__ == "__main__":
     main()

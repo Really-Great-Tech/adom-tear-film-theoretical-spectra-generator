@@ -191,14 +191,14 @@ def display_sliding_window_snr_chart(sw_data):
         line_dash="dash",
         line_color="#dc2626",
         line_width=2,
-        annotation_text="Threshold (150.0)",
+        annotation_text="Robust Threshold (150.0)",
         annotation_position="bottom right",
     )
 
     fig_sw.update_layout(
-        title=f"SNR vs Wavelength ({sw_window:.0f}nm Sliding Windows)",
+        title=f"Local SNR Profile ({sw_window:.0f}nm Sliding Windows - Robust Method)",
         xaxis_title="Wavelength (nm)",
-        yaxis_title="SNR Ratio (Variance)",
+        yaxis_title="SNR (Robust)",
         template="plotly_white",
         height=450,
         hovermode="closest",
@@ -207,3 +207,9 @@ def display_sliding_window_snr_chart(sw_data):
     )
 
     st.plotly_chart(fig_sw, use_container_width=True)
+
+    # Add disclaimer
+    st.info(
+        f"**Note on Sliding Window SNR**: This profile uses a **'Robust' high-frequency noise method** (residue of signal differences) to detect hardware artifacts or sensor noise in local {sw_window:.0f}nm windows. "
+        "This is calculated differently than the **'Global' detrended SNR** shown above to maintain stability in small wavelength regions."
+    )

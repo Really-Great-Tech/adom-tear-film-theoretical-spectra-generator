@@ -3778,6 +3778,10 @@ with tabs[2]:
                 - Wavelength span (≥ 400 nm coverage)
                 - Data point density (≥ 1 point per nm)
                 - Gap detection (no gaps > 5 nm)
+
+                ---
+                **Note on Sliding Window SNR:**
+                The local SNR chart below uses a **'Robust' high-frequency noise method** (residue of signal differences). This calculation focuses on detecting hardware artifacts or noise floor variations in small regions. It differs from the **'Global' detrended SNR** above, as detrending inside small windows is unstable.
                 """)
 
             # Show spectrum plot with quality overlay
@@ -3870,7 +3874,8 @@ with tabs[2]:
                     st.markdown("### 🏁 Local Signal Quality")
                     st.info(
                         f"**Sliding Window SNR**: Calculated using a {sw_window:.0f}nm sliding window. "
-                        "This helps identify specific wavelength regions where the signal is degraded by hardware noise or sensor saturation."
+                        "This helps identify specific wavelength regions where the signal is degraded by hardware noise or sensor saturation. "
+                        "*(Note: This local SNR uses a 'Robust' high-frequency noise method, which differs from the 'Global' detrended SNR above. Detrending inside small windows is avoided for stability.)*"
                     )
 
                     fig_sw = go.Figure()
