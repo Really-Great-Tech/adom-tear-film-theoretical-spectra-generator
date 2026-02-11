@@ -260,7 +260,6 @@ def run_batch_fitting(input_dir, output_file, max_files=40, explicit_file_list=N
                     "score": best.score,
                     "corr": best.correlation,
                     "osc_ratio": best.oscillation_ratio,
-                    "snr": best.snr,
                     "dev_score": dev_metrics["composite_dev"] if dev_metrics else None,
                     "gt_lipid": gt_l,
                     "gt_aqueous": gt_a,
@@ -277,7 +276,7 @@ def run_batch_fitting(input_dir, output_file, max_files=40, explicit_file_list=N
                         f"Batch Spectral Fitting - PROGRESS: {num_already_done + i + 1}/{total_target}\n"
                     )
                     f.write("=" * 48 + "\n\n")
-                    header = f"{'Filename':<40} | {'Lipid(nm)':>10} | {'Aqueous(nm)':>12} | {'Roughness(A)':>13} | {'Score':>8} | {'Corr':>8} | {'SNR':>8} | {'OscPct':>8} | {'DevScore(%)':>12} | {'GT_L':>6} | {'GT_A':>6}\n"
+                    header = f"{'Filename':<40} | {'Lipid(nm)':>10} | {'Aqueous(nm)':>12} | {'Roughness(A)':>13} | {'Score':>8} | {'Corr':>8} | {'OscPct':>8} | {'DevScore(%)':>12} | {'GT_L':>6} | {'GT_A':>6}\n"
                     f.write(header)
                     f.write("-" * len(header) + "\n")
                     for r in results:
@@ -297,9 +296,8 @@ def run_batch_fitting(input_dir, output_file, max_files=40, explicit_file_list=N
                             else "   N/A"
                         )
                         osc_pct = r["osc_ratio"] * 100
-                        snr = r.get("snr", 0.0)
                         f.write(
-                            f"{r['filename']:<40} | {r['lipid_fit']:>10.1f} | {r['aqueous_fit']:>12.1f} | {r['roughness_fit']:>13.1f} | {r['score']:>8.4f} | {r['corr']:>8.4f} | {snr:>8.1f} | {osc_pct:>7.1f}% | {dev_str} | {gt_l_str} | {gt_a_str}\n"
+                            f"{r['filename']:<40} | {r['lipid_fit']:>10.1f} | {r['aqueous_fit']:>12.1f} | {r['roughness_fit']:>13.1f} | {r['score']:>8.4f} | {r['corr']:>8.4f} | {osc_pct:>7.1f}% | {dev_str} | {gt_l_str} | {gt_a_str}\n"
                         )
 
                 print(
