@@ -212,6 +212,10 @@ def run_batch_fitting(input_dir, output_file, max_files=40, explicit_file_list=N
         time_id = time_match.group(1) if time_match else None
         gt_l, gt_a = gt_lookup.get(time_id, (None, None))
 
+        if gt_l is None or pd.isna(gt_l):
+            print(f"Skipping {file_path.name}: No ground truth found for ID {time_id}")
+            continue
+
         try:
             wavelengths, measured = load_measured_spectrum(file_path)
             wl_mask = (wavelengths >= WL_MIN) & (wavelengths <= WL_MAX)
