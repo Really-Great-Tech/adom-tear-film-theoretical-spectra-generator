@@ -33,6 +33,7 @@ class PreparedMeasurement:
     resampled_detrended: np.ndarray
     fft_frequencies: np.ndarray
     fft_spectrum: np.ndarray
+    quality_report: Optional[Any] = None  # SpectrumQualityReport from quality_metrics
 
 
 @dataclass(frozen=True)
@@ -132,7 +133,9 @@ def _load_text_measurement(path: Path) -> pd.DataFrame:
         return pd.DataFrame({"wavelength": wavelengths, "reflectance": intensities})
 
 
-def load_measurement_spectrum(path: Path | str, measurement_cfg: Dict[str, Any]) -> pd.DataFrame:
+def load_measurement_spectrum(
+    path: Path | str, measurement_cfg: Dict[str, Any]
+) -> pd.DataFrame:
     """Load a measurement spectrum into a dataframe."""
 
     path = Path(path)
@@ -213,7 +216,9 @@ def interpolate_measurement_to_theoretical(
     )
 
 
-def calculate_fit_metrics(measured: np.ndarray, theoretical: np.ndarray) -> Dict[str, float]:
+def calculate_fit_metrics(
+    measured: np.ndarray, theoretical: np.ndarray
+) -> Dict[str, float]:
     """Compute standard fit metrics between measured and theoretical spectra."""
 
     ss_res = float(np.sum((measured - theoretical) ** 2))
@@ -280,7 +285,7 @@ def boxcar_smooth(
     window_size = max(1, int(round(width_nm / step_nm)))
     smoothed = intensity.copy()
     for _ in range(repeats):
-        smoothed = uniform_filter1d(smoothed, size=window_size, mode='nearest')
+        smoothed = uniform_filter1d(smoothed, size=window_size, mode="nearest")
     return smoothed
 
 
@@ -301,7 +306,7 @@ def gaussian_smooth(
     # Solve for sigma to get exact kernel_size: sigma = (kernel_size - 1) / (2 * truncate)
     truncate = 4.0  # scipy default
     sigma = (kernel_size - 1) / (2 * truncate)
-    return gaussian_filter1d(intensity.copy(), sigma=sigma, mode='nearest')
+    return gaussian_filter1d(intensity.copy(), sigma=sigma, mode="nearest")
 
 
 def detect_peaks(
@@ -318,7 +323,9 @@ def detect_peaks(
         {
             "wavelength": wavelengths[peak_indices],
             "amplitude": signal[peak_indices],
-            "prominence": properties.get("prominences", np.zeros_like(peak_indices, dtype=float)),
+            "prominence": properties.get(
+                "prominences", np.zeros_like(peak_indices, dtype=float)
+            ),
         }
     )
     return peaks_df.reset_index(drop=True)
@@ -337,7 +344,9 @@ def detect_valleys(
         {
             "wavelength": wavelengths[valley_indices],
             "amplitude": signal[valley_indices],
-            "prominence": properties.get("prominences", np.zeros_like(valley_indices, dtype=float)),
+            "prominence": properties.get(
+                "prominences", np.zeros_like(valley_indices, dtype=float)
+            ),
         }
     )
     return valleys_df.reset_index(drop=True)
@@ -408,15 +417,15 @@ def prepare_measurement(
     order = int(detrend_cfg.get("filter_order", 3))
     prominence = float(peak_cfg.get("default_prominence", 0.0001))
     height = peak_cfg.get("min_height")
-    
+
     # Filter to wavelength range of interest (default: 600-1120nm)
     wl_min = float(wavelength_range_cfg.get("min", 600))
     wl_max = float(wavelength_range_cfg.get("max", 1120))
-    
+
     # Apply wavelength range filter
     df_filtered = measurement_df[
-        (measurement_df["wavelength"] >= wl_min) & 
-        (measurement_df["wavelength"] <= wl_max)
+        (measurement_df["wavelength"] >= wl_min)
+        & (measurement_df["wavelength"] <= wl_max)
     ].reset_index(drop=True)
 
     wavelengths = df_filtered["wavelength"].to_numpy(dtype=float)
@@ -429,12 +438,31 @@ def prepare_measurement(
     resample_grid, resampled_reflectance = resample_uniform_grid(
         wavelengths, reflectance, num_points=num_points
     )
-    resampled_detrended = detrend_signal(resample_grid, resampled_reflectance, cutoff, order)
+    resampled_detrended = detrend_signal(
+        resample_grid, resampled_reflectance, cutoff, order
+    )
     fft_freqs, fft_values = compute_fft(
         resample_grid,
         resampled_detrended,
         window=phase_cfg.get("window", "hann"),
     )
+
+    # Compute quality metrics if enabled
+    quality_cfg = analysis_cfg.get("quality_metrics", {})
+    quality_report = None
+
+    if quality_cfg.get("enabled", True):
+        try:
+            from .quality_metrics import assess_spectrum_quality
+
+            quality_report = assess_spectrum_quality(
+                wavelengths,
+                reflectance,
+                prominence=prominence,
+                config=quality_cfg,
+            )
+        except ImportError:
+            pass  # Quality metrics module not available
 
     return PreparedMeasurement(
         wavelengths=wavelengths,
@@ -446,6 +474,7 @@ def prepare_measurement(
         resampled_detrended=resampled_detrended,
         fft_frequencies=fft_freqs,
         fft_spectrum=fft_values,
+        quality_report=quality_report,
     )
 
 
@@ -466,10 +495,14 @@ def prepare_theoretical_spectrum(
     cutoff = float(detrend_cfg.get("default_cutoff_frequency", 0.008))
     order = int(detrend_cfg.get("filter_order", 3))
     # Use lower prominence for theoretical to catch more peaks (theoretical peaks may be less prominent after detrending)
-    theoretical_prominence = float(peak_cfg.get("theoretical_prominence", peak_cfg.get("default_prominence", 0.0001)))
+    theoretical_prominence = float(
+        peak_cfg.get(
+            "theoretical_prominence", peak_cfg.get("default_prominence", 0.0001)
+        )
+    )
     prominence = float(peak_cfg.get("default_prominence", 0.0001))
     height = peak_cfg.get("min_height")
-    
+
     # Filter theoretical spectrum to wavelength range of interest (default: 600-1120nm)
     wl_min = float(wavelength_range_cfg.get("min", 600))
     wl_max = float(wavelength_range_cfg.get("max", 1120))
@@ -479,7 +512,7 @@ def prepare_theoretical_spectrum(
 
     # Interpolate theoretical to measurement wavelengths
     interpolated = np.interp(measurement.wavelengths, wavelengths, reflectance)
-    
+
     # Align theoretical to measured using linear regression (handles baseline + amplitude)
     # This makes the theoretical spectrum 'flow' with the measured spectrum visually
     aligned = align_spectrum_linear_regression(
@@ -489,24 +522,34 @@ def prepare_theoretical_spectrum(
         focus_min=wl_min,
         focus_max=wl_max,
     )
-    
+
     detrended = detrend_signal(measurement.wavelengths, aligned, cutoff, order)
-    
+
     # Try detecting peaks on both detrended and raw signals, then combine
     # Theoretical peaks might be more visible in raw signal or require lower threshold
-    peaks_detrended = detect_peaks(measurement.wavelengths, detrended, prominence=theoretical_prominence, height=height)
-    
+    peaks_detrended = detect_peaks(
+        measurement.wavelengths,
+        detrended,
+        prominence=theoretical_prominence,
+        height=height,
+    )
+
     # Also try raw signal with even lower prominence (catch peaks that detrending might reduce)
     # Use very low threshold (10% of theoretical prominence) to catch all possible peaks
-    peaks_raw = detect_peaks(measurement.wavelengths, aligned, prominence=theoretical_prominence * 0.1, height=height)
-    
+    peaks_raw = detect_peaks(
+        measurement.wavelengths,
+        aligned,
+        prominence=theoretical_prominence * 0.1,
+        height=height,
+    )
+
     # Combine peaks from both sources, removing duplicates (within 2nm tolerance)
     peak_list = []
     if len(peaks_detrended) > 0:
         peak_list.append(peaks_detrended)
     if len(peaks_raw) > 0:
         peak_list.append(peaks_raw)
-    
+
     if len(peak_list) > 0:
         all_peaks = pd.concat(peak_list, ignore_index=True)
         # Remove duplicate peaks (peaks within 2nm of each other)
@@ -516,7 +559,9 @@ def prepare_theoretical_spectrum(
             if not keep_mask[i]:
                 continue
             # Mark peaks within 2nm as duplicates (keep the one with higher prominence/amplitude)
-            distances = np.abs(all_peaks["wavelength"].to_numpy() - all_peaks.iloc[i]["wavelength"])
+            distances = np.abs(
+                all_peaks["wavelength"].to_numpy() - all_peaks.iloc[i]["wavelength"]
+            )
             duplicates = np.where((distances < 2.0) & (distances > 1e-6))[0]
             if len(duplicates) > 0:
                 # Keep the peak with highest amplitude among duplicates
@@ -524,14 +569,16 @@ def prepare_theoretical_spectrum(
                 best_idx = all_peaks.iloc[candidates]["amplitude"].idxmax()
                 keep_mask[candidates] = False
                 keep_mask[best_idx] = True
-        
+
         peaks = all_peaks[keep_mask].reset_index(drop=True)
     else:
         # No peaks found - return empty dataframe with correct structure
         peaks = pd.DataFrame(columns=["wavelength", "amplitude", "prominence"])
 
     # Also align resampled spectrum for FFT analysis consistency
-    resampled_interp = np.interp(measurement.resampled_wavelengths, wavelengths, reflectance)
+    resampled_interp = np.interp(
+        measurement.resampled_wavelengths, wavelengths, reflectance
+    )
     resampled = align_spectrum_linear_regression(
         resampled_interp,
         measurement.resampled_reflectance,
@@ -567,48 +614,56 @@ def align_spectrum_linear_regression(
 ) -> np.ndarray:
     """
     Align theoretical spectrum to measured using linear regression.
-    
+
     Fits: theoretical_aligned = a * theoretical + b
     This handles both amplitude AND baseline differences, making the
     theoretical spectrum 'flow' with the measured spectrum visually.
-    
+
     Args:
         theoretical: Theoretical reflectance values
         measured: Measured reflectance values (same length as theoretical)
         wavelengths: Wavelength array (same length as theoretical/measured)
         focus_min: Minimum wavelength for focus region (nm)
         focus_max: Maximum wavelength for focus region (nm)
-        
+
     Returns:
         Aligned theoretical spectrum (same length as input)
     """
     mask = (wavelengths >= focus_min) & (wavelengths <= focus_max)
-    
+
     if mask.sum() < 10:
         # Fallback to simple mean scaling if insufficient data
-        scale = np.mean(measured) / np.mean(theoretical) if np.mean(theoretical) > 0 else 1.0
+        scale = (
+            np.mean(measured) / np.mean(theoretical)
+            if np.mean(theoretical) > 0
+            else 1.0
+        )
         return theoretical * scale
-    
+
     meas_fit = measured[mask]
     theo_fit = theoretical[mask]
-    
+
     if np.std(theo_fit) < 1e-10:
         return theoretical
-    
+
     # Linear regression: measured ≈ a * theoretical + b
     design_matrix = np.vstack([theo_fit, np.ones_like(theo_fit)]).T
     try:
         coefficients, _, _, _ = np.linalg.lstsq(design_matrix, meas_fit, rcond=None)
         scale_factor, offset = coefficients
-        
+
         # Apply transformation to full spectrum
         aligned = scale_factor * theoretical + offset
-        
+
         # Ensure non-negative reflectance
         return np.clip(aligned, 0, None)
     except Exception:
         # Fallback to simple scaling
-        scale = np.mean(measured) / np.mean(theoretical) if np.mean(theoretical) > 0 else 1.0
+        scale = (
+            np.mean(measured) / np.mean(theoretical)
+            if np.mean(theoretical) > 0
+            else 1.0
+        )
         return theoretical * scale
 
 
@@ -621,32 +676,36 @@ def align_spectrum_proportional(
 ) -> np.ndarray:
     """
     Scale theoretical spectrum using optimal least-squares proportional scaling.
-    
+
     Minimizes ||measured - scale * theoretical||^2 in the focus region.
     Simpler than linear regression but doesn't correct baseline offset.
-    
+
     Args:
         theoretical: Theoretical reflectance values
         measured: Measured reflectance values (same length as theoretical)
         wavelengths: Wavelength array (same length as theoretical/measured)
         focus_min: Minimum wavelength for focus region (nm)
         focus_max: Maximum wavelength for focus region (nm)
-        
+
     Returns:
         Scaled theoretical spectrum
     """
     mask = (wavelengths >= focus_min) & (wavelengths <= focus_max)
-    
+
     if mask.sum() < 10:
-        scale = np.mean(measured) / np.mean(theoretical) if np.mean(theoretical) > 0 else 1.0
+        scale = (
+            np.mean(measured) / np.mean(theoretical)
+            if np.mean(theoretical) > 0
+            else 1.0
+        )
         return theoretical * scale
-    
+
     meas_focus = measured[mask]
     theo_focus = theoretical[mask]
-    
+
     if np.std(theo_focus) < 1e-10:
         return theoretical
-    
+
     # Optimal scale: scale = (measured · theoretical) / (theoretical · theoretical)
     scale = np.dot(meas_focus, theo_focus) / np.dot(theo_focus, theo_focus)
     return theoretical * scale
