@@ -3683,17 +3683,17 @@ def main():
                     """
                 The **Quality Metrics** system assesses several key aspects of the measured signal to ensure reliability:
                 
-                - **SNR**: Quantifies measurement quality by comparing signal strength (interference fringes) to baseline noise.
-                  - **Implementation**: Signal is detrended first to separate interference fringes from spectral envelope.
-                  - **Formula**: (max(signal) - mean(baseline)) / std(baseline) (HORIBA FSD Standard on detrended data).
-                  - **Thresholds**: Excellent ≥ 2.5, Good ≥ 1.5, Marginal ≥ 1.0, Reject < 1.0. (Empirically derived for detrended spectra).
+                - **SNR**: Quantifies measurement quality on the detrended signal in the 600–1120 nm band.
+                  - **Implementation**: Detrend (high-pass), crop to band; noise = std(diff(detrended))/√2 over the band (no edge baseline).
+                  - **Formula**: SNR = (peak-to-peak of detrended) / noise_std.
+                  - **Thresholds**: Excellent ≥ 2.5, Good ≥ 1.5, Marginal ≥ 1.0, Reject < 1.0.
                 - **Peak Quality**: Checks for a minimum peak count and consistency in peak prominence and spacing. Peaks are detected on the detrended signal.
                 - **Signal Integrity**: Validates the dynamic range and ensures baseline drift is within acceptable limits.
                 - **Spectral Completeness**: Verifies that the measurement covers the required wavelength span (600-1200nm) with sufficient point density.
                 - **Fit Quality**: Categorizes how well the current theoretical model matches the measurement (Excellent, Good, Marginal, Poor).
                 
                 **Note on Sliding Window SNR Chart:**
-                The local SNR profile chart above uses a **'Robust' high-frequency noise method** (residue of signal differences) to detect hardware artifacts or noise floor variations in small regions. This differs from the **'Global' detrended SNR** described above, as detrending inside small windows is unstable.
+                Same detrended signal as global SNR; detrend once over 600–1120 nm, then compute SNR in each sliding window. No per-window detrending.
                 
                 Low quality scores usually indicate measurement artifacts, excessive noise, or physical samples that don't match our current optical model.
                 """

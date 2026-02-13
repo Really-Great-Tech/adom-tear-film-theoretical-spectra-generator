@@ -3634,11 +3634,10 @@ with tabs[2]:
             with st.expander("📚 About Quality Metrics", expanded=False):
                 st.markdown("""
                 ### Metric 1: Signal-to-Noise Ratio (SNR)
-                Quantifies measurement quality by comparing signal strength to baseline noise.
-                - **Formula (HORIBA FSD Standard)**: `SNR = (max(signal) - mean(baseline)) / std(baseline)`
-                - **Implementation**: Signal is detrended first to separate interference fringes from spectral envelope
-                - **Signal region**: Center 60% of wavelength range (e.g., 700-1000nm for 600-1120nm range)
-                - **Baseline region**: First and last 10% of wavelength range (edges)
+                Quantifies measurement quality using smooth/residual separation for consistent noise estimate.
+                - **Method**: Detrend (high-pass) → boxcar smooth (default 11 nm, Shlomo) → residual = detrended − smooth. Signal = ptp(smooth), noise = std(residual).
+                - **Band**: 600–1120 nm only. Noisy spectra get lower SNR because noise stays in the residual and no longer inflates the "signal."
+                - **Config**: `snr_boxcar_width_nm` (11 or 17 nm), `use_smooth_residual_snr` in analysis.quality_metrics.
                 - **Thresholds (Calibrated for Detrended Interference Spectra)**:
                   - SNR ≥ 2.5: **Excellent** (Top ~15%)
                   - SNR 1.5-2.5: **Good** (Top ~50%)
@@ -3674,87 +3673,75 @@ with tabs[2]:
 
                 ---
                 **Note on Sliding Window SNR:**
-                The local SNR chart below uses a **'Robust' high-frequency noise method** (residue of signal differences). This calculation focuses on detecting hardware artifacts or noise floor variations in small regions. It differs from the **'Global' detrended SNR** above, as detrending inside small windows is unstable.
+                The local SNR chart uses the **same detrended signal** as the global SNR: we detrend once over the full band (600–1120 nm), then compute SNR in each sliding window (signal range / first-difference noise in that window). No per-window detrending.
                 """)
 
-            # Show spectrum plot with quality overlay
-            st.markdown("### 📈 Spectrum with Quality Regions")
+            # Show measured (detrended), smoothed, and residual in SNR band (same pipeline as SNR)
+            st.markdown("### 📈 SNR band: Measured (detrended), Smoothed & Residual")
 
-            fig = go.Figure()
+            snr_metric = report.metrics.get("snr")
+            boxcar_nm = 11.0
+            boxcar_repeats = 2
+            if snr_metric and snr_metric.details:
+                boxcar_nm = float(snr_metric.details.get("boxcar_width_nm", 11.0))
+                boxcar_repeats = int(snr_metric.details.get("boxcar_repeats", 2))
 
-            # Add measured spectrum
-            fig.add_trace(
-                go.Scatter(
-                    x=wavelengths,
-                    y=measured,
-                    mode="lines",
-                    name="Measured Spectrum",
-                    line=dict(color="#1e40af", width=2),
-                )
+            from src.analysis.snr import get_snr_smooth_residual_curves
+
+            wl_band, detrended, smooth, residual = get_snr_smooth_residual_curves(
+                wavelengths,
+                measured,
+                band_nm=(600.0, 1120.0),
+                detrend_cutoff=0.008,
+                detrend_order=3,
+                boxcar_width_nm=boxcar_nm,
+                boxcar_repeats=boxcar_repeats,
             )
 
-            # Add fitted spectrum if available
-            if fitted_spectrum is not None:
+            if len(wl_band) > 0:
+                fig = go.Figure()
                 fig.add_trace(
                     go.Scatter(
-                        x=wavelengths,
-                        y=fitted_spectrum,
+                        x=wl_band,
+                        y=detrended,
                         mode="lines",
-                        name="Fitted Spectrum",
-                        line=dict(color="#dc2626", width=2, dash="dash"),
+                        name="Measured (detrended)",
+                        line=dict(color="#1e40af", width=2),
                     )
                 )
-
-            # Highlight SNR regions
-            snr_metric = report.metrics.get("snr")
-            if snr_metric:
-                n = len(wavelengths)
-                edge_size = int(n * 0.1)
-                center_start = int(n * 0.2)
-                center_end = n - center_start
-
-                # Baseline regions (edges)
-                fig.add_vrect(
-                    x0=wavelengths[0],
-                    x1=wavelengths[edge_size],
-                    fillcolor="rgba(255, 0, 0, 0.1)",
-                    layer="below",
-                    line_width=0,
-                    annotation_text="Baseline",
-                    annotation_position="top left",
+                fig.add_trace(
+                    go.Scatter(
+                        x=wl_band,
+                        y=smooth,
+                        mode="lines",
+                        name=f"Smoothed (boxcar {boxcar_nm:.0f} nm, {boxcar_repeats} pass)",
+                        line=dict(color="#16a34a", width=2, dash="dash"),
+                    )
                 )
-                fig.add_vrect(
-                    x0=wavelengths[-edge_size],
-                    x1=wavelengths[-1],
-                    fillcolor="rgba(255, 0, 0, 0.1)",
-                    layer="below",
-                    line_width=0,
-                    annotation_text="Baseline",
-                    annotation_position="top right",
+                fig.add_trace(
+                    go.Scatter(
+                        x=wl_band,
+                        y=residual,
+                        mode="lines",
+                        name="Residual (detrended − smoothed)",
+                        line=dict(color="#dc2626", width=1.5),
+                    )
                 )
-
-                # Signal region (center)
-                fig.add_vrect(
-                    x0=wavelengths[center_start],
-                    x1=wavelengths[center_end],
-                    fillcolor="rgba(0, 255, 0, 0.05)",
-                    layer="below",
-                    line_width=0,
-                    annotation_text="Signal Region",
-                    annotation_position="top",
+                fig.update_layout(
+                    title=f"SNR pipeline: 600–1120 nm band (boxcar {boxcar_nm:.0f} nm, {boxcar_repeats} passes)",
+                    xaxis_title="Wavelength (nm)",
+                    yaxis_title="Amplitude",
+                    hovermode="x unified",
+                    template="plotly_white",
+                    height=500,
+                    showlegend=True,
                 )
-
-            fig.update_layout(
-                title="Measured Spectrum with Quality Assessment Regions",
-                xaxis_title="Wavelength (nm)",
-                yaxis_title="Reflectance",
-                hovermode="x unified",
-                template="plotly_white",
-                height=500,
-                showlegend=True,
-            )
-
-            st.plotly_chart(fig, use_container_width=True)
+                st.plotly_chart(fig, use_container_width=True)
+                st.caption(
+                    "Signal = ptp(smoothed), noise = std(residual). This is what drives the global SNR."
+                )
+            else:
+                st.warning("Insufficient data in 600–1120 nm band for SNR curves.")
 
             # --- SLIDING WINDOW SNR CHART ---
             snr_metric = report.metrics.get("snr")
@@ -3766,15 +3753,12 @@ with tabs[2]:
                     st.markdown("---")
                     st.markdown("### 🏁 Local Signal Quality")
                     st.info(
-                        f"**Sliding Window SNR**: Calculated using a {sw_window:.0f}nm sliding window. "
-                        "This helps identify specific wavelength regions where the signal is degraded by hardware noise or sensor saturation. "
-                        "*(Note: This local SNR uses a 'Robust' high-frequency noise method, which differs from the 'Global' detrended SNR above. Detrending inside small windows is avoided for stability.)*"
+                        f"**Sliding Window SNR**: Signal = global ptp(smooth); noise = std(residual) per window. "
+                        f"{sw_window:.0f} nm windows (high = clean, low = noisy)."
                     )
-
                     fig_sw = go.Figure()
 
                     # 1. The Intensity Shade (Bar underlay)
-                    # Use a bar chart with bargap=0 to create a continuous intensity area
                     fig_sw.add_trace(
                         go.Bar(
                             x=sw_data["centers"],
@@ -3818,16 +3802,6 @@ with tabs[2]:
                         )
                     )
 
-                    # Add threshold line (Robust Gate: 150.0 is Marginal)
-                    fig_sw.add_hline(
-                        y=150.0,
-                        line_dash="dash",
-                        line_color="#dc2626",
-                        line_width=2,
-                        annotation_text="Threshold (150.0)",
-                        annotation_position="bottom right",
-                    )
-
                     fig_sw.update_layout(
                         title=f"SNR vs Wavelength ({sw_window:.0f}nm Sliding Windows)",
                         xaxis_title="Wavelength (nm)",
@@ -3835,13 +3809,12 @@ with tabs[2]:
                         template="plotly_white",
                         height=450,
                         hovermode="closest",
-                        bargap=0,  # Makes bars touch for continuous look
+                        bargap=0,
                         margin=dict(l=20, r=80, t=50, b=20),
                     )
 
                     st.plotly_chart(fig_sw, use_container_width=True)
 
-                    # Metrics beneath the chart
                     m_cols = st.columns(3)
                     with m_cols[0]:
                         st.markdown(
