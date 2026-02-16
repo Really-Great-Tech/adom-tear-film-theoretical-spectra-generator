@@ -704,21 +704,14 @@ def calculate_peak_based_score(
     c_count = float(peak_count_score)
     c_amplitude = float(amplitude_score)
     
-    # Tuned weights from optimize_score_weights (weight_id=97: 11.75% mean dev, 36% under 10%)
-    # Old weights (commented out):
-    # composite_score = (
-    #     0.25 * c_rmse +
-    #     0.20 * c_amplitude +
-    #     0.15 * c_corr +
-    #     0.15 * c_delta +
-    #     0.25 * c_count
-    # )
+    # Old weights (reverted for last-two-cycles seed+tune; tuned weights gave 0 under 10% on full test)
+    # Tuned weights (commented out): 0.021 rmse, 0.126 amplitude, 0.016 corr, 0.414 delta, 0.423 count
     composite_score = (
-        0.021 * c_rmse +
-        0.126 * c_amplitude +
-        0.016 * c_corr +
-        0.414 * c_delta +
-        0.423 * c_count
+        0.25 * c_rmse +
+        0.20 * c_amplitude +
+        0.15 * c_corr +
+        0.15 * c_delta +
+        0.25 * c_count
     )
     
     # CRITICAL: Penalty for peak count mismatch
