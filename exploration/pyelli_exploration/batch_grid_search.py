@@ -14,6 +14,7 @@ sys.path.insert(0, str(PROJECT_ROOT))
 from exploration.pyelli_exploration.pyelli_grid_search import (
     PyElliGridSearch,
     calculate_peak_based_score,
+    mape_pyelli_vs_lta_normalized,
 )
 from exploration.pyelli_exploration.pyelli_utils import (
     load_measured_spectrum,
@@ -50,21 +51,8 @@ def calculate_deviation_score(
             wl_fit, meas_fit, bestfit_aligned
         )
 
-        # 1. MAPE (Mean Absolute Percentage Error)
-        lta_abs = np.abs(bestfit_aligned)
-        valid_mask = lta_abs > 1e-10
-        if valid_mask.any():
-            mape = (
-                float(
-                    np.mean(
-                        np.abs(pyelli_theo[valid_mask] - bestfit_aligned[valid_mask])
-                        / lta_abs[valid_mask]
-                    )
-                )
-                * 100
-            )
-        else:
-            mape = 0.0
+        # 1. MAPE (normalize to unit L2 first = shape comparison, scale-invariant)
+        mape = mape_pyelli_vs_lta_normalized(pyelli_theo, bestfit_aligned)
 
         # 2. Peak match rate deviation
         pyelli_matched = float(results_obj.matched_peaks)

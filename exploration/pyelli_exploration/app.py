@@ -113,6 +113,8 @@ from exploration.pyelli_exploration.pyelli_utils import (
 from exploration.pyelli_exploration.pyelli_grid_search import (
     PyElliGridSearch,
     calculate_peak_based_score,
+    compute_deviation_vs_measured,
+    mape_pyelli_vs_lta_normalized,
 )
 from src.analysis.measurement_utils import (
     detrend_signal,
@@ -1515,6 +1517,7 @@ if selected_file and Path(selected_file).exists():
                 st.session_state.autofit_results = results
                 # Set selected rank to 1 (best result) when grid search completes
                 st.session_state.selected_rank = 1
+                st.session_state.selected_rank_dropdown = 1  # keep dropdown in sync
                 # Store the update to be applied before widgets are created on next run
                 st.session_state.pending_update = {
                     'lipid': best.lipid_nm,
@@ -1646,6 +1649,30 @@ if selected_file and Path(selected_file).exists():
             'show_both_theoretical': show_both_theoretical,
             'has_bestfit': bestfit_display is not None,
         }
+        # Deviation vs measured: PyElli theoretical (compute from current spectra)
+        deviation_vs_measured = None
+        if theoretical_display is not None and len(theoretical_display) >= 10:
+            deviation_vs_measured = compute_deviation_vs_measured(wl_display, meas_display, theoretical_display)
+        # Prefer grid-search value when current params match a result (same formula)
+        autofit = st.session_state.get('autofit_results')
+        if autofit:
+            for r in autofit:
+                if r.lipid_nm == display_lipid and r.aqueous_nm == display_aqueous and r.mucus_nm == display_mucus:
+                    if getattr(r, 'deviation_vs_measured', None) is not None:
+                        deviation_vs_measured = r.deviation_vs_measured
+                    break
+        computed_data['deviation_vs_measured'] = deviation_vs_measured
+        # Deviation vs measured: LTA BestFit theoretical (when available)
+        deviation_vs_measured_bestfit = None
+        if bestfit_display is not None and len(bestfit_display) >= 10:
+            deviation_vs_measured_bestfit = compute_deviation_vs_measured(wl_display, meas_display, bestfit_display)
+        computed_data['deviation_vs_measured_bestfit'] = deviation_vs_measured_bestfit
+        # Which deviation to show in single-metrics view (matches displayed theoretical)
+        computed_data['deviation_vs_measured_display'] = (
+            deviation_vs_measured_bestfit
+            if (show_bestfit and not show_both_theoretical and bestfit_display is not None)
+            else deviation_vs_measured
+        )
     except Exception as e:
         st.error(f'Error loading spectrum: {e}')
         computed_data = None
@@ -1874,7 +1901,7 @@ with tabs[0]:
         if show_both_metrics:
             # Show both PyElli and BestFit metrics side by side
             st.markdown('#### PyElli Theoretical')
-            mcols_pyelli = st.columns(5)
+            mcols_pyelli = st.columns(6)
             with mcols_pyelli[0]:
                 score_icon = '🟢' if computed_data['pyelli_score_result']['score'] >= 0.7 else ('🟡' if computed_data['pyelli_score_result']['score'] >= 0.5 else '🔴')
                 st.metric('Score', f'{score_icon} {computed_data["pyelli_score_result"]["score"]:.3f}')
@@ -1887,10 +1914,13 @@ with tabs[0]:
                 matched_peaks = int(computed_data['pyelli_score_result'].get('matched_peaks', 0))
                 st.metric('Matched Peaks', f'{matched_peaks}')
             with mcols_pyelli[4]:
+                dvm = computed_data.get('deviation_vs_measured')
+                st.metric('Dev vs Meas', f'{dvm:.2f}%' if dvm is not None else '-')
+            with mcols_pyelli[5]:
                 st.metric('Parameters', f'L={computed_data["display_lipid"]}, A={computed_data["display_aqueous"]}, R={computed_data["display_mucus"]:.0f}Å')
             
             st.markdown('#### LTA BestFit')
-            mcols_bestfit = st.columns(4)
+            mcols_bestfit = st.columns(5)
             with mcols_bestfit[0]:
                 score_icon = '🟢' if computed_data['bestfit_score_result']['score'] >= 0.7 else ('🟡' if computed_data['bestfit_score_result']['score'] >= 0.5 else '🔴')
                 st.metric('Score', f'{score_icon} {computed_data["bestfit_score_result"]["score"]:.3f}')
@@ -1902,6 +1932,9 @@ with tabs[0]:
             with mcols_bestfit[3]:
                 matched_peaks = int(computed_data['bestfit_score_result'].get('matched_peaks', 0))
                 st.metric('Matched Peaks', f'{matched_peaks}')
+            with mcols_bestfit[4]:
+                dvm_bf = computed_data.get('deviation_vs_measured_bestfit')
+                st.metric('Dev vs Meas', f'{dvm_bf:.2f}%' if dvm_bf is not None else '-')
             
             # === DEVIATION SCORE: PyElli vs LTA Comparison ===
             st.markdown('---')
@@ -1917,13 +1950,8 @@ with tabs[0]:
                 pyelli_theo_aligned = pyelli_theo[:min_len]
                 lta_bestfit_aligned = lta_bestfit[:min_len]
                 
-                # 1. MAPE between PyElli and LTA spectra (avoid division by zero)
-                lta_abs = np.abs(lta_bestfit_aligned)
-                valid_mask = lta_abs > 1e-10
-                if valid_mask.any():
-                    mape = float(np.mean(np.abs(pyelli_theo_aligned[valid_mask] - lta_bestfit_aligned[valid_mask]) / lta_abs[valid_mask])) * 100
-                else:
-                    mape = 0.0
+                # 1. MAPE between PyElli and LTA (normalize to unit L2 first = shape comparison, scale-invariant)
+                mape = mape_pyelli_vs_lta_normalized(pyelli_theo_aligned, lta_bestfit_aligned)
                 
                 # 2. Peak match rate deviation
                 # Compare PyElli matched peaks to LTA's peak count (as reference)
@@ -1992,15 +2020,14 @@ with tabs[0]:
                 # Explanation
                 st.markdown(f'''
                 <div style="background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 8px; padding: 12px; margin-top: 12px; font-size: 0.85rem; color: #64748b;">
-                    <strong>Target:</strong> ≤10% deviation indicates PyElli's best fit closely matches LTA's best fit.<br>
-                    <strong>Formula:</strong> 40% × MAPE + 30% × Peak Match Δ + 30% × Alignment Δ
+                Formula:</strong> 40% × MAPE + 30% × Peak Match Δ + 30% × Alignment Δ.
                 </div>
                 ''', unsafe_allow_html=True)
             else:
                 st.info('Deviation score requires both PyElli theoretical and LTA BestFit spectra to be available.')
         else:
             # Show single set of metrics
-            mcols = st.columns(7)
+            mcols = st.columns(8)
             with mcols[0]:
                 st.metric('Lipid', f'{computed_data["display_lipid"]} nm')
             with mcols[1]:
@@ -2019,6 +2046,9 @@ with tabs[0]:
             with mcols[6]:
                 matched_peaks = int(score_result.get('matched_peaks', 0))
                 st.metric('Matched Peaks', f'{matched_peaks}')
+            with mcols[7]:
+                dvm = computed_data.get('deviation_vs_measured_display')
+                st.metric('Dev vs Meas', f'{dvm:.2f}%' if dvm is not None else '-')
         
         # === DRIFT ANALYSIS (Cycle Jump Indicators) ===
         # Get drift metrics from the appropriate score result
@@ -2094,6 +2124,17 @@ with tabs[0]:
                               getattr(result, 'amplitude_drift_r_squared', 0) > th_r2)
                 return '⚠️' if (peak_flagged or amp_flagged) else '✅'
             
+            def fmt_dev_vs_meas(result):
+                """Format deviation vs measured: X.XX% or '-' if not set."""
+                d = getattr(result, 'deviation_vs_measured', None)
+                return f'{d:.2f}%' if d is not None else '-'
+
+            # Top 10 sorted by Dev vs Meas (lowest first) so rank 1 = best by deviation when score ties
+            display_results = sorted(
+                st.session_state.autofit_results,
+                key=lambda r: (r.deviation_vs_measured if getattr(r, 'deviation_vs_measured', None) is not None else float('inf'))
+            )
+
             results_df = pd.DataFrame([{
                 'Rank': i+1,
                 'Lipid (nm)': r.lipid_nm,
@@ -2104,52 +2145,40 @@ with tabs[0]:
                 'RMSE': f'{r.rmse:.5f}',
                 'Osc Ratio': f'{r.oscillation_ratio:.2f}',  # CRITICAL: Show amplitude match
                 'Matched': r.matched_peaks,
+                'Dev vs Meas': fmt_dev_vs_meas(r),
                 'Drift': get_drift_flag(r),  # Cycle jump indicator
                 'Quality': get_quality(r.score)
-            } for i, r in enumerate(st.session_state.autofit_results)])
+            } for i, r in enumerate(display_results)])
             
+            st.caption('Ordered by Dev vs Meas (lowest first). Rank 1 = best deviation among top fits.')
             st.dataframe(results_df, use_container_width=True, hide_index=True)
             
             # Dropdown to select which rank to display in plots
             st.markdown('---')
             st.markdown('### 🎯 Select Result to Display')
             
-            # Get current selected rank from session state, default to 1
-            current_selected_rank = st.session_state.get('selected_rank', 1)
-            max_rank = min(len(st.session_state.autofit_results), 10)
+            # Dropdown is source of truth: only init key when missing so we don't overwrite user's choice on rerun
+            if 'selected_rank_dropdown' not in st.session_state:
+                st.session_state.selected_rank_dropdown = st.session_state.get('selected_rank', 1)
+            max_rank = min(len(display_results), 10)
             rank_options = list(range(1, max_rank + 1))
-            
-            # Sync dropdown key with selected_rank before creating the widget (e.g. after "Select Rank N" in Amplitude tab).
-            # Setting the key after the widget is instantiated causes a Streamlit error, so we set it here.
-            if 'selected_rank_dropdown' not in st.session_state or st.session_state.selected_rank_dropdown != current_selected_rank:
-                st.session_state.selected_rank_dropdown = current_selected_rank
-            
-            # Find index for current selection (default to 0 if not in range)
-            default_index = min(current_selected_rank - 1, len(rank_options) - 1) if current_selected_rank in rank_options else 0
-            
+
             selected_rank = st.selectbox(
                 'Choose a rank to display in plots:',
                 options=rank_options,
-                index=default_index,
                 key='selected_rank_dropdown',
                 help='Select which grid search result to display in the Spectrum Comparison and Amplitude Analysis plots. The parameter sliders and plots will update to match the selected rank.'
             )
-            
-            # Update parameters when rank is selected
-            if 1 <= selected_rank <= len(st.session_state.autofit_results):
-                selected_result = st.session_state.autofit_results[selected_rank - 1]
-                
-                # Check if rank changed
+            # Keep selected_rank in session state in sync with dropdown (dropdown is source of truth here)
+            current_selected_rank = st.session_state.get('selected_rank', 1)
+            if 1 <= selected_rank <= len(display_results):
+                selected_result = display_results[selected_rank - 1]
                 if selected_rank != current_selected_rank:
-                    # Update selected rank in session state
                     st.session_state.selected_rank = selected_rank
-                    # Set forced values for the sliders
                     st.session_state.forced_lipid = float(selected_result.lipid_nm)
                     st.session_state.forced_aqueous = float(selected_result.aqueous_nm)
                     st.session_state.forced_mucus = float(selected_result.mucus_nm)
-                    # Increment widget key version to force sliders to reset
                     st.session_state.widget_key_version += 1
-                    # Trigger rerun to update plots and sliders
                     st.rerun()
             
             # PDF Export button
@@ -2166,7 +2195,7 @@ with tabs[0]:
                     with st.spinner(f'Generating PDF report for top {pdf_top_n} fits...'):
                         try:
                             pdf_bytes = generate_pyelli_pdf_report(
-                                autofit_results=st.session_state.autofit_results,
+                                autofit_results=display_results,
                                 measurement_file=Path(selected_file).name,
                                 measured_wavelengths=computed_data['wavelengths'],
                                 measured_spectrum=computed_data['measured'],
@@ -2603,7 +2632,12 @@ with tabs[1]:
                     
                     # Gate warning + alternatives on rank 1 being flagged (not current rank), so the section
                     # stays visible when user selects an alternative rank and they can switch between them.
-                    rank1 = st.session_state.autofit_results[0] if st.session_state.autofit_results else None
+                    # Use same Dev-vs-Meas sorted order as Spectrum tab (rank 1 = lowest deviation)
+                    amp_display_results = sorted(
+                        st.session_state.autofit_results,
+                        key=lambda r: (r.deviation_vs_measured if getattr(r, 'deviation_vs_measured', None) is not None else float('inf'))
+                    ) if st.session_state.autofit_results else []
+                    rank1 = amp_display_results[0] if amp_display_results else None
                     if rank1 is not None and hasattr(rank1, 'peak_drift_slope'):
                         rank1_peak_flagged = (abs(rank1.peak_drift_slope) > th_peak_amp and rank1.peak_drift_r_squared > th_r2_amp)
                         rank1_amp_flagged = (abs(rank1.amplitude_drift_slope) > th_amp_amp and rank1.amplitude_drift_r_squared > th_r2_amp)
@@ -2620,7 +2654,7 @@ with tabs[1]:
                         st.warning(f'⚠️ **Cycle Jump Warning:** Rank 1 has systematic {" and ".join(flagged_types)}. It may be a wrong frequency multiple.')
                         
                         # === ALTERNATIVE OPTIONS: Show top unflagged results (shortcut to ranks in table); always visible when rank 1 is flagged ===
-                        if st.session_state.autofit_results and len(st.session_state.autofit_results) > 1:
+                        if len(amp_display_results) > 1:
                             # Find alternatives without drift flags (skip rank 1), using sidebar thresholds
                             th_peak_alt = st.session_state.get('drift_peak_slope_threshold', 0.05)
                             th_amp_alt = st.session_state.get('drift_amplitude_slope_threshold', 0.01)
@@ -2632,7 +2666,7 @@ with tabs[1]:
                                 a = abs(getattr(r, 'amplitude_drift_slope', 0)) > th_amp_alt and getattr(r, 'amplitude_drift_r_squared', 0) > th_r2_alt
                                 return p or a
                             unflagged_alternatives = []
-                            for i, r in enumerate(st.session_state.autofit_results[1:10], start=2):  # Ranks 2-10
+                            for i, r in enumerate(amp_display_results[1:10], start=2):  # Ranks 2-10 in display order
                                 if not _is_drift_flagged(r):
                                     unflagged_alternatives.append((i, r))
                                 if len(unflagged_alternatives) >= 4:
@@ -2661,6 +2695,7 @@ with tabs[1]:
                                         ''', unsafe_allow_html=True)
                                         if st.button(f'Select Rank {rank}', key=f'select_alt_{rank}', use_container_width=True):
                                             st.session_state.selected_rank = rank
+                                            st.session_state.selected_rank_dropdown = rank  # keep dropdown in sync
                                             st.session_state.forced_lipid = result.lipid_nm
                                             st.session_state.forced_aqueous = result.aqueous_nm
                                             st.session_state.forced_mucus = result.mucus_nm

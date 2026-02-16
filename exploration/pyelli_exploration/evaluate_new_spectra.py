@@ -31,6 +31,7 @@ from exploration.pyelli_exploration.pyelli_utils import (
 from exploration.pyelli_exploration.pyelli_grid_search import (
     PyElliGridSearch,
     calculate_peak_based_score,
+    mape_pyelli_vs_lta_normalized,
 )
 from src.analysis.measurement_utils import detrend_signal, detect_peaks
 from src.analysis.metrics import _match_peaks
@@ -100,13 +101,8 @@ def calculate_deviation_score(
     pyelli_aligned = pyelli_theo[:min_len]
     lta_aligned = lta_bestfit[:min_len]
     
-    # 1. MAPE between PyElli and LTA spectra (avoid division by zero)
-    lta_abs = np.abs(lta_aligned)
-    valid_mask = lta_abs > 1e-10
-    if valid_mask.any():
-        mape = float(np.mean(np.abs(pyelli_aligned[valid_mask] - lta_aligned[valid_mask]) / lta_abs[valid_mask])) * 100
-    else:
-        mape = 0.0
+    # 1. MAPE between PyElli and LTA (normalize to unit L2 first = shape comparison, scale-invariant)
+    mape = mape_pyelli_vs_lta_normalized(pyelli_aligned, lta_aligned)
     
     # 2. Peak match rate deviation
     # Compare PyElli matched peaks to LTA's peak count (as reference)
