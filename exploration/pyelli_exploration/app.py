@@ -14,9 +14,9 @@ import logging
 import sys
 from pathlib import Path
 import time
-from concurrent.futures import ThreadPoolExecutor
 import warnings
 import re
+from concurrent.futures import ThreadPoolExecutor
 
 import numpy as np
 import pandas as pd
@@ -116,6 +116,14 @@ from exploration.pyelli_exploration.pyelli_grid_search import (
     compute_deviation_vs_measured,
     mape_pyelli_vs_lta_normalized,
 )
+from exploration.pyelli_exploration.backend_client import (
+    BACKEND_REQUIRED_MESSAGE,
+    get_backend_url,
+    post_grid_search as backend_post_grid_search,
+    post_theoretical as backend_post_theoretical,
+    post_align_spectra as backend_post_align_spectra,
+    result_dict_to_view,
+)
 from src.analysis.measurement_utils import (
     detrend_signal,
     boxcar_smooth,
@@ -202,6 +210,13 @@ if 'grid_mu_max' not in st.session_state:
     st.session_state.grid_mu_max = 7000.0
 if 'grid_mu_step' not in st.session_state:
     st.session_state.grid_mu_step = 100.0
+
+# Require backend: app must use backend at all times; fail fast with clear error if not configured
+try:
+    get_backend_url()
+except RuntimeError:
+    st.error(BACKEND_REQUIRED_MESSAGE)
+    st.stop()
 
 
 def validate_material_file(uploaded_file) -> tuple[bool, str, pd.DataFrame | None]:
@@ -1441,22 +1456,10 @@ if selected_file and Path(selected_file).exists():
         wl_mask = (wavelengths >= wavelength_range[0]) & (wavelengths <= wavelength_range[1])
         wl_display = wavelengths[wl_mask]
         meas_display = measured[wl_mask]
-        
-        grid_search = PyElliGridSearch(
-            MATERIALS_PATH,
-            lipid_file=st.session_state.selected_lipid_material,
-            water_file=st.session_state.selected_water_material,
-            mucus_file=st.session_state.selected_mucus_material,
-            substratum_file=st.session_state.selected_substratum_material,
-            custom_materials=st.session_state.custom_materials,
-        )
-        
-        # Run grid search if button pressed
+
+        # Run grid search if button pressed (always via backend)
         if run_autofit:
             start_time = time.perf_counter()
-            
-            # Capture session state values BEFORE entering thread (main thread)
-            # This ensures we use the correct values even if session_state isn't thread-safe
             captured_lipid_range = (
                 st.session_state.get('grid_lipid_min', 9.0),
                 st.session_state.get('grid_lipid_max', 250.0),
@@ -1472,60 +1475,58 @@ if selected_file and Path(selected_file).exists():
                 st.session_state.get('grid_mu_max', 7000.0),
                 st.session_state.get('grid_mu_step', 100.0),
             )
-            
-            def _run_search():
-                return grid_search.run_grid_search(
-                    wavelengths, measured,
-                    lipid_range=captured_lipid_range,
-                    aqueous_range=captured_aqueous_range,
-                    roughness_range=captured_roughness_range,
-                    top_k=10,
-                    enable_roughness=True,
-                    search_strategy='Dynamic Search',
-                    max_combinations=30000,
+
+            progress_placeholder.progress(0, text='⏳ Starting grid search...')
+
+            def _call_backend():
+                return backend_post_grid_search(
+                    wavelengths.tolist(), measured.tolist(),
+                    captured_lipid_range, captured_aqueous_range, captured_roughness_range,
+                    top_k=10, search_strategy='Dynamic Search', max_combinations=30000,
+                    lipid_file=st.session_state.get('selected_lipid_material'),
+                    water_file=st.session_state.get('selected_water_material'),
+                    mucus_file=st.session_state.get('selected_mucus_material'),
+                    substratum_file=st.session_state.get('selected_substratum_material'),
                 )
 
-            # Show progress in the placeholder above the tabs
-            progress_placeholder.progress(0, text='⏳ Starting grid search...')
-            
-            with ThreadPoolExecutor(max_workers=1) as executor:
-                future = executor.submit(_run_search)
-                # Update progress bar and timer while running
-                while future.running():
-                    elapsed = time.perf_counter() - start_time
-                    mins, secs = divmod(int(elapsed), 60)
-                    # Update progress bar (estimate ~5 min max)
-                    progress_pct = min(0.99, elapsed / 300)
-                    progress_placeholder.progress(progress_pct, text=f'⏳ Running grid search... {mins:02d}:{secs:02d} elapsed')
-                    time.sleep(0.5)
-                try:
-                    results = future.result()
-                except Exception as exc:
-                    progress_placeholder.empty()
-                    st.error(f'Grid search failed: {exc}')
-                    raise
+            try:
+                with ThreadPoolExecutor(max_workers=1) as executor:
+                    future = executor.submit(_call_backend)
+                    while not future.done():
+                        elapsed = time.perf_counter() - start_time
+                        mins, secs = divmod(int(elapsed), 60)
+                        progress_pct = min(0.99, elapsed / 600)  # cap at 10 min for bar
+                        progress_placeholder.progress(
+                            progress_pct,
+                            text=f'⏳ Running grid search... **{mins:02d}:{secs:02d}** elapsed',
+                        )
+                        time.sleep(0.5)
+                    results_raw = future.result()
+                results = [result_dict_to_view(r) for r in results_raw]
+            except Exception as exc:
+                progress_placeholder.empty()
+                st.error(f'Grid search failed: {exc}')
+                raise
 
             elapsed = time.perf_counter() - start_time
             mins, secs = divmod(int(elapsed), 60)
-            # Clear progress bar and show completion time
             progress_placeholder.empty()
             st.session_state.last_run_elapsed_s = elapsed
+            progress_placeholder.success(
+                f'✅ Grid search completed in **{mins:02d}:{secs:02d}** ({elapsed:.1f}s)',
+            )
 
             if results:
                 best = results[0]
-                # Store results immediately so plots can use them
                 st.session_state.autofit_results = results
-                # Set selected rank to 1 (best result) when grid search completes
                 st.session_state.selected_rank = 1
-                st.session_state.selected_rank_dropdown = 1  # keep dropdown in sync
-                # Store the update to be applied before widgets are created on next run
+                st.session_state.selected_rank_dropdown = 1
                 st.session_state.pending_update = {
                     'lipid': best.lipid_nm,
                     'aqueous': best.aqueous_nm,
                     'mucus': best.mucus_nm,
                     'results': results
                 }
-                # Rerun to update sliders and plots
                 st.rerun()
             else:
                 st.warning('⚠️ No valid fits found')
@@ -1550,14 +1551,12 @@ if selected_file and Path(selected_file).exists():
         if bestfit_file_path and Path(bestfit_file_path).exists():
             try:
                 bestfit_wl, bestfit_refl = load_bestfit_spectrum(Path(bestfit_file_path))
-                # Interpolate BestFit to match wavelengths
                 bestfit_interp = np.interp(wavelengths, bestfit_wl, bestfit_refl)
-                # Align BestFit with measured
-                bestfit_aligned = grid_search._align_spectra(
-                    measured, bestfit_interp,
-                    focus_min=600.0, focus_max=1120.0,
-                    wavelengths=wavelengths
-                )
+                bestfit_aligned = np.array(backend_post_align_spectra(
+                    measured.tolist(), bestfit_interp.tolist(),
+                    focus_min_nm=600.0, focus_max_nm=1120.0,
+                    wavelengths=wavelengths.tolist(),
+                ))
                 bestfit_display = bestfit_aligned[wl_mask]
                 
                 # Calculate metrics for BestFit
@@ -1573,12 +1572,15 @@ if selected_file and Path(selected_file).exists():
                 logger.warning(f'Error loading BestFit spectrum: {e}')
                 bestfit_display = None
         
-        # Calculate theoretical spectrum with current params
-        # Convert roughness from Angstroms to nm for calculate_theoretical_spectrum
-        roughness_nm = display_mucus / 10.0
-        theoretical = grid_search.calculate_theoretical_spectrum(
-            wavelengths, display_lipid, display_aqueous, roughness_nm
-        )
+        # Calculate theoretical spectrum with current params (roughness from slider is in Å)
+        theoretical = np.array(backend_post_theoretical(
+            wavelengths.tolist(),
+            display_lipid, display_aqueous, display_mucus,
+            lipid_file=st.session_state.get('selected_lipid_material'),
+            water_file=st.session_state.get('selected_water_material'),
+            mucus_file=st.session_state.get('selected_mucus_material'),
+            substratum_file=st.session_state.get('selected_substratum_material'),
+        ))
         
         # Use simple proportional scaling for alignment (same as grid search worker)
         # Align using the wavelength range from the slider
@@ -1643,7 +1645,6 @@ if selected_file and Path(selected_file).exists():
             'display_lipid': display_lipid,
             'display_aqueous': display_aqueous,
             'display_mucus': display_mucus,
-            'grid_search': grid_search,
             'theoretical_label': theoretical_label,
             'show_bestfit': show_bestfit,
             'show_both_theoretical': show_both_theoretical,

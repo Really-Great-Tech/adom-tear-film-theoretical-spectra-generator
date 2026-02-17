@@ -6,8 +6,14 @@ scipy>=1.10.0
 # Web app
 streamlit>=1.30.0
 plotly>=5.18.0
+requests>=2.28.0
+
+# Backend API (FastAPI 0.115+ required for Starlette middleware compatibility)
+fastapi>=0.115.0
+uvicorn>=0.22.0
 
 # Configuration
+python-dotenv>=1.0.0
 pyyaml>=6.0
 
 # Excel support

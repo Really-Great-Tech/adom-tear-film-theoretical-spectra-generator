@@ -1,0 +1,61 @@
+# PyElli Backend API (FastAPI). Heavy lifting: grid search and theoretical spectrum.
+# Multi-stage build for smaller image.
+
+FROM python:3.11-slim AS builder
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential gcc g++ gfortran libopenblas-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN python -m venv /opt/venv
+ENV PATH="/opt/venv/bin:$PATH"
+
+COPY requirements.txt /tmp/requirements.txt
+RUN grep -v 'pythonnet' /tmp/requirements.txt > /tmp/requirements_filtered.txt \
+    && pip install --no-cache-dir --upgrade pip \
+    && pip install --no-cache-dir -r /tmp/requirements_filtered.txt
+
+# -----------------------------------------------------------------------------
+# Runtime
+# -----------------------------------------------------------------------------
+FROM python:3.11-slim AS runtime
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libopenblas0 curl \
+    && rm -rf /var/lib/apt/lists/* && apt-get clean
+
+COPY --from=builder /opt/venv /opt/venv
+ENV PATH="/opt/venv/bin:$PATH"
+
+WORKDIR /app
+
+RUN mkdir -p /app/data/Materials \
+    /app/exploration/pyelli_exploration \
+    /app/src
+
+COPY backend/ /app/backend/
+COPY exploration/ /app/exploration/
+COPY src/ /app/src/
+
+ENV PYTHONPATH=/app
+
+# =============================================================================
+# BLAS/OpenMP Thread Limiting (CRITICAL for multiprocessing performance)
+# =============================================================================
+# These MUST be set BEFORE Python starts to prevent thread oversubscription
+# when using ProcessPoolExecutor. Without these, each worker process spawns
+# multiple BLAS threads (e.g., 32 cores × 8 threads = 256 threads competing).
+# Setting to 1 ensures each Python process uses single-threaded BLAS,
+# allowing ProcessPoolExecutor to efficiently parallelize at the process level.
+ENV OMP_NUM_THREADS=1
+ENV MKL_NUM_THREADS=1
+ENV OPENBLAS_NUM_THREADS=1
+ENV NUMEXPR_NUM_THREADS=1
+ENV VECLIB_MAXIMUM_THREADS=1
+
+EXPOSE 8000
+
+HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
+    CMD curl --fail http://localhost:8000/health || exit 1
+
+ENTRYPOINT ["uvicorn", "backend.main:app", "--host", "0.0.0.0", "--port", "8000"]

@@ -1,8 +1,9 @@
+# Single-service: Streamlit only (legacy; no backend). For backend + Streamlit use: docker compose -f docker-compose.yml up
 services:
   pyelli:
     build:
       context: .
-      dockerfile: Dockerfile.pyelli
+      dockerfile: Dockerfile.streamlit
     container_name: pyelli
     restart: unless-stopped
     ports:
