@@ -214,3 +214,11 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Local batch / experiment outputs (do not commit)
+batch_corrected*.csv
+batch_corrected*.txt
+batch_final_run.csv
+batch_final_run.txt
+full_batch_fits.csv
+full_batch_fits.txt
