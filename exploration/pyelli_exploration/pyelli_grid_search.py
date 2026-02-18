@@ -92,6 +92,8 @@ class PyElliResult:
     amplitude_drift_slope: float = 0.0  # Linear trend of amplitude ratio vs wavelength
     amplitude_drift_r_squared: float = 0.0  # R² of amplitude drift fit
     amplitude_drift_flagged: bool = False  # True if systematic amplitude drift detected
+    # Deviation vs measured (same formula as deviation vs LTA); used for ranking when set (lower = better)
+    deviation_vs_measured: Optional[float] = None
 
 
 # =============================================================================
@@ -1093,19 +1095,95 @@ def calculate_monotonic_alignment_score(
 
 
 # =============================================================================
+# PyElli vs LTA MAPE (normalized for scale-invariant shape comparison)
+# =============================================================================
+
+def mape_pyelli_vs_lta_normalized(
+    pyelli: np.ndarray,
+    lta: np.ndarray,
+    eps: float = 1e-10,
+) -> float:
+    """
+    MAPE between PyElli and LTA after normalizing both to unit L2 norm.
+    Compares shape (relative profile) rather than absolute amplitude, so the
+    deviation score is not dominated when LTA has a different amplitude convention.
+    Returns value in percent (0--100+).
+    """
+    min_len = min(len(pyelli), len(lta))
+    if min_len < 10:
+        return 0.0
+    p = np.asarray(pyelli[:min_len], dtype=float)
+    l = np.asarray(lta[:min_len], dtype=float)
+    p_norm = np.linalg.norm(p)
+    l_norm = np.linalg.norm(l)
+    if p_norm < 1e-12:
+        p_norm = 1e-12
+    if l_norm < 1e-12:
+        return 0.0
+    p = p / p_norm
+    l = l / l_norm
+    denom = np.abs(l) + eps
+    return float(np.mean(np.abs(p - l) / denom)) * 100.0
+
+
+# =============================================================================
+# Deviation vs measured (same formula as deviation vs LTA, used for ranking)
+# =============================================================================
+
+def compute_deviation_vs_measured(
+    wavelengths: np.ndarray,
+    measured: np.ndarray,
+    theoretical: np.ndarray,
+    reference_spacing_nm: float = 50.0,
+) -> float:
+    """
+    Composite deviation of theoretical vs measured (reference = measured).
+    Same formula as deviation vs LTA: 0.4*MAPE + 0.3*peak_match_dev + 0.3*alignment_dev.
+    Lower is better. Used for ranking so that selected fit best matches measured.
+    """
+    min_len = min(len(wavelengths), len(measured), len(theoretical))
+    if min_len < 10:
+        return float("inf")
+    wl = wavelengths[:min_len]
+    meas = measured[:min_len]
+    theo = theoretical[:min_len]
+    meas_abs = np.abs(meas)
+    valid = meas_abs > 1e-10
+    if valid.any():
+        mape = float(np.mean(np.abs(theo[valid] - meas[valid]) / meas_abs[valid])) * 100.0
+    else:
+        mape = 0.0
+    score_result = calculate_peak_based_score(wl, meas, theo)
+    meas_peaks = int(score_result.get("measurement_peaks", 0))
+    matched = int(score_result.get("matched_peaks", 0))
+    if meas_peaks > 0:
+        peak_match_dev = (1.0 - (matched / float(meas_peaks))) * 100.0
+        peak_match_dev = max(0.0, peak_match_dev)
+    else:
+        peak_match_dev = 0.0
+    mean_delta_nm = float(score_result.get("mean_delta_nm", 0.0))
+    alignment_dev = (mean_delta_nm / reference_spacing_nm) * 100.0
+    composite = 0.40 * mape + 0.30 * peak_match_dev + 0.30 * alignment_dev
+    return float(composite)
+
+
+# =============================================================================
 # Helper Functions for Candidate Selection
 # =============================================================================
 
 def _get_candidate_sort_key(result: PyElliResult, min_matched_peaks: int = 0, meas_peaks_count: int = 0) -> tuple:
     """
-    Sort key for candidate selection that prioritizes:
-    1. Score (adjusted for peak matching, amplitude, and excess peak penalties)
-    2. Matched peaks ratio (how many measured peaks we found)
-    3. Theoretical peak count (prefer closer to measured)
-    4. Oscillation ratio closeness to 1.0
-    
-    This ensures candidates that find peaks without generating excess are preferred.
+    Sort key for candidate selection. When deviation_vs_measured is set, rank by product
+    combined = score * (1 - deviation_vs_measured/100) so both high score and low deviation are preferred.
+    Otherwise prioritizes score, matched peaks, peak count, oscillation ratio.
     """
+    # When deviation_vs_measured is set, rank by product (high score and low deviation)
+    if result.deviation_vs_measured is not None:
+        inv_dev = max(0.0, 1.0 - result.deviation_vs_measured / 100.0)
+        combined = result.score * inv_dev
+        osc_deviation = abs(result.oscillation_ratio - 1.0)
+        return (combined, -osc_deviation, -result.peak_count_delta, result.matched_peaks)
+    
     # Base score with peak_count_delta penalty
     adjusted_score = result.score - (result.peak_count_delta * 0.01)
     
@@ -1413,6 +1491,8 @@ def _evaluate_combination_fast(args: Tuple[float, float, float]) -> Optional[PyE
         peak_count_delta = abs(meas_peaks_count - theo_peaks_count)
         mean_delta_nm = float(score_result.get('mean_delta_nm', 0.0))
         
+        dev_vs_meas = compute_deviation_vs_measured(wl_focus, meas_focus_scaled, theo_focus_scaled)
+        
         return PyElliResult(
             lipid_nm=float(lipid),
             aqueous_nm=float(aqueous),
@@ -1435,6 +1515,7 @@ def _evaluate_combination_fast(args: Tuple[float, float, float]) -> Optional[PyE
             amplitude_drift_slope=float(score_result.get('amplitude_drift_slope', 0.0)),
             amplitude_drift_r_squared=float(score_result.get('amplitude_drift_r_squared', 0.0)),
             amplitude_drift_flagged=bool(score_result.get('amplitude_drift_flagged', False)),
+            deviation_vs_measured=dev_vs_meas,
         )
     except Exception as e:
         return None
@@ -1662,6 +1743,8 @@ def _evaluate_single_combination(
         peak_count_delta = abs(meas_peaks_count - theo_peaks_count)
         mean_delta_nm = float(score_result.get('mean_delta_nm', 0.0))
         
+        dev_vs_meas = compute_deviation_vs_measured(wl_focus, meas_focus_scaled, theo_focus_scaled)
+        
         return PyElliResult(
             lipid_nm=float(lipid),
             aqueous_nm=float(aqueous),
@@ -1684,6 +1767,7 @@ def _evaluate_single_combination(
             amplitude_drift_slope=float(score_result.get('amplitude_drift_slope', 0.0)),
             amplitude_drift_r_squared=float(score_result.get('amplitude_drift_r_squared', 0.0)),
             amplitude_drift_flagged=bool(score_result.get('amplitude_drift_flagged', False)),
+            deviation_vs_measured=dev_vs_meas,
         )
     except Exception as e:
         logger.debug(f'Error evaluating combination (L={lipid}, A={aqueous}, R={roughness_angstrom}Å): {e}')

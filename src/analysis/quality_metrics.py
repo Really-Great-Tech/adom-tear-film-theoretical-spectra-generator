@@ -741,27 +741,88 @@ def assess_spectrum_quality(
     warnings = []
     failures = []
 
-    # Metric 1: SNR
-    snr_result = calculate_snr(
-        wavelengths,
-        reflectance,
-        use_detrended=config.get("use_detrended_snr", True),
-        cutoff_frequency=config.get("snr_cutoff_frequency", 0.008),
-        filter_order=config.get("snr_filter_order", 3),
-    )
+    # Metric 1: SNR (Part C: smooth/residual pipeline with threshold 20, or legacy)
+    use_part_c_snr = config.get("use_part_c_snr", True)
+    if use_part_c_snr:
+        from .snr import (
+            SNR_PASS_THRESHOLD,
+            compute_global_snr,
+            get_snr_smooth_residual_curves,
+            compute_window_snr,
+            window_snr_result_to_dict,
+        )
 
-    # Calculate Sliding Window SNR for details (uses function default if not in config)
-    snr_kw = {}
-    if "snr_window_nm" in config:
-        snr_kw["window_nm"] = config["snr_window_nm"]
+        band_nm = (600.0, 1120.0)
+        global_snr = compute_global_snr(
+            wavelengths,
+            reflectance,
+            band_nm=band_nm,
+            detrend_cutoff=config.get("snr_cutoff_frequency", 0.008),
+            detrend_order=config.get("snr_filter_order", 3),
+            boxcar_width_nm=11.0,
+            boxcar_repeats=2,
+        )
+        wl_curves, detrended, smooth, residual = get_snr_smooth_residual_curves(
+            wavelengths,
+            reflectance,
+            band_nm=band_nm,
+            detrend_cutoff=config.get("snr_cutoff_frequency", 0.008),
+            detrend_order=config.get("snr_filter_order", 3),
+            boxcar_width_nm=11.0,
+            boxcar_repeats=2,
+        )
+        window_nm = config.get("snr_window_nm", 100.0)
+        stride_nm = config.get("snr_stride_nm", 50.0)
+        window_snr_result = compute_window_snr(
+            wavelengths,
+            reflectance,
+            band_nm=band_nm,
+            window_nm=window_nm,
+            stride_nm=stride_nm,
+            detrend_cutoff=config.get("snr_cutoff_frequency", 0.008),
+            detrend_order=config.get("snr_filter_order", 3),
+            boxcar_width_nm=11.0,
+            boxcar_repeats=2,
+        )
+        sw_dict = window_snr_result_to_dict(window_snr_result)
 
-    window_snr = calculate_sliding_window_snr(wavelengths, reflectance, **snr_kw)
-    snr_result.details["sliding_window_snr"] = window_snr
+        snr_result = QualityMetricResult(
+            passed=global_snr.passed,
+            value=global_snr.snr,
+            threshold=SNR_PASS_THRESHOLD,
+            metric_name="SNR",
+            status=global_snr.quality_band.title(),
+            details={
+                "snr": global_snr.snr,
+                "signal_ptp": global_snr.signal_ptp,
+                "noise_std": global_snr.noise_std,
+                "quality_level": global_snr.quality_band,
+                "method": "Part C (smooth/residual, 600-1120 nm, boxcar 11 nm 2 passes)",
+                "detrended": True,
+                "snr_smooth_residual_curves": (wl_curves, detrended, smooth, residual),
+                "sliding_window_snr": sw_dict,
+            },
+        )
+    else:
+        snr_result = calculate_snr(
+            wavelengths,
+            reflectance,
+            use_detrended=config.get("use_detrended_snr", True),
+            cutoff_frequency=config.get("snr_cutoff_frequency", 0.008),
+            filter_order=config.get("snr_filter_order", 3),
+        )
+        snr_kw = {}
+        if "snr_window_nm" in config:
+            snr_kw["window_nm"] = config["snr_window_nm"]
+        window_snr = calculate_sliding_window_snr(wavelengths, reflectance, **snr_kw)
+        snr_result.details["sliding_window_snr"] = window_snr
 
     metrics["snr"] = snr_result
 
     if not snr_result.passed:
-        failures.append(f"SNR too low: {snr_result.value:.2f} < {snr_result.threshold}")
+        failures.append(
+            f"SNR too low: {snr_result.value:.2f} < {snr_result.threshold}"
+        )
     elif snr_result.details.get("quality_level") == "Marginal":
         warnings.append(f"SNR marginal: {snr_result.value:.2f}")
 
@@ -792,11 +853,7 @@ def assess_spectrum_quality(
             chi_squared_range=config.get("chi_squared_range", (0.8, 1.2)),
         )
         metrics["fit_quality"] = fit_result
-
-        if not fit_result.passed:
-            failures.append(
-                f"Fit quality poor: {fit_result.details.get('checks_failed', 0)} checks failed"
-            )
+        # Fit quality is diagnostic only: do not use it for pass/fail or failures.
 
     # Metric 4: Signal Integrity (Evaluative)
     integrity_result = check_signal_integrity(
@@ -830,8 +887,10 @@ def assess_spectrum_quality(
             f"Spectral completeness insufficient: {completeness_result.details.get('checks_failed', 0)} checks failed"
         )
 
-    # Determine overall quality
-    passed_all_checks = all(m.passed for m in metrics.values())
+    # Determine overall quality (fit_quality is diagnostic only, excluded from pass/fail)
+    passed_all_checks = all(
+        m.passed for name, m in metrics.items() if name != "fit_quality"
+    )
     has_warnings = len(warnings) > 0 or any(
         m.status == "Marginal" for m in metrics.values()
     )

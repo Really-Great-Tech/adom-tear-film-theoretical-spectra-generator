@@ -1,0 +1,65 @@
+# PyElli Streamlit UI. Calls backend for grid search and theoretical spectrum.
+# Same stack as before; BACKEND_URL points at backend service.
+
+FROM python:3.11-slim AS builder
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential gcc g++ gfortran libopenblas-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN python -m venv /opt/venv
+ENV PATH="/opt/venv/bin:$PATH"
+
+COPY requirements.txt /tmp/requirements.txt
+RUN grep -v 'pythonnet' /tmp/requirements.txt > /tmp/requirements_filtered.txt \
+    && pip install --no-cache-dir --upgrade pip \
+    && pip install --no-cache-dir -r /tmp/requirements_filtered.txt
+
+# -----------------------------------------------------------------------------
+# Runtime
+# -----------------------------------------------------------------------------
+FROM python:3.11-slim AS runtime
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libopenblas0 curl \
+    && rm -rf /var/lib/apt/lists/* && apt-get clean
+
+COPY --from=builder /opt/venv /opt/venv
+ENV PATH="/opt/venv/bin:$PATH"
+
+WORKDIR /app
+
+RUN mkdir -p /app/data/Materials \
+    /app/exploration/sample_data \
+    /app/exploration/new_spectra \
+    /app/exploration/spectra_from_shlomo \
+    /app/exploration/more_good_spectras \
+    /app/exploration/measurements
+
+COPY .streamlit/ /app/.streamlit/
+COPY src/ /app/src/
+COPY exploration/ /app/exploration/
+
+ENV PYTHONPATH=/app
+
+# BLAS/OpenMP thread limiting (critical when running grid search in-process, e.g. single-container)
+ENV OMP_NUM_THREADS=1
+ENV MKL_NUM_THREADS=1
+ENV OPENBLAS_NUM_THREADS=1
+ENV NUMEXPR_NUM_THREADS=1
+ENV VECLIB_MAXIMUM_THREADS=1
+
+ENV STREAMLIT_SERVER_PORT=8501
+ENV STREAMLIT_SERVER_ADDRESS=0.0.0.0
+ENV STREAMLIT_SERVER_HEADLESS=true
+ENV STREAMLIT_BROWSER_GATHER_USAGE_STATS=false
+
+# Backend URL: set in docker-compose so UI calls backend for grid search
+ENV BACKEND_URL=http://backend:8000
+
+EXPOSE 8501
+
+HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
+    CMD curl --fail http://localhost:8501/_stcore/health || exit 1
+
+ENTRYPOINT ["streamlit", "run", "/app/exploration/pyelli_exploration/app.py"]
