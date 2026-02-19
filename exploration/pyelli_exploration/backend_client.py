@@ -16,6 +16,8 @@ load_dotenv(_project_root / ".env")
 
 # Default timeout for grid search (long-running)
 GRID_SEARCH_TIMEOUT_SECONDS = 600
+# Last-two-cycles seed+tune can take many minutes
+LAST_TWO_CYCLES_TIMEOUT_SECONDS = 3600
 THEORETICAL_TIMEOUT_SECONDS = 30
 ALIGN_TIMEOUT_SECONDS = 10
 
@@ -125,6 +127,18 @@ def post_align_spectra(
     resp = requests.post(url, json=payload, timeout=ALIGN_TIMEOUT_SECONDS)
     resp.raise_for_status()
     return resp.json()["aligned"]
+
+
+def post_last_two_cycles_seed_tune(run_folder_name: str) -> Dict[str, Any]:
+    """Call POST /api/last-two-cycles-seed-tune. Runs grid search on backend. Returns dict with summary, seed_result, results."""
+    url = _api("/last-two-cycles-seed-tune")
+    resp = requests.post(
+        url,
+        json={"run_folder_name": run_folder_name},
+        timeout=LAST_TWO_CYCLES_TIMEOUT_SECONDS,
+    )
+    resp.raise_for_status()
+    return resp.json()
 
 
 def result_dict_to_view(d: Dict[str, Any]) -> Any:

@@ -12,6 +12,8 @@ from backend.schemas import (
     AlignSpectraResponse,
     GridSearchRequest,
     GridSearchResponse,
+    LastTwoCyclesRequest,
+    LastTwoCyclesResponse,
     TheoreticalRequest,
     TheoreticalResponse,
 )
@@ -19,6 +21,7 @@ from backend.service import (
     align_spectra,
     calculate_theoretical,
     run_grid_search,
+    run_last_two_cycles_seed_tune,
 )
 
 router = APIRouter()
@@ -119,3 +122,29 @@ def post_align_spectra(body: AlignSpectraRequest):
     except ValueError as e:
         logger.warning("align-spectra ValueError: %s", e)
         raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.post("/last-two-cycles-seed-tune", response_model=LastTwoCyclesResponse)
+def post_last_two_cycles_seed_tune(body: LastTwoCyclesRequest):
+    """Run last-two-cycles seed+tune (full grid on seed, refine on rest); grid search runs on backend."""
+    logger.info("last-two-cycles-seed-tune start run_folder=%s", body.run_folder_name)
+    t0 = time.perf_counter()
+    try:
+        out = run_last_two_cycles_seed_tune(
+            run_folder_name=body.run_folder_name,
+            full_test_cycles_dir=config.FULL_TEST_CYCLES_DIR,
+            materials_path=config.MATERIALS_PATH,
+        )
+        elapsed = time.perf_counter() - t0
+        logger.info("last-two-cycles-seed-tune done elapsed_sec=%.2f", elapsed)
+        return LastTwoCyclesResponse(
+            summary=out["summary"],
+            seed_result=out.get("seed_result"),
+            results=out.get("results", []),
+        )
+    except FileNotFoundError as e:
+        logger.warning("last-two-cycles-seed-tune FileNotFoundError: %s", e)
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        logger.exception("last-two-cycles-seed-tune failed: %s", e)
+        raise HTTPException(status_code=500, detail=str(e))

@@ -1,0 +1,32 @@
+
+frame_15-13-13-184.bmp
+ROI #,         Mean,          Std,           Std /Mean      
+0,           29.7,        3.5,        0.1         
+1,           33.7,        2.3,        0.1         
+2,           31.7,        4.1,        0.1         
+3,           11.9,        13.1,        1.1         
+4,           26.5,        7.9,        0.3         
+Average on 5 Mean values: 26.7
+Range of Mean values: 21.8
+Average on 5 Std/Mean values: 0.3
+Range / Average (in %): 81.67
+Lipid Map Uniformity (average of 5 ROIs variances): 53.8
+Variance for all 5 ROIs pixels: 114.4
+Rectangle 0 is Good.
+Rectangle 1 is Good.
+Rectangle 2 is Good.
+Rectangle 3 is Good.
+Rectangle 4 is Bad (379 pixels).
+
+frame_15-13-13-184.bmp
+ROI #,         Mean,          Std,           Std /Mean      
+0,           29.7,        3.5,        0.1         
+1,           33.7,        2.3,        0.1         
+2,           31.7,        4.1,        0.1         
+3,           11.9,        13.1,        1.1         
+Average on 4 Mean values: 26.7
+Range of Mean values: 21.8
+Average on 4 Std/Mean values: 0.4
+Range / Average (in %): 81.51
+Lipid Map Uniformity (average of 4 ROIs variances): 51.8
+Variance for all 4 ROIs pixels: 127.6

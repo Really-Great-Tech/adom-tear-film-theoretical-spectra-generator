@@ -1,0 +1,33 @@
+﻿# ============================================
+# Merge Trace - PART 5
+# Run: Smoothed
+# DateTime: 2026-01-13 16:35:12
+# SegmentId: 5
+# BlinkTimes: [1.201s, 1.301s, 7.502s, 7.602s, 9.202s, 9.302s, 13.204s, 19.605s, 19.705s, 25.706s, 31.307s, 31.408s, 31.508s, 36.109s]
+# Thresholds:
+#   merge_dt <= 1.3s (1300ms)
+#   merge_dn <= 110.0nm
+#   dead_zone = +/-0.00s (0ms)
+# ============================================
+
+Candidate | Group1 | Group2 | Point1 | Point2 | Dt(ms) | Dnm | Result | Reason
+----------|--------|--------|--------|--------|--------|-----|--------|-------
+        1 |      1 |      2 |    170 |    172 |  164.0 | 29.2 |  MERGED | MERGED: within_thresholds
+        2 |      3 |      4 |    202 |    203 |  168.0 | 414.9 | REJECTED | REJECTED: threshold_dn
+        3 |      1 |      2 |    200 |    201 |  111.0 | 242.7 | REJECTED | REJECTED: threshold_dn
+        4 |      2 |      3 |    202 |    203 |  168.0 | 414.9 | REJECTED | REJECTED: threshold_dn
+        5 |      1 |      2 |    200 |    201 |  111.0 | 242.7 | REJECTED | REJECTED: threshold_dn
+        6 |      2 |      3 |    202 |    203 |  168.0 | 414.9 | REJECTED | REJECTED: threshold_dn
+        7 |      1 |      2 |    200 |    201 |  111.0 | 242.7 | REJECTED | REJECTED: threshold_dn
+        8 |      1 |      3 |    200 |    203 |  332.0 | 194.4 | REJECTED | REJECTED: threshold_dn
+        9 |      2 |      3 |    202 |    203 |  168.0 | 414.9 | REJECTED | REJECTED: threshold_dn
+
+# ============================================
+# Summary:
+#   total_candidates = 9
+#   merged = 1
+#   rejected_dead_zone = 0
+#   rejected_cross_part = 0
+#   rejected_dt = 0
+#   rejected_dn = 8
+# ============================================

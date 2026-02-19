@@ -1,0 +1,23 @@
+﻿# ============================================
+# Initial Grouping Decisions - PART 2
+# Run: Smoothed
+# DateTime: 2026-01-13 16:35:12
+# SegmentId: 2
+# BlinkTimes: [1.201s, 1.301s, 7.502s, 7.602s, 9.202s, 9.302s, 13.204s, 19.605s, 19.705s, 25.706s, 31.307s, 31.408s, 31.508s, 36.109s]
+# Thresholds:
+#   initial_dt <= 1.3s (1300ms)
+#   initial_dn <= 100.0nm
+#   dead_zone = +/-0.00s (0ms)
+# ============================================
+
+Point | Time(s) | Thickness(nm) | Left Neighbor | Dt(ms) | Dnm | Decision | Reason | Right Neighbor | Dt(ms) | Dnm | Decision | Reason | Group | Size
+------|---------|---------------|---------------|--------|-----|----------|--------|----------------|--------|-----|----------|--------|-------|-----
+   20 |   1.413 |        2354.9 |             - |      - |   - |        - |                    - |              - |      - |   - |        - |                    - |     1 |    1
+
+# ============================================
+# Rejection Summary:
+#   dead_zone = 0
+#   cross_part_boundary = 0
+#   threshold_dt = 0
+#   threshold_dn = 0
+# ============================================

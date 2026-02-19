@@ -1,0 +1,8 @@
+﻿<?xml version="1.0" encoding="utf-8" standalone="no"?>
+<spectrometer_calibration>
+  <calibration_point x="577" y="545" />
+  <calibration_point x="620" y="545" />
+  <calibration_point x="620" y="587" />
+  <calibration_point x="577" y="587" />
+  <calibration_point x="587" y="565" />
+</spectrometer_calibration>

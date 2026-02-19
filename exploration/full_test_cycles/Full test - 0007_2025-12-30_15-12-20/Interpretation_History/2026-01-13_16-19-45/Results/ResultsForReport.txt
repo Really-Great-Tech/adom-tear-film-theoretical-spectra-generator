@@ -1,0 +1,5 @@
+MucusAqueousLayerThickness: 2461.0
+MucusAqueousThinningRate: -1
+LipidLayerThickness: 36.3
+LipidBreakUpTime: -1
+InterBlinkInterval: 4.99

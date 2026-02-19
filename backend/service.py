@@ -11,6 +11,7 @@ import numpy as np
 
 # Backend only: heavy deps live here
 from exploration.pyelli_exploration.pyelli_grid_search import PyElliGridSearch
+from exploration.pyelli_exploration.run_last_two_cycles_seed_tune import run_last_two_cycles_seed_tune_sync
 
 logger = logging.getLogger(__name__)
 
@@ -147,3 +148,23 @@ def align_spectra(
     coeffs, _, _, _ = np.linalg.lstsq(A, meas_fit, rcond=None)
     aligned = np.clip(coeffs[0] * theo + coeffs[1], 0, None)
     return aligned.tolist()
+
+
+def run_last_two_cycles_seed_tune(
+    run_folder_name: str,
+    full_test_cycles_dir: Path,
+    materials_path: Path,
+    *,
+    seed_index: int = 0,
+    max_tune: Optional[int] = None,
+) -> dict:
+    """Run last-two-cycles seed+tune on a run folder. Returns dict with summary, seed_result, results."""
+    run_dir = full_test_cycles_dir / run_folder_name
+    if not run_dir.is_dir():
+        raise FileNotFoundError(f"Run folder not found: {run_dir}")
+    return run_last_two_cycles_seed_tune_sync(
+        run_dir,
+        materials_path,
+        seed_index=seed_index,
+        max_tune=max_tune,
+    )

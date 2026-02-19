@@ -126,7 +126,12 @@ from exploration.pyelli_exploration.backend_client import (
     post_grid_search as backend_post_grid_search,
     post_theoretical as backend_post_theoretical,
     post_align_spectra as backend_post_align_spectra,
+    post_last_two_cycles_seed_tune as backend_post_last_two_cycles_seed_tune,
     result_dict_to_view,
+)
+from exploration.pyelli_exploration.run_last_two_cycles_seed_tune import (
+    identify_last_two_cycles_spectra,
+    get_run_start_sec_from_folder_name,
 )
 from src.analysis.measurement_utils import (
     detrend_signal,
@@ -871,6 +876,7 @@ with st.sidebar:
     st.markdown("### 📂 Spectrum Source")
 
     spectrum_sources = {
+        "Full test cycle (run folder)": None,  # Path from user input
         "More Good Spectras": PROJECT_ROOT
         / "exploration"
         / "more_good_spectras"
@@ -892,65 +898,114 @@ with st.sidebar:
         "Select Source", list(spectrum_sources.keys()), key="autofit_source_main"
     )
 
-    source_path = spectrum_sources[selected_source]
+    last_two_blinks_pairs = []  # (meas_path, bestfit_path, time_sec) when Full test cycle
+    selected_run_folder_name = None  # for backend seed+tune
 
-    # Log path resolution for debugging
-    logger.debug(f"📂 Selected source: {selected_source}")
-    logger.debug(f"   Resolved path: {source_path}")
-    logger.debug(f"   Path exists: {source_path.exists()}")
-    logger.debug(f"   PROJECT_ROOT: {PROJECT_ROOT}")
-
-    # Fallback: if path doesn't exist, try resolving from current working directory
-    if not source_path.exists():
-        # Try alternative resolution if primary path doesn't exist
-        # This handles cases where working directory differs in production
-        cwd_path = (
-            Path.cwd() / source_path.relative_to(PROJECT_ROOT)
-            if source_path.is_relative_to(PROJECT_ROOT)
-            else source_path
-        )
-        if cwd_path != source_path and cwd_path.exists():
-            logger.warning(f"⚠️ Primary path not found, using fallback: {cwd_path}")
-            source_path = cwd_path
-        # Also try if it's a relative path from PROJECT_ROOT that might resolve differently
-        elif not source_path.is_absolute():
-            abs_path = PROJECT_ROOT / source_path
-            if abs_path.exists():
-                source_path = abs_path
-
-    if source_path.exists():
-        if selected_source in ["Sample Data (Good Fit)", "Sample Data (Bad Fit)"]:
+    if selected_source == "Full test cycle (run folder)":
+        full_test_cycles_path = PROJECT_ROOT / "exploration" / "full_test_cycles"
+        if not full_test_cycles_path.exists():
             spectrum_files = []
-            for subdir in sorted(source_path.iterdir()):
-                if subdir.is_dir():
-                    for f in subdir.glob("(Run)spectra_*.txt"):
-                        if "_BestFit" not in f.name:
-                            spectrum_files.append(f)
-        elif selected_source == "New Spectra":
-            # New spectra are organized in subfolders, similar to good/bad fit
-            spectrum_files = []
-            for subdir in sorted(source_path.iterdir()):
-                if subdir.is_dir():
-                    for f in subdir.glob("(Run)spectra_*.txt"):
-                        if "_BestFit" not in f.name:
-                            spectrum_files.append(f)
+            st.warning(f"Full test cycles folder not found: `{full_test_cycles_path}`")
         else:
-            spectrum_files = sorted(
-                [
-                    f
-                    for f in source_path.glob("(Run)spectra_*.txt")
-                    if "_BestFit" not in f.name
-                ]
+            run_folders = sorted(
+                [d.name for d in full_test_cycles_path.iterdir() if d.is_dir()],
+                key=str.lower,
             )
+            if not run_folders:
+                spectrum_files = []
+                st.info("No test cycle folders found. Add run folders (e.g. 'Full test - 0007_2025-12-30_15-12-20') under exploration/full_test_cycles.")
+            else:
+                selected_run_folder_name = st.selectbox(
+                    "Select test cycle",
+                    run_folders,
+                    key="full_test_run_folder_select",
+                    help="Run folder under exploration/full_test_cycles",
+                )
+                run_dir_path = full_test_cycles_path / selected_run_folder_name
+                corrected_dir = run_dir_path / "Spectra" / "GoodSpectra" / "Corrected"
+                bestfit_dir = run_dir_path / "BestFit"
+                run_start_sec = get_run_start_sec_from_folder_name(run_dir_path)
+                if corrected_dir.exists() and bestfit_dir.exists():
+                    last_two_blinks_pairs, last_two_blinks_info = identify_last_two_cycles_spectra(
+                        corrected_dir, bestfit_dir, run_start_sec, run_dir=run_dir_path
+                    )
+                    # Phase two: full cycle only — do not expose single-spectrum fit for this source
+                    spectrum_files = []
+                    st.session_state.last_two_blinks_pairs = last_two_blinks_pairs
+                    st.session_state.last_two_blinks_info = last_two_blinks_info
+                    st.session_state.run_dir_for_seed_tune = str(run_dir_path)
+                    st.session_state.run_folder_name_for_seed_tune = selected_run_folder_name
+                    n_spectra = len(last_two_blinks_pairs)
+                    wp = last_two_blinks_info.get("window_plot_s")
+                    blink_note = " (Blink.txt)" if last_two_blinks_info.get("used_blink_txt") else ""
+                    cap = f"**{n_spectra}** spectra in cycle (with BestFit){blink_note}"
+                    if wp:
+                        cap += f" — plot time {wp[0]:.1f}–{wp[1]:.1f} s"
+                    st.caption(cap)
+                else:
+                    spectrum_files = []
+                    st.session_state.run_folder_name_for_seed_tune = None
+                    st.session_state.last_two_blinks_pairs = []
+                    if not corrected_dir.exists():
+                        st.warning(f"Corrected folder not found: `{corrected_dir}`")
+                    if not bestfit_dir.exists():
+                        st.warning(f"BestFit folder not found: `{bestfit_dir}`")
     else:
-        spectrum_files = []
-        st.warning(f"⚠️ Source path not found: `{source_path}`")
-        st.info(
-            f"💡 **Debug Info:**\n- PROJECT_ROOT: `{PROJECT_ROOT}`\n- Working Directory: `{Path.cwd()}`\n- Path exists: `{source_path.exists()}`"
-        )
-        logger.warning(f"⚠️ Source path not found: {source_path}")
-        logger.warning(f"   PROJECT_ROOT: {PROJECT_ROOT}")
-        logger.warning(f"   Working directory: {Path.cwd()}")
+        st.session_state.run_folder_name_for_seed_tune = None
+        source_path = spectrum_sources[selected_source]
+        # Log path resolution for debugging
+        logger.debug(f"📂 Selected source: {selected_source}")
+        logger.debug(f"   Resolved path: {source_path}")
+        logger.debug(f"   Path exists: {source_path.exists() if source_path else False}")
+        logger.debug(f"   PROJECT_ROOT: {PROJECT_ROOT}")
+
+        # Fallback: if path doesn't exist, try resolving from current working directory
+        if source_path and not source_path.exists():
+            # Try alternative resolution if primary path doesn't exist
+            cwd_path = (
+                Path.cwd() / source_path.relative_to(PROJECT_ROOT)
+                if source_path.is_relative_to(PROJECT_ROOT)
+                else source_path
+            )
+            if cwd_path != source_path and cwd_path.exists():
+                logger.warning(f"⚠️ Primary path not found, using fallback: {cwd_path}")
+                source_path = cwd_path
+            elif not source_path.is_absolute():
+                abs_path = PROJECT_ROOT / source_path
+                if abs_path.exists():
+                    source_path = abs_path
+
+        if source_path and source_path.exists():
+            if selected_source in ["Sample Data (Good Fit)", "Sample Data (Bad Fit)"]:
+                spectrum_files = []
+                for subdir in sorted(source_path.iterdir()):
+                    if subdir.is_dir():
+                        for f in subdir.glob("(Run)spectra_*.txt"):
+                            if "_BestFit" not in f.name:
+                                spectrum_files.append(f)
+            elif selected_source == "New Spectra":
+                spectrum_files = []
+                for subdir in sorted(source_path.iterdir()):
+                    if subdir.is_dir():
+                        for f in subdir.glob("(Run)spectra_*.txt"):
+                            if "_BestFit" not in f.name:
+                                spectrum_files.append(f)
+            else:
+                spectrum_files = sorted(
+                    [
+                        f
+                        for f in source_path.glob("(Run)spectra_*.txt")
+                        if "_BestFit" not in f.name
+                    ]
+                )
+        else:
+            spectrum_files = []
+            if source_path:
+                st.warning(f"⚠️ Source path not found: `{source_path}`")
+                st.info(
+                    f"💡 **Debug Info:**\n- PROJECT_ROOT: `{PROJECT_ROOT}`\n- Working Directory: `{Path.cwd()}`\n- Path exists: `{source_path.exists()}`"
+                )
+                logger.warning(f"⚠️ Source path not found: {source_path}")
 
     if spectrum_files:
         selected_file = st.selectbox(
@@ -1013,42 +1068,53 @@ with st.sidebar:
         bestfit_file = None
         selected_path = Path(selected_file)
         if "_BestFit" not in selected_path.name:
-            # Try to find corresponding BestFit file
-            bestfit_name = selected_path.name.replace(".txt", "_BestFit.txt")
-
-            # 1. Try to find corresponding BestFit file in the same directory
-            bestfit_path = selected_path.parent / bestfit_name
-            if bestfit_path.exists():
-                bestfit_file = bestfit_path
-                st.session_state.bestfit_file = str(bestfit_file)
-
-            # 2. Also check in a sibling 'BestFit' directory (common in 'More Good Spectras' structure)
-            if not bestfit_file:
-                sibling_bestfit_path = (
-                    selected_path.parent.parent / "BestFit" / bestfit_name
-                )
-                if sibling_bestfit_path.exists():
-                    bestfit_file = sibling_bestfit_path
-                    st.session_state.bestfit_file = str(bestfit_file)
-
-            # 3. Also check if we're in a new spectra folder - BestFit might have slightly different naming
-            if not bestfit_file and selected_source == "New Spectra":
-                # Try alternative patterns for BestFit files
-                for alt_file in selected_path.parent.glob("*_BestFit.txt"):
-                    # Check if the base name matches (before timestamp)
-                    base_name = selected_path.stem
-                    alt_base = alt_file.stem.replace("_BestFit", "")
-                    # Extract the timestamp part (e.g., "21-47-05-763")
-                    base_match = re.search(r"(\d{2}-\d{2}-\d{2}-\d+)", base_name)
-                    alt_match = re.search(r"(\d{2}-\d{2}-\d{2}-\d+)", alt_base)
-                    if (
-                        base_match
-                        and alt_match
-                        and base_match.group(1) == alt_match.group(1)
-                    ):
-                        bestfit_file = alt_file
+            # Full test cycle: BestFit path comes from last_two_blinks_pairs (meas_path, bestfit_path, time_sec)
+            pairs = st.session_state.get("last_two_blinks_pairs", [])
+            if selected_source == "Full test cycle (run folder)" and pairs:
+                selected_resolved = selected_path.resolve()
+                for meas_path, bestfit_path, _ in pairs:
+                    if Path(meas_path).resolve() == selected_resolved:
+                        bestfit_file = Path(bestfit_path)
                         st.session_state.bestfit_file = str(bestfit_file)
                         break
+
+            # Try to find corresponding BestFit file (other sources)
+            if not bestfit_file:
+                bestfit_name = selected_path.name.replace(".txt", "_BestFit.txt")
+
+                # 1. Try to find corresponding BestFit file in the same directory
+                bestfit_path = selected_path.parent / bestfit_name
+                if bestfit_path.exists():
+                    bestfit_file = bestfit_path
+                    st.session_state.bestfit_file = str(bestfit_file)
+
+                # 2. Also check in a sibling 'BestFit' directory (common in 'More Good Spectras' structure)
+                if not bestfit_file:
+                    sibling_bestfit_path = (
+                        selected_path.parent.parent / "BestFit" / bestfit_name
+                    )
+                    if sibling_bestfit_path.exists():
+                        bestfit_file = sibling_bestfit_path
+                        st.session_state.bestfit_file = str(bestfit_file)
+
+                # 3. Also check if we're in a new spectra folder - BestFit might have slightly different naming
+                if not bestfit_file and selected_source == "New Spectra":
+                    # Try alternative patterns for BestFit files
+                    for alt_file in selected_path.parent.glob("*_BestFit.txt"):
+                        # Check if the base name matches (before timestamp)
+                        base_name = selected_path.stem
+                        alt_base = alt_file.stem.replace("_BestFit", "")
+                        # Extract the timestamp part (e.g., "21-47-05-763")
+                        base_match = re.search(r"(\d{2}-\d{2}-\d{2}-\d+)", base_name)
+                        alt_match = re.search(r"(\d{2}-\d{2}-\d{2}-\d+)", alt_base)
+                        if (
+                            base_match
+                            and alt_match
+                            and base_match.group(1) == alt_match.group(1)
+                        ):
+                            bestfit_file = alt_file
+                            st.session_state.bestfit_file = str(bestfit_file)
+                            break
 
         # Toggle to show LTA BestFit
         show_bestfit = False
@@ -1578,6 +1644,7 @@ with st.sidebar:
             st.session_state.run_autofit = True
         else:
             st.session_state.run_autofit = False
+
     else:
         st.session_state.selected_file = None
         st.session_state.run_autofit = False
@@ -1585,7 +1652,56 @@ with st.sidebar:
             600,
             1120,
         )  # Default matches LTA analysis region (600-1120 nm)
-        st.info("👈 No spectrum files found")
+        # Full test cycle (phase two): show only Run full cycle — no single-spectrum fit
+        run_folder = st.session_state.get("run_folder_name_for_seed_tune")
+        if selected_source == "Full test cycle (run folder)" and run_folder:
+            st.markdown("---")
+            st.markdown("### 🔬 Full cycle analysis")
+            run_full_cycle_clicked = st.button(
+                "🔬 Run full cycle",
+                key="run_seed_tune_btn",
+                type="primary",
+                help="Run seed+tune on all spectra in the cycle (backend). Uses last-two-blinks when Blink.txt is present, else last 8 s.",
+            )
+            if run_full_cycle_clicked:
+                try:
+                    with st.spinner("Running seed+tune on backend (this may take several minutes)..."):
+                        out = backend_post_last_two_cycles_seed_tune(run_folder)
+                    st.session_state.seed_tune_result = out
+                except Exception as exc:
+                    st.session_state.seed_tune_result = None
+                    st.session_state.seed_tune_error = str(exc)
+            if st.session_state.get("seed_tune_error"):
+                st.error(st.session_state.seed_tune_error)
+                st.session_state.seed_tune_error = None
+            if st.session_state.get("seed_tune_result"):
+                out = st.session_state.seed_tune_result
+                summary = out.get("summary", {})
+                seed_result = out.get("seed_result")
+                results = out.get("results", [])
+                st.markdown("**Summary**")
+                if summary.get("error"):
+                    st.warning(summary["error"])
+                else:
+                    c1, c2, c3 = st.columns(3)
+                    with c1:
+                        st.metric("Spectra in cycle", summary.get("total_spectra", 0))
+                    with c2:
+                        st.metric("Under 10% deviation", summary.get("total_under_10", 0))
+                    with c3:
+                        st.metric("Goal reached", "Yes" if summary.get("goal_reached") else "No")
+                    st.caption(f"Seed: {summary.get('seed_stem', '')}  |  Elapsed: {summary.get('elapsed_total_sec')}s")
+                if seed_result:
+                    st.markdown("**Seed result** — L={:.1f} nm, A={:.1f} nm, R={:.0f} Å, deviation={:.2f}%".format(
+                        seed_result.get("lipid_nm", 0), seed_result.get("aqueous_nm", 0),
+                        seed_result.get("mucus_nm", 0), seed_result.get("deviation_pct") or 0,
+                    ))
+                if results:
+                    st.markdown("**Per-spectrum results** (first 20)")
+                    df = pd.DataFrame(results[:20])
+                    st.dataframe(df, use_container_width=True, hide_index=True)
+        else:
+            st.info("👈 No spectrum files found")
 
 
 # =============================================================================
@@ -2647,7 +2763,10 @@ with tabs[0]:
 
                             st.code(traceback.format_exc())
     else:
-        st.info("👈 Please select a spectrum file from the sidebar")
+        if st.session_state.get("run_folder_name_for_seed_tune"):
+            st.info("🔬 **Full test cycle** selected. Use **Run full cycle** in the sidebar to analyze the cycle.")
+        else:
+            st.info("👈 Please select a spectrum file from the sidebar")
 
 # =============================================================================
 # Tab 2: Amplitude Analysis
@@ -3574,7 +3693,10 @@ with tabs[1]:
         except Exception as e:
             st.warning(f"Could not generate amplitude analysis: {e}")
     else:
-        st.info("👈 Please select a spectrum file from the sidebar")
+        if st.session_state.get("run_folder_name_for_seed_tune"):
+            st.info("🔬 **Full test cycle** selected. Use **Run full cycle** in the sidebar to analyze the cycle.")
+        else:
+            st.info("👈 Please select a spectrum file from the sidebar")
 
 # =============================================================================
 # Tab 3: Quality Metrics
@@ -3719,9 +3841,12 @@ with tabs[2]:
 
             st.code(traceback.format_exc())
     else:
-        st.info(
-            "👈 Please select a spectrum file from the sidebar to view quality metrics"
-        )
+        if st.session_state.get("run_folder_name_for_seed_tune"):
+            st.info("🔬 **Full test cycle** selected. Use **Run full cycle** in the sidebar to analyze the cycle.")
+        else:
+            st.info(
+                "👈 Please select a spectrum file from the sidebar to view quality metrics"
+            )
 
 
 # =============================================================================
