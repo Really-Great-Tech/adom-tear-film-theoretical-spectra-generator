@@ -6,8 +6,8 @@ on:
 
 env:
   AWS_REGION: eu-central-1
-  EC2_INSTANCE_ID: i-0d20ef67ddf31ea1c
-  DEPLOY_DIR: /home/ubuntu/baremetal
+  EC2_INSTANCE_ID: i-0fc46869f8cb19815
+  DEPLOY_DIR: /home/ubuntu/adom-tear-film-theoretical-spectra-generator
 
 permissions:
   id-token: write
@@ -40,15 +40,8 @@ jobs:
           git fetch origin dev
           git reset --hard origin/dev
 
-          echo 'Updating dependencies...'
-          source venv/bin/activate
-          pip install -r requirements-linux.txt
-
-          echo 'Restarting application service...'
-          sudo systemctl restart pyelli
-
-          echo 'Checking service status...'
-          sudo systemctl is-active pyelli
+          docker compose down
+          docker compose up --build -d -f compose.yaml
 
           echo '--- Deployment Complete ---'
           "
