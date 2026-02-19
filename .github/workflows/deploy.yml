@@ -41,7 +41,7 @@ jobs:
           git reset --hard origin/dev
 
           docker compose down
-          docker compose up --build -d -f compose.yaml
+          docker compose -f compose.yaml up --build -d 
 
           echo '--- Deployment Complete ---'
           "
