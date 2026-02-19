@@ -9,6 +9,10 @@ on:
 env:
   AWS_REGION: eu-central-1
 
+permissions:
+  id-token: write
+  contents: read
+
 jobs:
   test:
     runs-on: ubuntu-latest
