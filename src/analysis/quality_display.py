@@ -5,6 +5,52 @@ import plotly.graph_objects as go
 from analysis.quality_metrics import assess_spectrum_quality
 
 
+def display_snr_smooth_residual_plot(wl, detrended, smooth, residual):
+    """Plot Part C SNR pipeline: detrended, smoothed, and residual curves (600-1120 nm band)."""
+    if wl is None or len(wl) == 0:
+        return
+    fig = go.Figure()
+    fig.add_trace(
+        go.Scatter(
+            x=wl,
+            y=detrended,
+            mode="lines",
+            name="Detrended",
+            line=dict(color="#94a3b8", width=1.5, dash="dot"),
+        )
+    )
+    fig.add_trace(
+        go.Scatter(
+            x=wl,
+            y=smooth,
+            mode="lines",
+            name="Smoothed (boxcar 11 nm, 2 passes)",
+            line=dict(color="#1e40af", width=2),
+        )
+    )
+    fig.add_trace(
+        go.Scatter(
+            x=wl,
+            y=residual,
+            mode="lines",
+            name="Residual (detrended − smoothed)",
+            line=dict(color="#d97706", width=1.5),
+        )
+    )
+    fig.add_hline(y=0, line_dash="dash", line_color="#64748b", line_width=1)
+    fig.update_layout(
+        title="SNR Pipeline: Smoothed and Residual Spectra (Part C, 600–1120 nm)",
+        xaxis_title="Wavelength (nm)",
+        yaxis_title="Reflectance",
+        template="plotly_white",
+        height=450,
+        hovermode="x unified",
+        showlegend=True,
+        legend=dict(yanchor="top", y=0.99, xanchor="left", x=0.01),
+    )
+    st.plotly_chart(fig, use_container_width=True)
+
+
 def display_quality_metrics_card(
     wavelengths,
     reflectance,
@@ -189,31 +235,36 @@ def display_sliding_window_snr_chart(sw_data):
         )
     )
 
-    # Add threshold line (Robust Gate: 150.0 is Marginal)
+    # Part C uses threshold 20; legacy robust method used 150
+    threshold = sw_data.get("threshold", 20.0)
     fig_sw.add_hline(
-        y=150.0,
+        y=threshold,
         line_dash="dash",
         line_color="#dc2626",
         line_width=2,
-        annotation_text="Robust Threshold (150.0)",
+        annotation_text=f"Pass threshold ({threshold:.0f})",
         annotation_position="bottom right",
     )
 
+    method_label = "Part C (smooth/residual)" if threshold == 20 else "Robust method"
     fig_sw.update_layout(
-        title=f"Local SNR Profile ({sw_window:.0f}nm Sliding Windows - Robust Method)",
+        title=f"Local Signal Quality ({sw_window:.0f}nm Sliding Windows — {method_label})",
         xaxis_title="Wavelength (nm)",
-        yaxis_title="SNR (Robust)",
+        yaxis_title="SNR",
         template="plotly_white",
         height=450,
         hovermode="closest",
-        bargap=0,  # Makes bars touch for continuous look
+        bargap=0,
         margin=dict(l=20, r=80, t=50, b=20),
     )
 
     st.plotly_chart(fig_sw, use_container_width=True)
 
-    # Add disclaimer
-    st.info(
-        f"**Note on Sliding Window SNR**: This profile uses a **'Robust' high-frequency noise method** (residue of signal differences) to detect hardware artifacts or sensor noise in local {sw_window:.0f}nm windows. "
-        "This is calculated differently than the **'Global' detrended SNR** shown above to maintain stability in small wavelength regions."
-    )
+    if threshold == 20:
+        st.caption(
+            "Part C: Same detrend/smooth/residual as global SNR. Per-window SNR = global ptp(smooth) / local std(residual); 3-window moving median applied."
+        )
+    else:
+        st.info(
+            f"**Note on Sliding Window SNR**: This profile uses a **'Robust' high-frequency noise method** (residue of signal differences) in local {sw_window:.0f}nm windows."
+        )

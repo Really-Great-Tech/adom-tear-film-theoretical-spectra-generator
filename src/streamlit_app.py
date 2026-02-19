@@ -62,6 +62,7 @@ from analysis.quality_metrics import (
 from analysis.quality_display import (
     display_quality_metrics_card,
     display_sliding_window_snr_chart,
+    display_snr_smooth_residual_plot,
 )
 
 from tear_film_generator import (
@@ -3643,8 +3644,8 @@ def main():
                 theoretical_aligned.aligned_reflectance
             ), "Aligned theoretical spectrum must match measurement length"
 
-            # Display the quality card using our display helper
-            display_quality_metrics_card(
+            # Display the quality card (returns report for Part C plots)
+            report = display_quality_metrics_card(
                 measurement_features.wavelengths,
                 measurement_features.reflectance,
                 fitted_spectrum=theoretical_aligned.aligned_reflectance,
@@ -3652,50 +3653,70 @@ def main():
                 config=analysis_cfg.get("quality_metrics", {}),
             )
 
-            st.markdown("---")
-            st.markdown("### 📊 Signal-to-Noise Ratio (SNR) Analysis")
-            st.caption(
-                "Visualizing the SNR profile across the analyzed wavelength range using a sliding window."
+            # Part C: Smoothed and residual plot
+            snr_metric = report.metrics.get("snr") if report else None
+            curves = (
+                snr_metric.details.get("snr_smooth_residual_curves")
+                if snr_metric
+                else None
             )
+            if curves is not None and len(curves) == 4:
+                wl_c, detrended, smooth, residual = curves
+                if wl_c is not None and len(wl_c) > 0:
+                    st.markdown("---")
+                    st.markdown("### 📈 Smoothed and Residual Spectra (Part C)")
+                    display_snr_smooth_residual_plot(wl_c, detrended, smooth, residual)
 
+            st.markdown("---")
+            st.markdown("### 📊 Local Signal Quality (Sliding Window SNR)")
             try:
-                # Calculate sliding window SNR (100nm window benchmark)
-                sw_res = calculate_sliding_window_snr(
-                    measurement_features.wavelengths,
-                    measurement_features.reflectance,
-                    window_nm=100.0,
-                )
-                display_sliding_window_snr_chart(sw_res)
-
-                # Metrics beneath the chart
-                m_cols = st.columns(3)
-                with m_cols[0]:
-                    st.markdown(f"**MIN SNR IN WINDOW**\n### {sw_res['min_snr']:.1f}")
-                with m_cols[1]:
-                    st.markdown(f"**AVG SNR**\n### {sw_res['avg_snr']:.1f}")
-                with m_cols[2]:
-                    st.markdown(f"**MAX SNR IN WINDOW**\n### {sw_res['max_snr']:.1f}")
+                sw_data = None
+                if snr_metric and "sliding_window_snr" in snr_metric.details:
+                    sw_data = snr_metric.details["sliding_window_snr"]
+                if sw_data and len(sw_data.get("centers", [])) > 0:
+                    display_sliding_window_snr_chart(sw_data)
+                    m_cols = st.columns(3)
+                    with m_cols[0]:
+                        st.markdown(
+                            f"**MIN SNR IN WINDOW**\n### {sw_data.get('min_snr', 0):.1f}"
+                        )
+                    with m_cols[1]:
+                        st.markdown(
+                            f"**AVG SNR**\n### {sw_data.get('avg_snr', 0):.1f}"
+                        )
+                    with m_cols[2]:
+                        st.markdown(
+                            f"**MAX SNR IN WINDOW**\n### {sw_data.get('max_snr', 0):.1f}"
+                        )
+                else:
+                    # Fallback: legacy sliding window SNR
+                    sw_res = calculate_sliding_window_snr(
+                        measurement_features.wavelengths,
+                        measurement_features.reflectance,
+                        window_nm=100.0,
+                    )
+                    display_sliding_window_snr_chart(sw_res)
+                    m_cols = st.columns(3)
+                    with m_cols[0]:
+                        st.markdown(f"**MIN SNR**\n### {sw_res['min_snr']:.1f}")
+                    with m_cols[1]:
+                        st.markdown(f"**AVG SNR**\n### {sw_res['avg_snr']:.1f}")
+                    with m_cols[2]:
+                        st.markdown(f"**MAX SNR**\n### {sw_res['max_snr']:.1f}")
             except Exception as e:
                 st.error(f"Error calculating SNR profile: {e}")
 
             with st.expander("ℹ️ About Quality Metrics", expanded=False):
                 st.markdown(
                     """
-                The **Quality Metrics** system assesses several key aspects of the measured signal to ensure reliability:
-                
-                - **SNR**: Quantifies measurement quality on the detrended signal in the 600–1120 nm band.
-                  - **Implementation**: Detrend (high-pass), crop to band; noise = std(diff(detrended))/√2 over the band (no edge baseline).
-                  - **Formula**: SNR = (peak-to-peak of detrended) / noise_std.
-                  - **Thresholds**: Excellent ≥ 2.5, Good ≥ 1.5, Marginal ≥ 1.0, Reject < 1.0.
-                - **Peak Quality**: Checks for a minimum peak count and consistency in peak prominence and spacing. Peaks are detected on the detrended signal.
-                - **Signal Integrity**: Validates the dynamic range and ensures baseline drift is within acceptable limits.
-                - **Spectral Completeness**: Verifies that the measurement covers the required wavelength span (600-1200nm) with sufficient point density.
-                - **Fit Quality**: Categorizes how well the current theoretical model matches the measurement (Excellent, Good, Marginal, Poor).
-                
-                **Note on Sliding Window SNR Chart:**
-                Same detrended signal as global SNR; detrend once over 600–1120 nm, then compute SNR in each sliding window. No per-window detrending.
-                
-                Low quality scores usually indicate measurement artifacts, excessive noise, or physical samples that don't match our current optical model.
+                The **Quality Metrics** system (Part C) assesses the measured signal for reliable thickness extraction:
+
+                - **Global SNR (Part C)**: 600–1120 nm band → Butterworth detrend (0.008, order 3) → boxcar smooth (11 nm, 2 passes) → residual = detrended − smoothed. Signal = ptp(smoothed), noise = std(residual), **SNR = signal/noise**. **Pass ≥ 20**, Reject < 20.
+                - **Smoothed and Residual plot**: Shows detrended, smoothed, and residual curves used for the global SNR.
+                - **Local Signal Quality**: Sliding window (100 nm, 50 nm stride), same smooth/residual pipeline; per-window SNR = global ptp(smoothed) / local std(residual); 3-window moving median applied.
+                - **Peak Quality**: Minimum peak count and consistency (prominence/spacing). **Signal Integrity**, **Spectral Completeness**, and **Fit Quality** complete the assessment.
+
+                Low quality usually indicates measurement artifacts, excessive noise, or samples that don't match the optical model.
                 """
                 )
 

@@ -1,9 +1,11 @@
 """
-SNR (signal-to-noise ratio) for tear film spectra, following Yash's recommendations:
+SNR (signal-to-noise ratio) for tear film spectra — Part C: Automated Quality Metrics.
 
-- Compute on detrended signal (not raw); restrict to clinically relevant band (e.g. 600–1120 nm).
-- Global SNR: no edge baseline; noise from first-difference over the band.
-- Per-window: (1) detrend once then window SNR; (2) window energy + anomaly on raw for robustness.
+- Compute on detrended signal; restrict to band 600–1120 nm.
+- Global SNR: Detrend → boxcar smooth (11 nm, 2 passes) → residual = detrended - smooth.
+  Signal = ptp(smooth), noise = std(residual), SNR = signal/noise. Pass threshold ≥ 20.
+- Per-window: signal_global = ptp(smooth), noise_local = std(residual in window),
+  SNR_window = signal_global / noise_local; 3-window moving median applied.
 """
 
 from __future__ import annotations
@@ -13,7 +15,10 @@ from typing import Tuple
 
 import numpy as np
 
-# Quality bands (tuned for detrended spectra; from Yash meeting prep)
+# Part C spec: Pass ≥ 20, Reject < 20
+SNR_PASS_THRESHOLD = 20.0
+
+# Display bands (for UI)
 SNR_EXCELLENT = 2.5
 SNR_GOOD = 1.5
 SNR_MARGINAL = 1.0
@@ -29,6 +34,7 @@ class GlobalSNRResult:
     noise_std: float
     band_used: Tuple[float, float]
     n_points: int
+    passed: bool  # True if snr >= SNR_PASS_THRESHOLD (Part C spec)
 
 
 @dataclass
@@ -42,16 +48,8 @@ class WindowSNRResult:
     snr_min: float
     snr_max: float
     snr_mean: float
-
-
-@dataclass
-class WindowEnergyAnomalyResult:
-    """Per-window energy and anomaly (on raw reflectance; no per-window detrend)."""
-
-    window_centers_nm: np.ndarray
-    energy_per_window: np.ndarray  # sum of squares in window
-    anomaly_zscore: np.ndarray     # z-score of energy vs other windows
-    anomaly_median_dev: np.ndarray # |energy - median(energy)| (optional alternative)
+    window_nm: float
+    stride_nm: float
 
 
 def _crop_to_band(
@@ -89,15 +87,10 @@ def compute_global_snr(
     boxcar_repeats: int = 2,
 ) -> GlobalSNRResult:
     """
-    Global SNR on detrended signal, restricted to band.
+    Global SNR on detrended signal, restricted to band (Part C).
 
-    Two modes (use_smooth_residual):
-    - True (default): Smooth/residual separation. Detrend → boxcar smooth → residual = detrended - smooth.
-      Signal = ptp(smooth), noise = std(residual). More consistent for noisy spectra (noise no longer
-      inflates "signal"). Boxcar width default 11 nm (Shlomo); 17 nm was previous optimum.
-    - False: Legacy. Signal = ptp(detrended), noise = std(diff(detrended))/√2 (no edge baseline).
-
-    Returns SNR value, quality band (excellent/good/marginal/reject), and diagnostics.
+    use_smooth_residual=True (default): Detrend → boxcar smooth → residual = detrended - smooth.
+    Signal = ptp(smooth), noise = std(residual). Pass threshold ≥ 20.
     """
     from .measurement_utils import detrend_signal, boxcar_smooth
 
@@ -111,12 +104,15 @@ def compute_global_snr(
             noise_std=0.0,
             band_used=band_nm,
             n_points=len(wl),
+            passed=False,
         )
 
     detrended = detrend_fn(wl, refl, detrend_cutoff, detrend_order)
 
     if use_smooth_residual:
-        smooth = boxcar_smooth(detrended, wl, width_nm=boxcar_width_nm, repeats=boxcar_repeats)
+        smooth = boxcar_smooth(
+            detrended, wl, width_nm=boxcar_width_nm, repeats=boxcar_repeats
+        )
         residual = detrended - smooth
         signal_ptp = float(np.ptp(smooth))
         noise_std = float(np.std(residual, ddof=1)) if len(residual) > 1 else 0.0
@@ -129,6 +125,7 @@ def compute_global_snr(
     else:
         snr = signal_ptp / noise_std
 
+    passed = snr >= SNR_PASS_THRESHOLD
     if snr >= SNR_EXCELLENT:
         quality_band = "excellent"
     elif snr >= SNR_GOOD:
@@ -145,6 +142,7 @@ def compute_global_snr(
         noise_std=noise_std,
         band_used=band_nm,
         n_points=len(wl),
+        passed=passed,
     )
 
 
@@ -161,8 +159,7 @@ def get_snr_smooth_residual_curves(
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """
     Return (wl, detrended, smooth, residual) in the SNR band for plotting.
-    Uses the same pipeline as compute_global_snr (detrend → boxcar smooth → residual).
-    Boxcar matches measurement_utils.boxcar_smooth (width_nm, repeats).
+    Same pipeline as compute_global_snr.
     """
     from .measurement_utils import detrend_signal, boxcar_smooth
 
@@ -172,7 +169,9 @@ def get_snr_smooth_residual_curves(
         return np.array([]), np.array([]), np.array([]), np.array([])
 
     detrended = detrend_fn(wl, refl, detrend_cutoff, detrend_order)
-    smooth = boxcar_smooth(detrended, wl, width_nm=boxcar_width_nm, repeats=boxcar_repeats)
+    smooth = boxcar_smooth(
+        detrended, wl, width_nm=boxcar_width_nm, repeats=boxcar_repeats
+    )
     residual = detrended - smooth
     return wl, detrended, smooth, residual
 
@@ -182,7 +181,7 @@ def _window_slices(
     window_nm: float,
     stride_nm: float,
     band_nm: Tuple[float, float],
-) -> list[Tuple[int, int]]:
+) -> list:
     """Return list of (start_idx, end_idx) for windows within band (by wavelength)."""
     wl = np.asarray(wavelengths)
     lo, hi = band_nm[0], band_nm[1]
@@ -194,7 +193,6 @@ def _window_slices(
     slices = []
     while win_start_wl + window_nm <= wl_band[-1] + 1e-6:
         win_end_wl = win_start_wl + window_nm
-        # indices in wl_band for this window
         mask = (wl_band >= win_start_wl) & (wl_band < win_end_wl)
         local_idx = np.where(mask)[0]
         if len(local_idx) >= 2:
@@ -219,11 +217,8 @@ def compute_window_snr(
     boxcar_repeats: int = 2,
 ) -> WindowSNRResult:
     """
-    Per-window quality: global ptp(smooth) / local std(residual).
-
-    Detrend once → boxcar smooth once over full band → residual = detrended - smooth.
-    Global signal = ptp(smooth). Per window: noise = std(residual in window).
-    Window metric = global_signal / local_noise. 3-window moving median applied.
+    Per-window SNR: global ptp(smooth) / local std(residual).
+    Same detrend → boxcar smooth → residual. 3-window moving median on per-window SNR.
     """
     from .measurement_utils import detrend_signal, boxcar_smooth
 
@@ -238,10 +233,14 @@ def compute_window_snr(
             snr_min=0.0,
             snr_max=0.0,
             snr_mean=0.0,
+            window_nm=window_nm,
+            stride_nm=stride_nm,
         )
 
     detrended = detrend_fn(wl, refl, detrend_cutoff, detrend_order)
-    smooth = boxcar_smooth(detrended, wl, width_nm=boxcar_width_nm, repeats=boxcar_repeats)
+    smooth = boxcar_smooth(
+        detrended, wl, width_nm=boxcar_width_nm, repeats=boxcar_repeats
+    )
     residual = detrended - smooth
 
     global_signal_ptp = float(np.ptp(smooth))
@@ -256,6 +255,8 @@ def compute_window_snr(
             snr_min=0.0,
             snr_max=0.0,
             snr_mean=0.0,
+            window_nm=window_nm,
+            stride_nm=stride_nm,
         )
 
     centers = []
@@ -270,11 +271,10 @@ def compute_window_snr(
         snrs.append(global_signal_ptp / noise if noise > 1e-12 else 0.0)
 
     snr_arr = np.array(snrs)
-    # Smooth along windows so a fixed threshold (e.g. 20) reliably flags noisy regions
     if len(snr_arr) >= 2:
         from scipy.ndimage import median_filter
+
         snr_arr = median_filter(snr_arr.astype(float), size=3, mode="nearest")
-    # signal_ptp_per_window: same global value for every window (for consistency)
     ptps = np.full(len(centers), global_signal_ptp)
     return WindowSNRResult(
         window_centers_nm=np.array(centers),
@@ -284,61 +284,24 @@ def compute_window_snr(
         snr_min=float(np.min(snr_arr)) if len(snr_arr) else 0.0,
         snr_max=float(np.max(snr_arr)) if len(snr_arr) else 0.0,
         snr_mean=float(np.mean(snr_arr)) if len(snr_arr) else 0.0,
+        window_nm=window_nm,
+        stride_nm=stride_nm,
     )
 
 
-def compute_window_energy_anomaly(
-    wavelengths: np.ndarray,
-    reflectance: np.ndarray,
-    *,
-    band_nm: Tuple[float, float] = (600.0, 1120.0),
-    window_nm: float = 100.0,
-    stride_nm: float = 50.0,
-) -> WindowEnergyAnomalyResult:
-    """
-    Per-window energy (sum of squares) and anomaly (z-score of energy vs other windows).
-    Uses raw reflectance in band; no detrending (robust for short windows).
-    """
-    wl, refl = _crop_to_band(wavelengths, reflectance, band_nm)
-    if len(wl) < 2:
-        return WindowEnergyAnomalyResult(
-            window_centers_nm=np.array([]),
-            energy_per_window=np.array([]),
-            anomaly_zscore=np.array([]),
-            anomaly_median_dev=np.array([]),
-        )
-
-    slices = _window_slices(wl, window_nm, stride_nm, (float(wl.min()), float(wl.max())))
-    if not slices:
-        return WindowEnergyAnomalyResult(
-            window_centers_nm=np.array([]),
-            energy_per_window=np.array([]),
-            anomaly_zscore=np.array([]),
-            anomaly_median_dev=np.array([]),
-        )
-
-    centers = []
-    energies = []
-    for start, end in slices:
-        w = wl[start:end]
-        r_win = refl[start:end]
-        centers.append(float(0.5 * (w[0] + w[-1])))
-        energies.append(float(np.sum(r_win.astype(float) ** 2)))
-
-    energy_arr = np.array(energies)
-    centers_arr = np.array(centers)
-    if len(energy_arr) < 2:
-        zscore = np.zeros_like(energy_arr)
-        med_dev = np.zeros_like(energy_arr)
-    else:
-        std = np.std(energy_arr, ddof=1)
-        zscore = (energy_arr - np.mean(energy_arr)) / std if std > 1e-12 else np.zeros_like(energy_arr)
-        zscore = np.nan_to_num(zscore, nan=0.0, posinf=0.0, neginf=0.0)
-        med = np.median(energy_arr)
-        med_dev = np.abs(energy_arr - med)
-    return WindowEnergyAnomalyResult(
-        window_centers_nm=centers_arr,
-        energy_per_window=energy_arr,
-        anomaly_zscore=zscore,
-        anomaly_median_dev=med_dev,
-    )
+def window_snr_result_to_dict(result: WindowSNRResult) -> dict:
+    """Convert WindowSNRResult to dict for display (centers, snr_values, ranges, etc.)."""
+    centers = result.window_centers_nm
+    half = result.window_nm / 2.0
+    ranges = [(float(c - half), float(c + half)) for c in centers]
+    return {
+        "centers": centers,
+        "snr_values": result.snr_per_window,
+        "ranges": ranges,
+        "min_snr": result.snr_min,
+        "max_snr": result.snr_max,
+        "avg_snr": result.snr_mean,
+        "window_nm": result.window_nm,
+        "stride_nm": result.stride_nm,
+        "threshold": SNR_PASS_THRESHOLD,  # Part C pass threshold for chart
+    }

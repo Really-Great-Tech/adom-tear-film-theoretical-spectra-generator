@@ -1,0 +1,35 @@
+# PyElli: Streamlit UI + FastAPI backend. Run: docker compose up --build
+services:
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile.backend
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./data/Materials:/app/data/Materials:ro
+    environment:
+      - BACKEND_MATERIALS_PATH=/app/data/Materials
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
+  streamlit:
+    build:
+      context: .
+      dockerfile: Dockerfile.streamlit
+    ports:
+      - "8502:8501"   # host:container (8502 avoids conflict with local streamlit on 8501)
+    environment:
+      - BACKEND_URL=http://backend:8000
+    volumes:
+      - ./data/Materials:/app/data/Materials:ro
+      - ./exploration/sample_data:/app/exploration/sample_data
+      - ./exploration/new_spectra:/app/exploration/new_spectra
+      - ./exploration/more_good_spectras:/app/exploration/more_good_spectras
+    depends_on:
+      backend:
+        condition: service_healthy

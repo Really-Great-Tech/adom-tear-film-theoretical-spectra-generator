@@ -16,6 +16,16 @@ from scipy.signal import find_peaks
 ANALYSIS_WAVELENGTH_MIN = 600.0
 ANALYSIS_WAVELENGTH_MAX = 1200.0
 
+# Quality tier thresholds: GOOD (SNR ≥ 20), noisy band 5–20 (NOISY_FITTABLE / NOISY_UNFITTABLE), BAD (<5 or <2 peaks or saturated/flat)
+SNR_GOOD_MIN = 20.0
+SNR_NOISY_LOW = 5.0
+MIN_PEAKS_FOR_QUALITY = 2
+SMOOTHING_IMPROVEMENT_MIN = 0.1
+NOISY_FITTABLE_NRMSE_PERCENT_MAX = 10.0
+GOOD_NRMSE_PERCENT_MAX = 5.0
+GOOD_R2_MIN = 0.90
+GOOD_CHI2_MAX = 1.2
+
 
 @dataclass
 class QualityMetricResult:
@@ -33,7 +43,7 @@ class QualityMetricResult:
 class SpectrumQualityReport:
     """Comprehensive quality assessment report for a spectrum."""
 
-    overall_quality: str  # "Excellent", "Good", "Marginal", "Reject"
+    overall_quality: str  # "GOOD" | "NOISY_FITTABLE" | "NOISY_UNFITTABLE" | "BAD"
     passed_all_checks: bool
     metrics: Dict[str, QualityMetricResult]
     warnings: List[str]
@@ -702,6 +712,75 @@ def check_spectral_completeness(
     )
 
 
+def _compute_quality_tier(
+    metrics: Dict[str, QualityMetricResult],
+    config: Optional[Dict] = None,
+) -> str:
+    """
+    Map metrics to the four quality tiers:
+    GOOD, NOISY_FITTABLE, NOISY_UNFITTABLE, BAD.
+    """
+    cfg = config or {}
+    snr_result = metrics.get("snr")
+    peak_result = metrics.get("peak_quality")
+    fit_result = metrics.get("fit_quality")
+    integrity_result = metrics.get("signal_integrity")
+
+    snr = float(snr_result.value) if snr_result else 0.0
+    peak_count = int(peak_result.details.get("peak_count", 0)) if peak_result else 0
+    saturated = False
+    flat = False
+    if integrity_result and integrity_result.details:
+        sat_frac = integrity_result.details.get("saturation_fraction", 0)
+        dyn_range = integrity_result.details.get("dynamic_range", 0)
+        max_sat = cfg.get("max_saturation_fraction", 0.01)
+        min_dyn = cfg.get("min_dynamic_range", 0.05)
+        saturated = sat_frac >= max_sat
+        flat = dyn_range <= min_dyn
+
+    # BAD: SNR < 5, <2 peaks, saturated, or flat
+    if snr < SNR_NOISY_LOW:
+        return "BAD"
+    if peak_count < MIN_PEAKS_FOR_QUALITY:
+        return "BAD"
+    if saturated or flat:
+        return "BAD"
+
+    # Noisy band: 5 <= SNR < 20
+    if SNR_NOISY_LOW <= snr < SNR_GOOD_MIN:
+        smoothing_improvement = 0.0
+        if snr_result and snr_result.details:
+            smoothing_improvement = float(
+                snr_result.details.get("smoothing_improvement", 0.0)
+            )
+        nrmse = 100.0
+        if fit_result and fit_result.details:
+            nrmse = float(fit_result.details.get("nrmse_percent", 100.0))
+        if (
+            smoothing_improvement > SMOOTHING_IMPROVEMENT_MIN
+            and nrmse < NOISY_FITTABLE_NRMSE_PERCENT_MAX
+        ):
+            return "NOISY_FITTABLE"
+        return "NOISY_UNFITTABLE"
+
+    # SNR >= 20: candidate for GOOD
+    if peak_count < MIN_PEAKS_FOR_QUALITY:
+        return "BAD"
+    # GOOD requires fit criteria when fit is present
+    if fit_result and fit_result.details:
+        nrmse = float(fit_result.details.get("nrmse_percent", 100.0))
+        r2 = float(fit_result.details.get("r_squared", 0.0))
+        chi2 = float(fit_result.details.get("reduced_chi_squared", 999.0))
+        if (
+            nrmse >= GOOD_NRMSE_PERCENT_MAX
+            or r2 < GOOD_R2_MIN
+            or chi2 >= GOOD_CHI2_MAX
+        ):
+            # Still good SNR/peaks but fit not excellent -> treat as Good for tier
+            return "GOOD"
+    return "GOOD"
+
+
 def assess_spectrum_quality(
     wavelengths: np.ndarray,
     reflectance: np.ndarray,
@@ -739,7 +818,7 @@ def assess_spectrum_quality(
 
     if len(wavelengths) < 10:
         return SpectrumQualityReport(
-            overall_quality="Reject",
+            overall_quality="BAD",
             passed_all_checks=False,
             metrics={},
             warnings=["Spectrum does not cover the 600-1200nm usable range"],
@@ -750,35 +829,104 @@ def assess_spectrum_quality(
     warnings = []
     failures = []
 
-    # Metric 1: SNR (default: smooth/residual with boxcar 11 nm, Shlomo)
-    snr_result = calculate_snr(
-        wavelengths,
-        reflectance,
-        use_detrended=config.get("use_detrended_snr", True),
-        cutoff_frequency=config.get("snr_cutoff_frequency", 0.008),
-        filter_order=config.get("snr_filter_order", 3),
-        use_smooth_residual=config.get("use_smooth_residual_snr", True),
-        boxcar_width_nm=float(config.get("snr_boxcar_width_nm", 11.0)),
-        boxcar_repeats=int(config.get("snr_boxcar_repeats", 2)),
-    )
+    # Metric 1: SNR (Part C: smooth/residual pipeline with threshold 20, or legacy)
+    use_part_c_snr = config.get("use_part_c_snr", True)
+    if use_part_c_snr:
+        from .snr import (
+            SNR_PASS_THRESHOLD,
+            _noise_std_first_difference,
+            compute_global_snr,
+            get_snr_smooth_residual_curves,
+            compute_window_snr,
+            window_snr_result_to_dict,
+        )
 
-    # Sliding window SNR: same boxcar smooth/residual as global
-    snr_kw = {
-        "boxcar_width_nm": float(config.get("snr_boxcar_width_nm", 11.0)),
-        "boxcar_repeats": int(config.get("snr_boxcar_repeats", 2)),
-    }
-    if "snr_window_nm" in config:
-        snr_kw["window_nm"] = config["snr_window_nm"]
-    if "snr_stride_nm" in config:
-        snr_kw["stride_nm"] = config["snr_stride_nm"]
+        band_nm = (600.0, 1120.0)
+        global_snr = compute_global_snr(
+            wavelengths,
+            reflectance,
+            band_nm=band_nm,
+            detrend_cutoff=config.get("snr_cutoff_frequency", 0.008),
+            detrend_order=config.get("snr_filter_order", 3),
+            boxcar_width_nm=11.0,
+            boxcar_repeats=2,
+        )
+        wl_curves, detrended, smooth, residual = get_snr_smooth_residual_curves(
+            wavelengths,
+            reflectance,
+            band_nm=band_nm,
+            detrend_cutoff=config.get("snr_cutoff_frequency", 0.008),
+            detrend_order=config.get("snr_filter_order", 3),
+            boxcar_width_nm=11.0,
+            boxcar_repeats=2,
+        )
+        # For quality tiers: raw SNR (no smoothing) and smoothing improvement
+        raw_noise = _noise_std_first_difference(detrended)
+        raw_signal = float(np.ptp(detrended))
+        raw_snr = (
+            raw_signal / raw_noise
+            if (raw_noise and raw_noise > 1e-12)
+            else 0.0
+        )
+        smoothing_improvement = (
+            (global_snr.snr - raw_snr) / raw_snr
+            if (raw_snr and raw_snr > 1e-12)
+            else 0.0
+        )
+        window_nm = config.get("snr_window_nm", 100.0)
+        stride_nm = config.get("snr_stride_nm", 50.0)
+        window_snr_result = compute_window_snr(
+            wavelengths,
+            reflectance,
+            band_nm=band_nm,
+            window_nm=window_nm,
+            stride_nm=stride_nm,
+            detrend_cutoff=config.get("snr_cutoff_frequency", 0.008),
+            detrend_order=config.get("snr_filter_order", 3),
+            boxcar_width_nm=11.0,
+            boxcar_repeats=2,
+        )
+        sw_dict = window_snr_result_to_dict(window_snr_result)
 
-    window_snr = calculate_sliding_window_snr(wavelengths, reflectance, **snr_kw)
-    snr_result.details["sliding_window_snr"] = window_snr
+        snr_result = QualityMetricResult(
+            passed=global_snr.passed,
+            value=global_snr.snr,
+            threshold=SNR_PASS_THRESHOLD,
+            metric_name="SNR",
+            status=global_snr.quality_band.title(),
+            details={
+                "snr": global_snr.snr,
+                "signal_ptp": global_snr.signal_ptp,
+                "noise_std": global_snr.noise_std,
+                "quality_level": global_snr.quality_band,
+                "method": "Part C (smooth/residual, 600-1120 nm, boxcar 11 nm 2 passes)",
+                "detrended": True,
+                "snr_smooth_residual_curves": (wl_curves, detrended, smooth, residual),
+                "sliding_window_snr": sw_dict,
+                "raw_snr": raw_snr,
+                "smoothing_improvement": smoothing_improvement,
+            },
+        )
+    else:
+        snr_result = calculate_snr(
+            wavelengths,
+            reflectance,
+            use_detrended=config.get("use_detrended_snr", True),
+            cutoff_frequency=config.get("snr_cutoff_frequency", 0.008),
+            filter_order=config.get("snr_filter_order", 3),
+        )
+        snr_kw = {}
+        if "snr_window_nm" in config:
+            snr_kw["window_nm"] = config["snr_window_nm"]
+        window_snr = calculate_sliding_window_snr(wavelengths, reflectance, **snr_kw)
+        snr_result.details["sliding_window_snr"] = window_snr
 
     metrics["snr"] = snr_result
 
     if not snr_result.passed:
-        failures.append(f"SNR too low: {snr_result.value:.2f} < {snr_result.threshold}")
+        failures.append(
+            f"SNR too low: {snr_result.value:.2f} < {snr_result.threshold}"
+        )
     elif snr_result.details.get("quality_level") == "Marginal":
         warnings.append(f"SNR marginal: {snr_result.value:.2f}")
 
@@ -809,11 +957,7 @@ def assess_spectrum_quality(
             chi_squared_range=config.get("chi_squared_range", (0.8, 1.2)),
         )
         metrics["fit_quality"] = fit_result
-
-        if not fit_result.passed:
-            failures.append(
-                f"Fit quality poor: {fit_result.details.get('checks_failed', 0)} checks failed"
-            )
+        # Fit quality is diagnostic only: do not use it for pass/fail or failures.
 
     # Metric 4: Signal Integrity (Evaluative)
     integrity_result = check_signal_integrity(
@@ -847,22 +991,10 @@ def assess_spectrum_quality(
             f"Spectral completeness insufficient: {completeness_result.details.get('checks_failed', 0)} checks failed"
         )
 
-    # Determine overall quality
-    passed_all_checks = all(m.passed for m in metrics.values())
-    has_warnings = len(warnings) > 0 or any(
-        m.status == "Marginal" for m in metrics.values()
-    )
-
-    if not passed_all_checks:
-        overall_quality = "Reject"
-    elif has_warnings:
-        overall_quality = "Good"
-    else:
-        # Check if everything is Excellent
-        if all(m.status == "Excellent" for m in metrics.values()):
-            overall_quality = "Excellent"
-        else:
-            overall_quality = "Good"
+    # Overall quality: four tiers (GOOD, NOISY_FITTABLE, NOISY_UNFITTABLE, BAD)
+    overall_quality = _compute_quality_tier(metrics, config)
+    # Passed = usable for fitting (GOOD or NOISY_FITTABLE)
+    passed_all_checks = overall_quality in ("GOOD", "NOISY_FITTABLE")
 
     return SpectrumQualityReport(
         overall_quality=overall_quality,

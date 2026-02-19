@@ -14,9 +14,9 @@ import logging
 import sys
 from pathlib import Path
 import time
-from concurrent.futures import ThreadPoolExecutor
 import warnings
 import re
+from concurrent.futures import ThreadPoolExecutor
 
 import numpy as np
 import pandas as pd
@@ -117,6 +117,16 @@ from exploration.pyelli_exploration.pyelli_utils import (
 from exploration.pyelli_exploration.pyelli_grid_search import (
     PyElliGridSearch,
     calculate_peak_based_score,
+    compute_deviation_vs_measured,
+    mape_pyelli_vs_lta_normalized,
+)
+from exploration.pyelli_exploration.backend_client import (
+    BACKEND_REQUIRED_MESSAGE,
+    get_backend_url,
+    post_grid_search as backend_post_grid_search,
+    post_theoretical as backend_post_theoretical,
+    post_align_spectra as backend_post_align_spectra,
+    result_dict_to_view,
 )
 from src.analysis.measurement_utils import (
     detrend_signal,
@@ -206,6 +216,13 @@ if "grid_mu_max" not in st.session_state:
     st.session_state.grid_mu_max = 7000.0
 if "grid_mu_step" not in st.session_state:
     st.session_state.grid_mu_step = 100.0
+
+# Require backend: app must use backend at all times; fail fast with clear error if not configured
+try:
+    get_backend_url()
+except RuntimeError:
+    st.error(BACKEND_REQUIRED_MESSAGE)
+    st.stop()
 
 
 def validate_material_file(uploaded_file) -> tuple[bool, str, pd.DataFrame | None]:
@@ -1669,21 +1686,9 @@ if selected_file and Path(selected_file).exists():
         wl_display = wavelengths[wl_mask]
         meas_display = measured[wl_mask]
 
-        grid_search = PyElliGridSearch(
-            MATERIALS_PATH,
-            lipid_file=st.session_state.selected_lipid_material,
-            water_file=st.session_state.selected_water_material,
-            mucus_file=st.session_state.selected_mucus_material,
-            substratum_file=st.session_state.selected_substratum_material,
-            custom_materials=st.session_state.custom_materials,
-        )
-
-        # Run grid search if button pressed
+        # Run grid search if button pressed (always via backend)
         if run_autofit:
             start_time = time.perf_counter()
-
-            # Capture session state values BEFORE entering thread (main thread)
-            # This ensures we use the correct values even if session_state isn't thread-safe
             captured_lipid_range = (
                 st.session_state.get("grid_lipid_min", 9.0),
                 st.session_state.get("grid_lipid_max", 250.0),
@@ -1700,62 +1705,57 @@ if selected_file and Path(selected_file).exists():
                 st.session_state.get("grid_mu_step", 100.0),
             )
 
-            def _run_search():
-                return grid_search.run_grid_search(
-                    wavelengths,
-                    measured,
-                    lipid_range=captured_lipid_range,
-                    aqueous_range=captured_aqueous_range,
-                    roughness_range=captured_roughness_range,
-                    top_k=10,
-                    enable_roughness=True,
-                    search_strategy="Dynamic Search",
-                    max_combinations=30000,
+            progress_placeholder.progress(0, text='⏳ Starting grid search...')
+
+            def _call_backend():
+                return backend_post_grid_search(
+                    wavelengths.tolist(), measured.tolist(),
+                    captured_lipid_range, captured_aqueous_range, captured_roughness_range,
+                    top_k=10, search_strategy='Dynamic Search', max_combinations=30000,
+                    lipid_file=st.session_state.get('selected_lipid_material'),
+                    water_file=st.session_state.get('selected_water_material'),
+                    mucus_file=st.session_state.get('selected_mucus_material'),
+                    substratum_file=st.session_state.get('selected_substratum_material'),
                 )
 
-            # Show progress in the placeholder above the tabs
-            progress_placeholder.progress(0, text="⏳ Starting grid search...")
-
-            with ThreadPoolExecutor(max_workers=1) as executor:
-                future = executor.submit(_run_search)
-                # Update progress bar and timer while running
-                while future.running():
-                    elapsed = time.perf_counter() - start_time
-                    mins, secs = divmod(int(elapsed), 60)
-                    # Update progress bar (estimate ~5 min max)
-                    progress_pct = min(0.99, elapsed / 300)
-                    progress_placeholder.progress(
-                        progress_pct,
-                        text=f"⏳ Running grid search... {mins:02d}:{secs:02d} elapsed",
-                    )
-                    time.sleep(0.5)
-                try:
-                    results = future.result()
-                except Exception as exc:
-                    progress_placeholder.empty()
-                    st.error(f"Grid search failed: {exc}")
-                    raise
+            try:
+                with ThreadPoolExecutor(max_workers=1) as executor:
+                    future = executor.submit(_call_backend)
+                    while not future.done():
+                        elapsed = time.perf_counter() - start_time
+                        mins, secs = divmod(int(elapsed), 60)
+                        progress_pct = min(0.99, elapsed / 600)  # cap at 10 min for bar
+                        progress_placeholder.progress(
+                            progress_pct,
+                            text=f'⏳ Running grid search... **{mins:02d}:{secs:02d}** elapsed',
+                        )
+                        time.sleep(0.5)
+                    results_raw = future.result()
+                results = [result_dict_to_view(r) for r in results_raw]
+            except Exception as exc:
+                progress_placeholder.empty()
+                st.error(f'Grid search failed: {exc}')
+                raise
 
             elapsed = time.perf_counter() - start_time
             mins, secs = divmod(int(elapsed), 60)
-            # Clear progress bar and show completion time
             progress_placeholder.empty()
             st.session_state.last_run_elapsed_s = elapsed
+            progress_placeholder.success(
+                f'✅ Grid search completed in **{mins:02d}:{secs:02d}** ({elapsed:.1f}s)',
+            )
 
             if results:
                 best = results[0]
-                # Store results immediately so plots can use them
                 st.session_state.autofit_results = results
-                # Set selected rank to 1 (best result) when grid search completes
                 st.session_state.selected_rank = 1
-                # Store the update to be applied before widgets are created on next run
+                st.session_state.selected_rank_dropdown = 1
                 st.session_state.pending_update = {
                     "lipid": best.lipid_nm,
                     "aqueous": best.aqueous_nm,
                     "mucus": best.mucus_nm,
                     "results": results,
                 }
-                # Rerun to update sliders and plots
                 st.rerun()
             else:
                 st.warning("⚠️ No valid fits found")
@@ -1779,19 +1779,13 @@ if selected_file and Path(selected_file).exists():
 
         if bestfit_file_path and Path(bestfit_file_path).exists():
             try:
-                bestfit_wl, bestfit_refl = load_bestfit_spectrum(
-                    Path(bestfit_file_path)
-                )
-                # Interpolate BestFit to match wavelengths
+                bestfit_wl, bestfit_refl = load_bestfit_spectrum(Path(bestfit_file_path))
                 bestfit_interp = np.interp(wavelengths, bestfit_wl, bestfit_refl)
-                # Align BestFit with measured
-                bestfit_aligned = grid_search._align_spectra(
-                    measured,
-                    bestfit_interp,
-                    focus_min=600.0,
-                    focus_max=1120.0,
-                    wavelengths=wavelengths,
-                )
+                bestfit_aligned = np.array(backend_post_align_spectra(
+                    measured.tolist(), bestfit_interp.tolist(),
+                    focus_min_nm=600.0, focus_max_nm=1120.0,
+                    wavelengths=wavelengths.tolist(),
+                ))
                 bestfit_display = bestfit_aligned[wl_mask]
 
                 # Calculate metrics for BestFit
@@ -1809,12 +1803,15 @@ if selected_file and Path(selected_file).exists():
                 logger.warning(f"Error loading BestFit spectrum: {e}")
                 bestfit_display = None
 
-        # Calculate theoretical spectrum with current params
-        # Convert roughness from Angstroms to nm for calculate_theoretical_spectrum
-        roughness_nm = display_mucus / 10.0
-        theoretical = grid_search.calculate_theoretical_spectrum(
-            wavelengths, display_lipid, display_aqueous, roughness_nm
-        )
+        # Calculate theoretical spectrum with current params (roughness from slider is in Å)
+        theoretical = np.array(backend_post_theoretical(
+            wavelengths.tolist(),
+            display_lipid, display_aqueous, display_mucus,
+            lipid_file=st.session_state.get('selected_lipid_material'),
+            water_file=st.session_state.get('selected_water_material'),
+            mucus_file=st.session_state.get('selected_mucus_material'),
+            substratum_file=st.session_state.get('selected_substratum_material'),
+        ))
 
         # Use simple proportional scaling for alignment (same as grid search worker)
         # Align using the wavelength range from the slider
@@ -1863,28 +1860,51 @@ if selected_file and Path(selected_file).exists():
 
         # Store computed values for use in tabs
         computed_data = {
-            "wavelengths": wavelengths,
-            "measured": measured,
-            "wl_display": wl_display,
-            "meas_display": meas_display,
-            "theoretical_display": theoretical_display,  # PyElli theoretical
-            "bestfit_display": bestfit_display,  # LTA BestFit
-            "display_theoretical": display_theoretical,  # What to actually display
-            "score_result": display_score_result,
-            "pyelli_score_result": score_result,  # Keep PyElli score
-            "bestfit_score_result": bestfit_score_result,  # Keep BestFit score
-            "correlation": display_correlation,
-            "pyelli_correlation": correlation,  # Keep PyElli correlation
-            "bestfit_correlation": bestfit_correlation,  # Keep BestFit correlation
-            "display_lipid": display_lipid,
-            "display_aqueous": display_aqueous,
-            "display_mucus": display_mucus,
-            "grid_search": grid_search,
-            "theoretical_label": theoretical_label,
-            "show_bestfit": show_bestfit,
-            "show_both_theoretical": show_both_theoretical,
-            "has_bestfit": bestfit_display is not None,
+            'wavelengths': wavelengths,
+            'measured': measured,
+            'wl_display': wl_display,
+            'meas_display': meas_display,
+            'theoretical_display': theoretical_display,  # PyElli theoretical
+            'bestfit_display': bestfit_display,  # LTA BestFit
+            'display_theoretical': display_theoretical,  # What to actually display
+            'score_result': display_score_result,
+            'pyelli_score_result': score_result,  # Keep PyElli score
+            'bestfit_score_result': bestfit_score_result,  # Keep BestFit score
+            'correlation': display_correlation,
+            'pyelli_correlation': correlation,  # Keep PyElli correlation
+            'bestfit_correlation': bestfit_correlation,  # Keep BestFit correlation
+            'display_lipid': display_lipid,
+            'display_aqueous': display_aqueous,
+            'display_mucus': display_mucus,
+            'theoretical_label': theoretical_label,
+            'show_bestfit': show_bestfit,
+            'show_both_theoretical': show_both_theoretical,
+            'has_bestfit': bestfit_display is not None,
         }
+        # Deviation vs measured: PyElli theoretical (compute from current spectra)
+        deviation_vs_measured = None
+        if theoretical_display is not None and len(theoretical_display) >= 10:
+            deviation_vs_measured = compute_deviation_vs_measured(wl_display, meas_display, theoretical_display)
+        # Prefer grid-search value when current params match a result (same formula)
+        autofit = st.session_state.get('autofit_results')
+        if autofit:
+            for r in autofit:
+                if r.lipid_nm == display_lipid and r.aqueous_nm == display_aqueous and r.mucus_nm == display_mucus:
+                    if getattr(r, 'deviation_vs_measured', None) is not None:
+                        deviation_vs_measured = r.deviation_vs_measured
+                    break
+        computed_data['deviation_vs_measured'] = deviation_vs_measured
+        # Deviation vs measured: LTA BestFit theoretical (when available)
+        deviation_vs_measured_bestfit = None
+        if bestfit_display is not None and len(bestfit_display) >= 10:
+            deviation_vs_measured_bestfit = compute_deviation_vs_measured(wl_display, meas_display, bestfit_display)
+        computed_data['deviation_vs_measured_bestfit'] = deviation_vs_measured_bestfit
+        # Which deviation to show in single-metrics view (matches displayed theoretical)
+        computed_data['deviation_vs_measured_display'] = (
+            deviation_vs_measured_bestfit
+            if (show_bestfit and not show_both_theoretical and bestfit_display is not None)
+            else deviation_vs_measured
+        )
     except Exception as e:
         st.error(f"Error loading spectrum: {e}")
         computed_data = None
@@ -2195,8 +2215,8 @@ with tabs[0]:
 
         if show_both_metrics:
             # Show both PyElli and BestFit metrics side by side
-            st.markdown("#### PyElli Theoretical")
-            mcols_pyelli = st.columns(5)
+            st.markdown('#### PyElli Theoretical')
+            mcols_pyelli = st.columns(6)
             with mcols_pyelli[0]:
                 score_icon = (
                     "🟢"
@@ -2222,13 +2242,13 @@ with tabs[0]:
                 )
                 st.metric("Matched Peaks", f"{matched_peaks}")
             with mcols_pyelli[4]:
-                st.metric(
-                    "Parameters",
-                    f"L={computed_data['display_lipid']}, A={computed_data['display_aqueous']}, R={computed_data['display_mucus']:.0f}Å",
-                )
+                dvm = computed_data.get('deviation_vs_measured')
+                st.metric('Dev vs Meas', f'{dvm:.2f}%' if dvm is not None else '-')
+            with mcols_pyelli[5]:
+                st.metric('Parameters', f'L={computed_data["display_lipid"]}, A={computed_data["display_aqueous"]}, R={computed_data["display_mucus"]:.0f}Å')
 
-            st.markdown("#### LTA BestFit")
-            mcols_bestfit = st.columns(4)
+            st.markdown('#### LTA BestFit')
+            mcols_bestfit = st.columns(5)
             with mcols_bestfit[0]:
                 score_icon = (
                     "🟢"
@@ -2249,10 +2269,11 @@ with tabs[0]:
                 rmse_val = computed_data["bestfit_score_result"].get("rmse", 0.0)
                 st.metric("RMSE", f"{rmse_val:.5f}")
             with mcols_bestfit[3]:
-                matched_peaks = int(
-                    computed_data["bestfit_score_result"].get("matched_peaks", 0)
-                )
-                st.metric("Matched Peaks", f"{matched_peaks}")
+                matched_peaks = int(computed_data['bestfit_score_result'].get('matched_peaks', 0))
+                st.metric('Matched Peaks', f'{matched_peaks}')
+            with mcols_bestfit[4]:
+                dvm_bf = computed_data.get('deviation_vs_measured_bestfit')
+                st.metric('Dev vs Meas', f'{dvm_bf:.2f}%' if dvm_bf is not None else '-')
 
             # === DEVIATION SCORE: PyElli vs LTA Comparison ===
             st.markdown("---")
@@ -2273,24 +2294,8 @@ with tabs[0]:
                 pyelli_theo_aligned = pyelli_theo[:min_len]
                 lta_bestfit_aligned = lta_bestfit[:min_len]
 
-                # 1. MAPE between PyElli and LTA spectra (avoid division by zero)
-                lta_abs = np.abs(lta_bestfit_aligned)
-                valid_mask = lta_abs > 1e-10
-                if valid_mask.any():
-                    mape = (
-                        float(
-                            np.mean(
-                                np.abs(
-                                    pyelli_theo_aligned[valid_mask]
-                                    - lta_bestfit_aligned[valid_mask]
-                                )
-                                / lta_abs[valid_mask]
-                            )
-                        )
-                        * 100
-                    )
-                else:
-                    mape = 0.0
+                # 1. MAPE between PyElli and LTA (normalize to unit L2 first = shape comparison, scale-invariant)
+                mape = mape_pyelli_vs_lta_normalized(pyelli_theo_aligned, lta_bestfit_aligned)
 
                 # 2. Peak match rate deviation
                 # Compare PyElli matched peaks to LTA's peak count (as reference)
@@ -2387,8 +2392,7 @@ with tabs[0]:
                 st.markdown(
                     f"""
                 <div style="background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 8px; padding: 12px; margin-top: 12px; font-size: 0.85rem; color: #64748b;">
-                    <strong>Target:</strong> ≤10% deviation indicates PyElli's best fit closely matches LTA's best fit.<br>
-                    <strong>Formula:</strong> 40% × MAPE + 30% × Peak Match Δ + 30% × Alignment Δ
+                Formula:</strong> 40% × MAPE + 30% × Peak Match Δ + 30% × Alignment Δ.
                 </div>
                 """,
                     unsafe_allow_html=True,
@@ -2399,7 +2403,7 @@ with tabs[0]:
                 )
         else:
             # Show single set of metrics
-            mcols = st.columns(7)
+            mcols = st.columns(8)
             with mcols[0]:
                 st.metric("Lipid", f"{computed_data['display_lipid']} nm")
             with mcols[1]:
@@ -2420,8 +2424,11 @@ with tabs[0]:
                 rmse_val = score_result.get("rmse", 0.0)
                 st.metric("RMSE", f"{rmse_val:.5f}")
             with mcols[6]:
-                matched_peaks = int(score_result.get("matched_peaks", 0))
-                st.metric("Matched Peaks", f"{matched_peaks}")
+                matched_peaks = int(score_result.get('matched_peaks', 0))
+                st.metric('Matched Peaks', f'{matched_peaks}')
+            with mcols[7]:
+                dvm = computed_data.get('deviation_vs_measured_display')
+                st.metric('Dev vs Meas', f'{dvm:.2f}%' if dvm is not None else '-')
 
         # === DRIFT ANALYSIS (Cycle Jump Indicators) ===
         # Get drift metrics from the appropriate score result
@@ -2523,86 +2530,69 @@ with tabs[0]:
 
             def get_drift_flag(result):
                 """Return drift indicator: ⚠️ if flagged, ✅ if not, - if not analyzed. Uses sidebar thresholds."""
-                if not hasattr(result, "peak_drift_slope"):
-                    return "-"
-                peak_flagged = (
-                    abs(getattr(result, "peak_drift_slope", 0)) > th_peak
-                    and getattr(result, "peak_drift_r_squared", 0) > th_r2
-                )
-                amp_flagged = (
-                    abs(getattr(result, "amplitude_drift_slope", 0)) > th_amp
-                    and getattr(result, "amplitude_drift_r_squared", 0) > th_r2
-                )
-                return "⚠️" if (peak_flagged or amp_flagged) else "✅"
+                if not hasattr(result, 'peak_drift_slope'):
+                    return '-'
+                peak_flagged = (abs(getattr(result, 'peak_drift_slope', 0)) > th_peak and
+                                getattr(result, 'peak_drift_r_squared', 0) > th_r2)
+                amp_flagged = (abs(getattr(result, 'amplitude_drift_slope', 0)) > th_amp and
+                              getattr(result, 'amplitude_drift_r_squared', 0) > th_r2)
+                return '⚠️' if (peak_flagged or amp_flagged) else '✅'
 
-            results_df = pd.DataFrame(
-                [
-                    {
-                        "Rank": i + 1,
-                        "Lipid (nm)": r.lipid_nm,
-                        "Aqueous (nm)": r.aqueous_nm,
-                        "Roughness (Å)": r.mucus_nm,
-                        "Score": f"{r.score:.3f}",
-                        "Corr": f"{r.correlation:.3f}",
-                        "RMSE": f"{r.rmse:.5f}",
-                        "Osc Ratio": f"{r.oscillation_ratio:.2f}",  # CRITICAL: Show amplitude match
-                        "Matched": r.matched_peaks,
-                        "Drift": get_drift_flag(r),  # Cycle jump indicator
-                        "Quality": get_quality(r.score),
-                    }
-                    for i, r in enumerate(st.session_state.autofit_results)
-                ]
+            def fmt_dev_vs_meas(result):
+                """Format deviation vs measured: X.XX% or '-' if not set."""
+                d = getattr(result, 'deviation_vs_measured', None)
+                return f'{d:.2f}%' if d is not None else '-'
+
+            # Top 10 sorted by Dev vs Meas (lowest first) so rank 1 = best by deviation when score ties
+            display_results = sorted(
+                st.session_state.autofit_results,
+                key=lambda r: (r.deviation_vs_measured if getattr(r, 'deviation_vs_measured', None) is not None else float('inf'))
             )
 
+            results_df = pd.DataFrame([{
+                'Rank': i+1,
+                'Lipid (nm)': r.lipid_nm,
+                'Aqueous (nm)': r.aqueous_nm,
+                'Roughness (Å)': r.mucus_nm,
+                'Score': f'{r.score:.3f}',
+                'Corr': f'{r.correlation:.3f}',
+                'RMSE': f'{r.rmse:.5f}',
+                'Osc Ratio': f'{r.oscillation_ratio:.2f}',  # CRITICAL: Show amplitude match
+                'Matched': r.matched_peaks,
+                'Dev vs Meas': fmt_dev_vs_meas(r),
+                'Drift': get_drift_flag(r),  # Cycle jump indicator
+                'Quality': get_quality(r.score)
+            } for i, r in enumerate(display_results)])
+
+            st.caption('Ordered by Dev vs Meas (lowest first). Rank 1 = best deviation among top fits.')
             st.dataframe(results_df, use_container_width=True, hide_index=True)
 
             # Dropdown to select which rank to display in plots
-            st.markdown("---")
-            st.markdown("### 🎯 Select Result to Display")
+            st.markdown('---')
+            st.markdown('### 🎯 Select Result to Display')
 
-            # Get current selected rank from session state, default to 1
-            current_selected_rank = st.session_state.get("selected_rank", 1)
-            max_rank = min(len(st.session_state.autofit_results), 10)
+            # Dropdown is source of truth: only init key when missing so we don't overwrite user's choice on rerun
+            if 'selected_rank_dropdown' not in st.session_state:
+                st.session_state.selected_rank_dropdown = st.session_state.get('selected_rank', 1)
+            max_rank = min(len(display_results), 10)
             rank_options = list(range(1, max_rank + 1))
-
-            # Sync dropdown key with selected_rank before creating the widget (e.g. after "Select Rank N" in Amplitude tab).
-            # Setting the key after the widget is instantiated causes a Streamlit error, so we set it here.
-            if (
-                "selected_rank_dropdown" not in st.session_state
-                or st.session_state.selected_rank_dropdown != current_selected_rank
-            ):
-                st.session_state.selected_rank_dropdown = current_selected_rank
-
-            # Find index for current selection (default to 0 if not in range)
-            default_index = (
-                min(current_selected_rank - 1, len(rank_options) - 1)
-                if current_selected_rank in rank_options
-                else 0
-            )
 
             selected_rank = st.selectbox(
                 "Choose a rank to display in plots:",
                 options=rank_options,
-                index=default_index,
-                key="selected_rank_dropdown",
-                help="Select which grid search result to display in the Spectrum Comparison and Amplitude Analysis plots. The parameter sliders and plots will update to match the selected rank.",
+                key='selected_rank_dropdown',
+                help='Select which grid search result to display in the Spectrum Comparison and Amplitude Analysis plots. The parameter sliders and plots will update to match the selected rank.'
             )
-
-            # Update parameters when rank is selected
-            if 1 <= selected_rank <= len(st.session_state.autofit_results):
-                selected_result = st.session_state.autofit_results[selected_rank - 1]
-
-                # Check if rank changed
+            # Keep selected_rank in session state in sync with dropdown (dropdown is source of truth here)
+            current_selected_rank = st.session_state.get('selected_rank', 1)
+            if 1 <= selected_rank <= len(display_results):
+                selected_result = display_results[selected_rank - 1]
                 if selected_rank != current_selected_rank:
-                    # Update selected rank in session state
                     st.session_state.selected_rank = selected_rank
-                    # Set forced values for the sliders
                     st.session_state.forced_lipid = float(selected_result.lipid_nm)
                     st.session_state.forced_aqueous = float(selected_result.aqueous_nm)
                     st.session_state.forced_mucus = float(selected_result.mucus_nm)
-                    # Increment widget key version to force sliders to reset
                     st.session_state.widget_key_version += 1
-                    # Trigger rerun to update plots and sliders
                     st.rerun()
 
             # PDF Export button
@@ -2629,7 +2619,7 @@ with tabs[0]:
                     ):
                         try:
                             pdf_bytes = generate_pyelli_pdf_report(
-                                autofit_results=st.session_state.autofit_results,
+                                autofit_results=display_results,
                                 measurement_file=Path(selected_file).name,
                                 measured_wavelengths=computed_data["wavelengths"],
                                 measured_spectrum=computed_data["measured"],
@@ -3289,20 +3279,15 @@ with tabs[1]:
 
                     # Gate warning + alternatives on rank 1 being flagged (not current rank), so the section
                     # stays visible when user selects an alternative rank and they can switch between them.
-                    rank1 = (
-                        st.session_state.autofit_results[0]
-                        if st.session_state.autofit_results
-                        else None
-                    )
-                    if rank1 is not None and hasattr(rank1, "peak_drift_slope"):
-                        rank1_peak_flagged = (
-                            abs(rank1.peak_drift_slope) > th_peak_amp
-                            and rank1.peak_drift_r_squared > th_r2_amp
-                        )
-                        rank1_amp_flagged = (
-                            abs(rank1.amplitude_drift_slope) > th_amp_amp
-                            and rank1.amplitude_drift_r_squared > th_r2_amp
-                        )
+                    # Use same Dev-vs-Meas sorted order as Spectrum tab (rank 1 = lowest deviation)
+                    amp_display_results = sorted(
+                        st.session_state.autofit_results,
+                        key=lambda r: (r.deviation_vs_measured if getattr(r, 'deviation_vs_measured', None) is not None else float('inf'))
+                    ) if st.session_state.autofit_results else []
+                    rank1 = amp_display_results[0] if amp_display_results else None
+                    if rank1 is not None and hasattr(rank1, 'peak_drift_slope'):
+                        rank1_peak_flagged = (abs(rank1.peak_drift_slope) > th_peak_amp and rank1.peak_drift_r_squared > th_r2_amp)
+                        rank1_amp_flagged = (abs(rank1.amplitude_drift_slope) > th_amp_amp and rank1.amplitude_drift_r_squared > th_r2_amp)
                         rank1_any_flagged = rank1_peak_flagged or rank1_amp_flagged
                     else:
                         rank1_any_flagged = False
@@ -3318,10 +3303,7 @@ with tabs[1]:
                         )
 
                         # === ALTERNATIVE OPTIONS: Show top unflagged results (shortcut to ranks in table); always visible when rank 1 is flagged ===
-                        if (
-                            st.session_state.autofit_results
-                            and len(st.session_state.autofit_results) > 1
-                        ):
+                        if len(amp_display_results) > 1:
                             # Find alternatives without drift flags (skip rank 1), using sidebar thresholds
                             th_peak_alt = st.session_state.get(
                                 "drift_peak_slope_threshold", 0.05
@@ -3350,9 +3332,7 @@ with tabs[1]:
                                 return p or a
 
                             unflagged_alternatives = []
-                            for i, r in enumerate(
-                                st.session_state.autofit_results[1:10], start=2
-                            ):  # Ranks 2-10
+                            for i, r in enumerate(amp_display_results[1:10], start=2):  # Ranks 2-10 in display order
                                 if not _is_drift_flagged(r):
                                     unflagged_alternatives.append((i, r))
                                 if len(unflagged_alternatives) >= 4:
@@ -3403,15 +3383,10 @@ with tabs[1]:
                                             use_container_width=True,
                                         ):
                                             st.session_state.selected_rank = rank
-                                            st.session_state.forced_lipid = (
-                                                result.lipid_nm
-                                            )
-                                            st.session_state.forced_aqueous = (
-                                                result.aqueous_nm
-                                            )
-                                            st.session_state.forced_mucus = (
-                                                result.mucus_nm
-                                            )
+                                            st.session_state.selected_rank_dropdown = rank  # keep dropdown in sync
+                                            st.session_state.forced_lipid = result.lipid_nm
+                                            st.session_state.forced_aqueous = result.aqueous_nm
+                                            st.session_state.forced_mucus = result.mucus_nm
                                             st.session_state.widget_key_version += 1
                                             st.rerun()
                             else:
@@ -3614,7 +3589,11 @@ with tabs[2]:
 
             sys.path.insert(0, str(PathLib(__file__).parent.parent.parent / "src"))
 
-            from analysis.quality_display import display_quality_metrics_card
+            from analysis.quality_display import (
+                display_quality_metrics_card,
+                display_snr_smooth_residual_plot,
+                display_sliding_window_snr_chart,
+            )
 
             # Display quality metrics
             prominence = st.session_state.get("peak_prom_amp", 0.0001)
@@ -3633,16 +3612,8 @@ with tabs[2]:
             # Add explanation section
             with st.expander("📚 About Quality Metrics", expanded=False):
                 st.markdown("""
-                ### Metric 1: Signal-to-Noise Ratio (SNR)
-                Quantifies measurement quality using smooth/residual separation for consistent noise estimate.
-                - **Method**: Detrend (high-pass) → boxcar smooth (default 11 nm, Shlomo) → residual = detrended − smooth. Signal = ptp(smooth), noise = std(residual).
-                - **Band**: 600–1120 nm only. Noisy spectra get lower SNR because noise stays in the residual and no longer inflates the "signal."
-                - **Config**: `snr_boxcar_width_nm` (11 or 17 nm), `use_smooth_residual_snr` in analysis.quality_metrics.
-                - **Thresholds (Calibrated for Detrended Interference Spectra)**:
-                  - SNR ≥ 2.5: **Excellent** (Top ~15%)
-                  - SNR 1.5-2.5: **Good** (Top ~50%)
-                  - SNR 1.0-1.5: **Marginal** (Top ~80%)
-                  - SNR < 1.0: **Reject** (Bottom ~20%)
+                ### Metric 1: Signal-to-Noise Ratio (SNR) — Part C
+                600–1120 nm → Butterworth detrend (0.008, order 3) → boxcar smooth (11 nm, 2 passes) → residual = detrended − smoothed. Signal = ptp(smoothed), noise = std(residual), **SNR = signal/noise**. **Pass ≥ 20**, Reject < 20.
                 
                 ### Metric 2: Peak/Fringe Detection Quality
                 Verifies sufficient interference fringes exist for reliable thickness extraction.
@@ -3672,159 +3643,69 @@ with tabs[2]:
                 - Gap detection (no gaps > 5 nm)
 
                 ---
-                **Note on Sliding Window SNR:**
-                The local SNR chart uses the **same detrended signal** as the global SNR: we detrend once over the full band (600–1120 nm), then compute SNR in each sliding window (signal range / first-difference noise in that window). No per-window detrending.
+                **Local Signal Quality:** Same detrend/smooth/residual as global SNR. Per-window SNR = global ptp(smoothed) / local std(residual); 3-window moving median applied.
                 """)
 
-            # Show measured (detrended), smoothed, and residual in SNR band (same pipeline as SNR)
-            st.markdown("### 📈 SNR band: Measured (detrended), Smoothed & Residual")
-
+            # Part C: Smoothed and residual plot (replaces measured spectrum with quality regions)
             snr_metric = report.metrics.get("snr")
-            boxcar_nm = 11.0
-            boxcar_repeats = 2
-            if snr_metric and snr_metric.details:
-                boxcar_nm = float(snr_metric.details.get("boxcar_width_nm", 11.0))
-                boxcar_repeats = int(snr_metric.details.get("boxcar_repeats", 2))
-
-            from src.analysis.snr import get_snr_smooth_residual_curves
-
-            wl_band, detrended, smooth, residual = get_snr_smooth_residual_curves(
-                wavelengths,
-                measured,
-                band_nm=(600.0, 1120.0),
-                detrend_cutoff=0.008,
-                detrend_order=3,
-                boxcar_width_nm=boxcar_nm,
-                boxcar_repeats=boxcar_repeats,
-            )
-
-            if len(wl_band) > 0:
+            curves = snr_metric.details.get("snr_smooth_residual_curves") if snr_metric else None
+            if curves is not None and len(curves) == 4:
+                wl_curves, detrended, smooth, residual = curves
+                if wl_curves is not None and len(wl_curves) > 0:
+                    st.markdown("### 📈 Smoothed and Residual Spectra (Part C)")
+                    display_snr_smooth_residual_plot(wl_curves, detrended, smooth, residual)
+            else:
+                # Fallback: measured spectrum with quality regions (legacy)
+                st.markdown("### 📈 Spectrum with Quality Regions")
                 fig = go.Figure()
                 fig.add_trace(
                     go.Scatter(
-                        x=wl_band,
-                        y=detrended,
+                        x=wavelengths,
+                        y=measured,
                         mode="lines",
-                        name="Measured (detrended)",
+                        name="Measured Spectrum",
                         line=dict(color="#1e40af", width=2),
                     )
                 )
-                fig.add_trace(
-                    go.Scatter(
-                        x=wl_band,
-                        y=smooth,
-                        mode="lines",
-                        name=f"Smoothed (boxcar {boxcar_nm:.0f} nm, {boxcar_repeats} pass)",
-                        line=dict(color="#16a34a", width=2, dash="dash"),
+                if fitted_spectrum is not None:
+                    fig.add_trace(
+                        go.Scatter(
+                            x=wavelengths,
+                            y=fitted_spectrum,
+                            mode="lines",
+                            name="Fitted Spectrum",
+                            line=dict(color="#dc2626", width=2, dash="dash"),
+                        )
                     )
-                )
-                fig.add_trace(
-                    go.Scatter(
-                        x=wl_band,
-                        y=residual,
-                        mode="lines",
-                        name="Residual (detrended − smoothed)",
-                        line=dict(color="#dc2626", width=1.5),
-                    )
-                )
                 fig.update_layout(
-                    title=f"SNR pipeline: 600–1120 nm band (boxcar {boxcar_nm:.0f} nm, {boxcar_repeats} passes)",
+                    title="Measured Spectrum",
                     xaxis_title="Wavelength (nm)",
-                    yaxis_title="Amplitude",
-                    hovermode="x unified",
+                    yaxis_title="Reflectance",
                     template="plotly_white",
                     height=500,
                     showlegend=True,
                 )
                 st.plotly_chart(fig, use_container_width=True)
-                st.caption(
-                    "Signal = ptp(smoothed), noise = std(residual). This is what drives the global SNR."
-                )
-            else:
-                st.warning("Insufficient data in 600–1120 nm band for SNR curves.")
 
-            # --- SLIDING WINDOW SNR CHART ---
-            snr_metric = report.metrics.get("snr")
+            # --- Local Signal Quality (sliding window SNR) ---
             if snr_metric and "sliding_window_snr" in snr_metric.details:
                 sw_data = snr_metric.details["sliding_window_snr"]
-
                 if len(sw_data.get("centers", [])) > 0:
-                    sw_window = sw_data.get("window_nm", 50.0)
                     st.markdown("---")
                     st.markdown("### 🏁 Local Signal Quality")
-                    st.info(
-                        f"**Sliding Window SNR**: Signal = global ptp(smooth); noise = std(residual) per window. "
-                        f"{sw_window:.0f} nm windows (high = clean, low = noisy)."
-                    )
-                    fig_sw = go.Figure()
-
-                    # 1. The Intensity Shade (Bar underlay)
-                    fig_sw.add_trace(
-                        go.Bar(
-                            x=sw_data["centers"],
-                            y=sw_data["snr_values"],
-                            marker=dict(
-                                color=sw_data["snr_values"],
-                                colorscale="Blues",
-                                cmin=0,
-                                showscale=True,
-                                colorbar=dict(
-                                    title="SNR Intensity",
-                                    thickness=15,
-                                    len=0.8,
-                                    y=0.5,
-                                    x=1.05,
-                                ),
-                            ),
-                            width=sw_data.get("stride_nm", 25.0),
-                            opacity=0.5,
-                            showlegend=False,
-                            name="Intensity",
-                            hoverinfo="skip",
-                        )
-                    )
-
-                    # 2. The Line (Trend overlay)
-                    fig_sw.add_trace(
-                        go.Scatter(
-                            x=sw_data["centers"],
-                            y=sw_data["snr_values"],
-                            mode="lines+markers",
-                            name="SNR Profile",
-                            line=dict(color="#1e40af", width=2),
-                            marker=dict(size=4, color="#1e40af"),
-                            hovertemplate=(
-                                "<b>Wavelength Range</b>: %{customdata[0]:.1f} - %{customdata[1]:.1f} nm<br>"
-                                + "<b>SNR</b>: %{y:.1f}<br>"
-                                + "<extra></extra>"
-                            ),
-                            customdata=sw_data["ranges"],
-                        )
-                    )
-
-                    fig_sw.update_layout(
-                        title=f"SNR vs Wavelength ({sw_window:.0f}nm Sliding Windows)",
-                        xaxis_title="Wavelength (nm)",
-                        yaxis_title="SNR Ratio (Variance)",
-                        template="plotly_white",
-                        height=450,
-                        hovermode="closest",
-                        bargap=0,
-                        margin=dict(l=20, r=80, t=50, b=20),
-                    )
-
-                    st.plotly_chart(fig_sw, use_container_width=True)
-
+                    display_sliding_window_snr_chart(sw_data)
                     m_cols = st.columns(3)
                     with m_cols[0]:
                         st.markdown(
-                            f"**MIN SNR IN WINDOW**\n### {sw_data['min_snr']:.1f}"
+                            f"**MIN SNR IN WINDOW**\n### {sw_data.get('min_snr', 0):.1f}"
                         )
                     with m_cols[1]:
-                        st.markdown(f"**AVG SNR**\n### {sw_data['avg_snr']:.1f}")
+                        st.markdown(
+                            f"**AVG SNR**\n### {sw_data.get('avg_snr', 0):.1f}"
+                        )
                     with m_cols[2]:
                         st.markdown(
-                            f"**MAX SNR IN WINDOW**\n### {sw_data['max_snr']:.1f}"
+                            f"**MAX SNR IN WINDOW**\n### {sw_data.get('max_snr', 0):.1f}"
                         )
 
         except ImportError as e:
