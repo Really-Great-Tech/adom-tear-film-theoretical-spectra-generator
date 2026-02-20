@@ -3,15 +3,18 @@ services:
   pyelli:
     build:
       context: .
-      dockerfile: Dockerfile.streamlit
+      dockerfile: Dockerfile.backend
     container_name: pyelli
     restart: unless-stopped
     ports:
-      - "8501:8501"
+      - "8000:8000"
     volumes:
-      - ./data/Materials:/app/data/Materials
-      - ./exploration/sample_data:/app/exploration/sample_data
-      - ./exploration/new_spectra:/app/exploration/new_spectra
-      - ./exploration/spectra_from_shlomo:/app/exploration/spectra_from_shlomo
-      - ./exploration/more_good_spectras:/app/exploration/more_good_spectras
-      - ./exploration/measurements:/app/exploration/measurements
+      - ./data/Materials:/app/data/Materials:ro
+    environment:
+      - BACKEND_MATERIALS_PATH=/app/data/Materials
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
