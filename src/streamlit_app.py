@@ -64,6 +64,14 @@ from analysis.quality_display import (
     display_sliding_window_snr_chart,
     display_snr_smooth_residual_plot,
 )
+from analysis.quality_metrics import calculate_snr as quality_calculate_snr
+
+from last_two_cycles import (
+    get_run_start_sec_from_folder_name,
+    identify_last_two_cycles_spectra,
+    load_lta_height_file,
+    run_lta_last_two_cycles_sync,
+)
 
 from tear_film_generator import (
     load_config,
@@ -661,7 +669,8 @@ def run_coarse_fine_grid_search(
     max_results: Optional[int],
     *,
     measurement_quality=None,
-) -> pd.DataFrame:
+    silent: bool = False,
+) -> Tuple[pd.DataFrame, int]:
     """Run a two-stage coarse-to-fine grid search.
 
     Stage 1: Coarse search with wider parameter ranges (from config.grid_search.coarse)
@@ -671,6 +680,8 @@ def run_coarse_fine_grid_search(
     up to the acceptable ranges (from config.analysis.edge_case_detection.acceptable_ranges).
     This allows finding optimal values that may be outside the initial search range but still
     within physically/biologically feasible limits.
+
+    Returns (results_df, total_evaluated). When silent=True, skips st.info/st.success.
     """
     grid_cfg = analysis_cfg.get("grid_search", {})
     coarse_cfg = grid_cfg.get("coarse", {})
@@ -686,9 +697,10 @@ def run_coarse_fine_grid_search(
     coarse_aqueous_vals = generate_parameter_values(coarse_aqueous_cfg, stride=1)
     coarse_rough_vals = generate_parameter_values(coarse_rough_cfg, stride=1)
 
-    st.info(
-        f"Stage 1 (Coarse): Evaluating {len(coarse_lipid_vals) * len(coarse_aqueous_vals) * len(coarse_rough_vals)} combinations..."
-    )
+    if not silent:
+        st.info(
+            f"Stage 1 (Coarse): Evaluating {len(coarse_lipid_vals) * len(coarse_aqueous_vals) * len(coarse_rough_vals)} combinations..."
+        )
 
     coarse_records: List[Dict[str, float]] = []
     for lipid in coarse_lipid_vals:
@@ -736,16 +748,18 @@ def run_coarse_fine_grid_search(
     )
     top_coarse = coarse_df.head(top_k_coarse)
 
-    st.success(
-        f"Stage 1 complete: Found {len(coarse_records)} candidates. Top {top_k_coarse} selected for refinement."
-    )
+    if not silent:
+        st.success(
+            f"Stage 1 complete: Found {len(coarse_records)} candidates. Top {top_k_coarse} selected for refinement."
+        )
 
     # Stage 2: Refine around top-K coarse results
     refine_records: List[Dict[str, float]] = []
     max_refine = refine_cfg.get("max_refine_candidates", 5000)
     refine_budget = max_results - len(coarse_records) if max_results else max_refine
 
-    st.info(f"Stage 2 (Refine): Exploring around {len(top_coarse)} best candidates...")
+    if not silent:
+        st.info(f"Stage 2 (Refine): Exploring around {len(top_coarse)} best candidates...")
 
     for _, row in top_coarse.iterrows():
         center_lipid = row["lipid_nm"]
@@ -868,11 +882,97 @@ def run_coarse_fine_grid_search(
     )
 
     total_evaluated = len(coarse_records) + len(refine_records)
-    st.success(
-        f"Stage 2 complete: Refined {len(refine_records)} additional candidates. Total: {total_evaluated} evaluated."
-    )
+    if not silent:
+        st.success(
+            f"Stage 2 complete: Refined {len(refine_records)} additional candidates. Total: {total_evaluated} evaluated."
+        )
 
     return results_df, total_evaluated
+
+
+def run_refine_around_center(
+    single_spectrum,
+    wavelengths: np.ndarray,
+    measurement_features,
+    analysis_cfg: Dict[str, Any],
+    metrics_cfg: Dict[str, Any],
+    config: Dict[str, Any],
+    center_lipid: float,
+    center_aqueous: float,
+    center_rough: float,
+    *,
+    measurement_quality=None,
+) -> Optional[Dict[str, Any]]:
+    """Refine around a single (L, A, R) center for one spectrum. Returns best row as dict or None."""
+    grid_cfg = analysis_cfg.get("grid_search", {})
+    refine_cfg = grid_cfg.get("refine", {})
+    edge_case_cfg = analysis_cfg.get("edge_case_detection", {})
+    acceptable_ranges = edge_case_cfg.get("acceptable_ranges", {})
+
+    lipid_window = refine_cfg.get("lipid", {}).get("window_nm", 20)
+    lipid_step = refine_cfg.get("lipid", {}).get("step_nm", 5)
+    aqueous_window = refine_cfg.get("aqueous", {}).get("window_nm", 40)
+    aqueous_step = refine_cfg.get("aqueous", {}).get("step_nm", 10)
+    rough_window = refine_cfg.get("roughness", {}).get("window_A", 200)
+    rough_step = refine_cfg.get("roughness", {}).get("step_A", 25)
+
+    accept_lipid_min = float(acceptable_ranges.get("lipid", {}).get("min", 9))
+    accept_lipid_max = float(acceptable_ranges.get("lipid", {}).get("max", 250))
+    accept_aqueous_min = float(acceptable_ranges.get("aqueous", {}).get("min", 800))
+    accept_aqueous_max = float(acceptable_ranges.get("aqueous", {}).get("max", 12000))
+    accept_rough_min = float(acceptable_ranges.get("roughness", {}).get("min", 600))
+    accept_rough_max = float(acceptable_ranges.get("roughness", {}).get("max", 2750))
+
+    lipid_min = max(accept_lipid_min, center_lipid - lipid_window / 2)
+    lipid_max = min(accept_lipid_max, center_lipid + lipid_window / 2)
+    aqueous_min = max(accept_aqueous_min, center_aqueous - aqueous_window / 2)
+    aqueous_max = min(accept_aqueous_max, center_aqueous + aqueous_window / 2)
+    rough_min = max(accept_rough_min, center_rough - rough_window / 2)
+    rough_max = min(accept_rough_max, center_rough + rough_window / 2)
+
+    refine_lipid_vals = np.arange(lipid_min, lipid_max + lipid_step * 0.5, lipid_step)
+    refine_aqueous_vals = np.arange(aqueous_min, aqueous_max + aqueous_step * 0.5, aqueous_step)
+    refine_rough_vals = np.arange(rough_min, rough_max + rough_step * 0.5, rough_step)
+    if len(refine_lipid_vals) > 0 and refine_lipid_vals[-1] < lipid_max - 1e-9:
+        refine_lipid_vals = np.append(refine_lipid_vals, lipid_max)
+    if len(refine_aqueous_vals) > 0 and refine_aqueous_vals[-1] < aqueous_max - 1e-9:
+        refine_aqueous_vals = np.append(refine_aqueous_vals, aqueous_max)
+    if len(refine_rough_vals) > 0 and refine_rough_vals[-1] < rough_max - 1e-9:
+        refine_rough_vals = np.append(refine_rough_vals, rough_max)
+
+    best_record: Optional[Dict[str, Any]] = None
+    best_score = -np.inf
+    for lipid in refine_lipid_vals:
+        for aqueous in refine_aqueous_vals:
+            for rough in refine_rough_vals:
+                spectrum = single_spectrum(float(lipid), float(aqueous), float(rough))
+                if spectrum is None or len(spectrum) == 0 or np.all(spectrum == 0):
+                    continue
+                if np.std(spectrum) < 1e-6:
+                    continue
+                theoretical = prepare_theoretical_spectrum(
+                    wavelengths, spectrum, measurement_features, analysis_cfg
+                )
+                scores, diagnostics = score_candidate(
+                    measurement_features,
+                    theoretical,
+                    metrics_cfg,
+                    lipid_nm=float(lipid),
+                    aqueous_nm=float(aqueous),
+                    roughness_A=float(rough),
+                    measurement_quality=measurement_quality,
+                )
+                comp = float(scores.get("composite", 0.0))
+                if comp > best_score:
+                    best_score = comp
+                    best_record = {
+                        "lipid_nm": float(lipid),
+                        "aqueous_nm": float(aqueous),
+                        "roughness_A": float(rough),
+                        "score_composite": comp,
+                        "deviation_pct": None,
+                    }
+    return best_record
 
 
 def run_inline_grid_search(
@@ -1350,7 +1450,175 @@ def main():
         "rough_slider": float(default_rough),
     }
 
-    # Main content
+    # Main content — full-cycle results view (same five plots as PyElli)
+    run_folder_name = st.session_state.get("lta_full_cycle_run_folder_name")
+    lta_result = st.session_state.get("lta_full_cycle_result")
+    if run_folder_name and lta_result:
+        run_dir = pathlib.Path(st.session_state.lta_full_cycle_run_dir)
+        summary = lta_result.get("summary", {})
+        seed_result = lta_result.get("seed_result") or {}
+        results = lta_result.get("results", [])
+        t_min = seed_result.get("time_sec", 0.0)
+        for r in results:
+            t = r.get("time_sec")
+            if t is not None and (t_min is None or t < t_min):
+                t_min = t
+        if t_min is None:
+            t_min = 0.0
+        plot_times = [seed_result.get("time_sec", 0.0) - t_min]
+        lta_L = [float(seed_result.get("lipid_nm", 0))]
+        lta_A = [float(seed_result.get("aqueous_nm", 0))]
+        dev_pct = []
+        d0 = seed_result.get("deviation_pct")
+        dev_pct.append(float(d0) if d0 is not None else float("nan"))
+        snr_values = []
+        sv0 = seed_result.get("snr_value")
+        snr_values.append(float(sv0) if sv0 is not None else float("nan"))
+        for r in results:
+            t = r.get("time_sec")
+            if t is not None:
+                plot_times.append(t - t_min)
+            lta_L.append(float(r.get("lipid_nm", 0)))
+            lta_A.append(float(r.get("aqueous_nm", 0)))
+            d = r.get("deviation_pct")
+            dev_pct.append(float(d) if d is not None else float("nan"))
+            sv = r.get("snr_value")
+            snr_values.append(float(sv) if sv is not None else float("nan"))
+        plot_times = np.array(plot_times)
+        lta_L = np.array(lta_L)
+        lta_A = np.array(lta_A)
+        dev_pct = np.array(dev_pct)
+        snr_values = np.array(snr_values)
+        t_max = max(plot_times) + t_min if len(plot_times) else t_min
+        all_results = [seed_result] + results
+
+        t_lip, v_lip = load_lta_height_file(run_dir / "Lipid_Height.txt")
+        t_aq, v_aq = load_lta_height_file(run_dir / "Aqueous_Height.txt")
+        if len(t_lip) > 0:
+            mask = (t_lip >= t_min) & (t_lip <= t_max)
+            t_lip_win = t_lip[mask] - t_min
+            v_lip_win = v_lip[mask]
+        else:
+            t_lip_win = np.array([])
+            v_lip_win = np.array([])
+        if len(t_aq) > 0:
+            mask = (t_aq >= t_min) & (t_aq <= t_max)
+            t_aq_win = t_aq[mask] - t_min
+            v_aq_win = v_aq[mask]
+        else:
+            t_aq_win = np.array([])
+            v_aq_win = np.array([])
+
+        total_spectra = int(summary.get("total_spectra", 0))
+        total_noisy = int(summary.get("total_noisy", 0))
+        elapsed = summary.get("elapsed_total_sec") or 0
+        seed_stem = summary.get("seed_stem", "")
+
+        st.markdown("# Full test cycle — LTA fitted")
+        st.markdown(f"**Run:** `{run_folder_name}`")
+        st.caption(
+            f"Spectra: **{total_spectra}** | Noisy (SNR &lt; 20): **{total_noisy}** | "
+            f"Seed: **{seed_stem}** | Elapsed: **{elapsed:.1f} s**"
+        )
+
+        # 1) LTA fitted vs LTA reference (Lipid & Aqueous) with drift
+        fig1 = make_subplots(
+            rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.08,
+            subplot_titles=("Lipid (nm) — LTA fitted vs LTA reference", "Aqueous (nm) — LTA fitted vs LTA reference"),
+        )
+        fig1.add_trace(
+            go.Scatter(x=plot_times, y=lta_L, mode="lines", name="LTA fitted Lipid", line=dict(color="#2563eb", width=2)),
+            row=1, col=1,
+        )
+        if len(t_lip_win) > 0:
+            fig1.add_trace(
+                go.Scatter(x=t_lip_win, y=v_lip_win, mode="lines", name="LTA reference Lipid", line=dict(color="#dc2626", width=2, dash="dash")),
+                row=1, col=1,
+            )
+        if len(plot_times) >= 2:
+            drift_L = np.polyfit(plot_times, lta_L, 1)
+            fig1.add_trace(
+                go.Scatter(x=plot_times, y=np.polyval(drift_L, plot_times), mode="lines", name=f"Drift L ({drift_L[0]:.3f} nm/s)", line=dict(color="#93c5fd", dash="dot")),
+                row=1, col=1,
+            )
+        fig1.add_trace(
+            go.Scatter(x=plot_times, y=lta_A, mode="lines", name="LTA fitted Aqueous", line=dict(color="#2563eb", width=2)),
+            row=2, col=1,
+        )
+        if len(t_aq_win) > 0:
+            fig1.add_trace(
+                go.Scatter(x=t_aq_win, y=v_aq_win, mode="lines", name="LTA reference Aqueous", line=dict(color="#dc2626", width=2, dash="dash")),
+                row=2, col=1,
+            )
+        if len(plot_times) >= 2:
+            drift_A = np.polyfit(plot_times, lta_A, 1)
+            fig1.add_trace(
+                go.Scatter(x=plot_times, y=np.polyval(drift_A, plot_times), mode="lines", name=f"Drift A ({drift_A[0]:.2f} nm/s)", line=dict(color="#93c5fd", dash="dot")),
+                row=2, col=1,
+            )
+        fig1.update_layout(xaxis_title="Time (s)", height=420, showlegend=True)
+        st.plotly_chart(fig1, use_container_width=True)
+
+        # 2) All best fits overlay (LTA BestFit only)
+        st.markdown("**All best fits (overlay) — LTA BestFit**")
+        bestfit_dir = run_dir / "BestFit"
+        if bestfit_dir.exists():
+            fig_bf = go.Figure()
+            for r in all_results[:50]:
+                stem = r.get("stem")
+                if not stem:
+                    continue
+                bf_path = bestfit_dir / f"{stem}_BestFit.txt"
+                if bf_path.exists():
+                    try:
+                        bf_df = load_bestfit_spectrum(bf_path)
+                        if not bf_df.empty and "wavelength" in bf_df.columns and "reflectance" in bf_df.columns:
+                            fig_bf.add_trace(
+                                go.Scatter(x=bf_df["wavelength"], y=bf_df["reflectance"], mode="lines", name=stem, line=dict(width=1), opacity=0.7)
+                            )
+                    except Exception:
+                        pass
+            fig_bf.update_layout(xaxis_title="Wavelength (nm)", yaxis_title="Reflectance", height=400, showlegend=False)
+            st.plotly_chart(fig_bf, use_container_width=True)
+        else:
+            st.caption("BestFit folder not found.")
+
+        # 3) SNR over time (threshold 20)
+        SNR_THRESHOLD = 20.0
+        st.markdown("**SNR (all spectra)**")
+        st.caption(f"Noisy (SNR &lt; {SNR_THRESHOLD}): **{total_noisy}** of {len(all_results)} spectra.")
+        fig_snr = go.Figure()
+        fig_snr.add_trace(go.Scatter(x=plot_times, y=snr_values, mode="lines+markers", name="SNR", line=dict(color="#7c3aed")))
+        fig_snr.add_hline(y=SNR_THRESHOLD, line_dash="dash", line_color="orange", annotation_text=f"threshold ({SNR_THRESHOLD})")
+        fig_snr.update_layout(xaxis_title="Time (s)", yaxis_title="SNR", height=260)
+        st.plotly_chart(fig_snr, use_container_width=True)
+
+        # 4) Deviation vs time
+        st.markdown("**Deviation vs LTA over time**")
+        fig2 = go.Figure()
+        fig2.add_trace(go.Scatter(x=plot_times, y=dev_pct, mode="lines+markers", name="Deviation %", line=dict(color="#059669")))
+        fig2.add_hline(y=10, line_dash="dash", line_color="orange")
+        fig2.update_layout(xaxis_title="Time (s)", yaxis_title="Deviation %", height=280)
+        st.plotly_chart(fig2, use_container_width=True)
+
+        # 5) Cycle jumps
+        st.markdown("**Cycle jumps detected over time**")
+        if len(plot_times) >= 2 and len(lta_L) >= 2:
+            t_mid = 0.5 * (plot_times[:-1] + plot_times[1:])
+            jump_L = np.abs(np.diff(lta_L))
+            jump_A = np.abs(np.diff(lta_A))
+            fig_jump = go.Figure()
+            fig_jump.add_trace(go.Scatter(x=t_mid, y=jump_L, mode="lines+markers", name="|Δ Lipid| (nm)", line=dict(color="#2563eb")))
+            fig_jump.add_trace(go.Scatter(x=t_mid, y=jump_A, mode="lines+markers", name="|Δ Aqueous| (nm)", line=dict(color="#059669")))
+            fig_jump.update_layout(xaxis_title="Time (s)", yaxis_title="Step size (nm)", height=280, showlegend=True)
+            st.caption("Large steps between consecutive spectra may indicate cycle jumps (wrong thickness multiple).")
+            st.plotly_chart(fig_jump, use_container_width=True)
+        else:
+            st.caption("Not enough points for cycle jump plot.")
+
+        st.stop()
+
+    # Main content (single-spectrum mode)
     st.markdown("# Tear Film Spectra Explorer")
     st.markdown(
         "Adjust layer properties to view theoretical reflectance spectrum and compare with measurements."
@@ -1491,6 +1759,7 @@ def main():
 
         # Define spectrum sources (matching pyelli pattern)
         spectrum_sources = {
+            "Full test cycle (run folder)": None,
             "More Good Spectras": PROJECT_ROOT
             / "exploration"
             / "more_good_spectras"
@@ -1512,35 +1781,173 @@ def main():
         )
 
         source_path = spectrum_sources[selected_source]
+        full_test_cycle_selected = selected_source == "Full test cycle (run folder)"
 
-        # Get spectrum files based on source structure
-        spectrum_files = []
-        if source_path.exists():
-            if selected_source in ["Sample Data (Good Fit)", "Sample Data (Bad Fit)"]:
-                # These are organized in subfolders
-                for subdir in sorted(source_path.iterdir()):
-                    if subdir.is_dir():
-                        for f in subdir.glob("(Run)spectra_*.txt"):
-                            if "_BestFit" not in f.name:
-                                spectrum_files.append(f)
-            elif selected_source == "New Spectra":
-                # New spectra are organized in subfolders
-                for subdir in sorted(source_path.iterdir()):
-                    if subdir.is_dir():
-                        for f in subdir.glob("(Run)spectra_*.txt"):
-                            if "_BestFit" not in f.name:
-                                spectrum_files.append(f)
+        # Full test cycle: run folder dropdown and Run full test button
+        if full_test_cycle_selected:
+            full_test_cycles_path = PROJECT_ROOT / "exploration" / "full_test_cycles"
+            if not full_test_cycles_path.exists():
+                st.sidebar.warning(f"Full test cycles folder not found: `{full_test_cycles_path}`")
+                run_folders = []
             else:
-                # Flat structure (More Good Spectras, Shlomo, etc.)
-                spectrum_files = sorted(
-                    [
-                        f
-                        for f in source_path.glob("(Run)spectra_*.txt")
-                        if "_BestFit" not in f.name
-                    ]
+                run_folders = sorted(
+                    [d.name for d in full_test_cycles_path.iterdir() if d.is_dir()],
+                    key=str.lower,
                 )
+            if not run_folders:
+                st.sidebar.info("No test cycle folders found. Add run folders under exploration/full_test_cycles.")
+            else:
+                selected_run_folder_name = st.sidebar.selectbox(
+                    "Select test cycle",
+                    run_folders,
+                    key="lta_full_cycle_run_folder",
+                    help="Run folder under exploration/full_test_cycles",
+                )
+                run_dir_path = full_test_cycles_path / selected_run_folder_name
+                corrected_dir = run_dir_path / "Spectra" / "GoodSpectra" / "Corrected"
+                bestfit_dir = run_dir_path / "BestFit"
+                if corrected_dir.exists() and bestfit_dir.exists():
+                    pairs, info = identify_last_two_cycles_spectra(
+                        corrected_dir,
+                        bestfit_dir,
+                        get_run_start_sec_from_folder_name(run_dir_path),
+                        run_dir=run_dir_path,
+                    )
+                    n_spectra = len(pairs)
+                    st.sidebar.caption(f"**{n_spectra}** spectra in last two cycles")
+                    st.session_state.lta_full_cycle_run_dir = str(run_dir_path)
+                    st.session_state.lta_full_cycle_run_folder_name = selected_run_folder_name
+                    st.session_state.lta_full_cycle_pairs = [(str(m), str(b), t) for m, b, t in pairs]
+                    st.session_state.lta_full_cycle_info = info
+
+                    st.sidebar.markdown("### 🔬 Full cycle analysis")
+                    if st.sidebar.button("Run full test", type="primary", key="lta_run_full_test_btn"):
+                        progress_placeholder = st.empty()
+                        meas_cfg = config.get("measurements", {})
+
+                        def _get_seed_result(meas_path: pathlib.Path):
+                            try:
+                                df = load_measurement_spectrum(meas_path, meas_cfg)
+                                if df.empty:
+                                    return None
+                                mf = prepare_measurement(df, analysis_cfg)
+                                results_df, _ = run_coarse_fine_grid_search(
+                                    single_spectrum,
+                                    wavelengths,
+                                    mf,
+                                    analysis_cfg,
+                                    metrics_cfg,
+                                    config,
+                                    max_results=5000,
+                                    measurement_quality=None,
+                                    silent=True,
+                                )
+                                if results_df is None or results_df.empty:
+                                    return None
+                                row = results_df.iloc[0]
+                                return {
+                                    "lipid_nm": float(row["lipid_nm"]),
+                                    "aqueous_nm": float(row["aqueous_nm"]),
+                                    "roughness_A": float(row["roughness_A"]),
+                                    "score_composite": float(row.get("score_composite", 0)),
+                                    "deviation_pct": None,
+                                }
+                            except Exception:
+                                return None
+
+                        def _get_tune_result(meas_path: pathlib.Path, L: float, A: float, R: float):
+                            try:
+                                df = load_measurement_spectrum(meas_path, meas_cfg)
+                                if df.empty:
+                                    return None
+                                mf = prepare_measurement(df, analysis_cfg)
+                                return run_refine_around_center(
+                                    single_spectrum,
+                                    wavelengths,
+                                    mf,
+                                    analysis_cfg,
+                                    metrics_cfg,
+                                    config,
+                                    L, A, R,
+                                )
+                            except Exception:
+                                return None
+
+                        def _get_snr(meas_path: pathlib.Path):
+                            try:
+                                df = load_measurement_spectrum(meas_path, meas_cfg)
+                                if df.empty or len(df) < 10:
+                                    return 0.0, True
+                                wl = df["wavelength"].to_numpy(dtype=float)
+                                refl = df["reflectance"].to_numpy(dtype=float)
+                                res = quality_calculate_snr(wl, refl, band_nm=(600.0, 1120.0))
+                                return (float(res.value), float(res.value) < 20.0)
+                            except Exception:
+                                return 0.0, True
+
+                        def _progress(processed: int, total: int, stage: str):
+                            elapsed = getattr(_progress, "_elapsed", 0)
+                            if stage == "seed":
+                                progress_placeholder.info(f"⏳ Running full test… Seed (coarse-fine)…")
+                            else:
+                                progress_placeholder.info(
+                                    f"⏳ Running full test… {processed}/{total} spectra processed"
+                                )
+
+                        run_dir = pathlib.Path(st.session_state.lta_full_cycle_run_dir)
+                        t0 = time.perf_counter()
+                        _progress._elapsed = 0
+                        out = run_lta_last_two_cycles_sync(
+                            run_dir,
+                            get_seed_result=_get_seed_result,
+                            get_tune_result=_get_tune_result,
+                            get_snr=_get_snr,
+                            progress_callback=_progress,
+                            snr_threshold=20.0,
+                        )
+                        elapsed = time.perf_counter() - t0
+                        out.setdefault("summary", {})["elapsed_total_sec"] = round(elapsed, 2)
+                        progress_placeholder.empty()
+                        st.session_state.lta_full_cycle_result = out
+                        st.session_state.lta_full_cycle_error = None
+                        st.rerun()
+                else:
+                    st.sidebar.warning("Corrected or BestFit folder not found in run.")
+                    st.session_state.lta_full_cycle_run_dir = None
+                    st.session_state.lta_full_cycle_run_folder_name = None
+            selected_file_path = None
+            spectrum_files = []
         else:
-            st.sidebar.warning(f"⚠️ Source path not found: `{source_path}`")
+            st.session_state.lta_full_cycle_run_folder_name = None
+            st.session_state.lta_full_cycle_run_dir = None
+            spectrum_files = []
+            if source_path and source_path.exists():
+                if selected_source in ["Sample Data (Good Fit)", "Sample Data (Bad Fit)"]:
+                    # These are organized in subfolders
+                    for subdir in sorted(source_path.iterdir()):
+                        if subdir.is_dir():
+                            for f in subdir.glob("(Run)spectra_*.txt"):
+                                if "_BestFit" not in f.name:
+                                    spectrum_files.append(f)
+                elif selected_source == "New Spectra":
+                    # New spectra are organized in subfolders
+                    for subdir in sorted(source_path.iterdir()):
+                        if subdir.is_dir():
+                            for f in subdir.glob("(Run)spectra_*.txt"):
+                                if "_BestFit" not in f.name:
+                                    spectrum_files.append(f)
+                else:
+                    # Flat structure (More Good Spectras, Shlomo, etc.)
+                    spectrum_files = sorted(
+                        [
+                            f
+                            for f in source_path.glob("(Run)spectra_*.txt")
+                            if "_BestFit" not in f.name
+                        ]
+                    )
+            else:
+                if source_path:
+                    st.sidebar.warning(f"⚠️ Source path not found: `{source_path}`")
 
         # File selection dropdown (default to first spectrum, no explicit "None" option)
         if spectrum_files:
