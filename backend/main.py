@@ -4,8 +4,9 @@ PyElli backend API entrypoint. Run with: python server.py or uvicorn backend.mai
 import logging
 import os
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from starlette.middleware.base import BaseHTTPMiddleware
 
 from backend import config
 from backend.routes import router
@@ -17,11 +18,21 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+
+class ActivityTrackingMiddleware(BaseHTTPMiddleware):
+    """Update last-activity timestamp on every inbound request (used for auto-shutdown)."""
+
+    async def dispatch(self, request: Request, call_next):
+        config.touch_activity()
+        return await call_next(request)
+
+
 app = FastAPI(
     title="PyElli Backend",
     description="Grid search and theoretical spectrum computation for tear film analysis",
     version="1.0.0",
 )
+app.add_middleware(ActivityTrackingMiddleware)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],

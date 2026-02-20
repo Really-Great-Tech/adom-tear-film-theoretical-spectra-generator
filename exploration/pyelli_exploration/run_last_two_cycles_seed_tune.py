@@ -4,8 +4,8 @@ Last-two-cycles seed + tune: full grid on one spectrum, refine around that seed 
 
 Identifies spectra from the last two blink cycles (by time window) that have BestFit,
 runs full grid search on one spectrum to get a seed (L, A, R), then refines around
-that seed for all other spectra. Tracks how many have deviation ≤10% vs LTA BestFit;
-stops early once 50 are reached (goal).
+that seed for all other spectra (one at a time; each spectrum's grid search uses
+all cores internally). Tracks how many have deviation ≤10% vs LTA BestFit.
 
 Usage:
   python -m exploration.pyelli_exploration.run_last_two_cycles_seed_tune --run-dir "/path/To/Full test - 0007_2025-12-30_15-12-20"
@@ -25,12 +25,16 @@ If Blink.txt is absent, we use the last 8 s of acquisition (matches AllLayersGra
 from __future__ import annotations
 
 import argparse
+import logging
 import re
 import sys
 import time
 from pathlib import Path
+from typing import Callable
 
 import numpy as np
+
+logger = logging.getLogger(__name__)
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
@@ -48,7 +52,6 @@ from exploration.pyelli_exploration.optimize_score_weights import (
 
 # Fallback when Blink.txt is absent: last 8 s (matches AllLayersGraph last two blinks ~32–40 s)
 LAST_TWO_CYCLES_SEC_FALLBACK = 8.0
-GOAL_UNDER_10_PCT = 50
 
 # Roughness (Å): fixed range for good pyelli fits; do not use values outside this.
 ROUGHNESS_MIN_ANGSTROM = 6000.0
@@ -180,11 +183,12 @@ def run_last_two_cycles_seed_tune_sync(
     bestfit_dir: Path | None = None,
     seed_index: int = 0,
     max_tune: int | None = None,
+    progress_callback: Callable[[int, int, str], None] | None = None,
 ) -> dict:
     """
     Run seed+tune on last-two-cycles spectra. Returns a dict suitable for JSON/API.
 
-    Keys: summary (dict with total_spectra, total_under_10, goal_reached, seed_stem, elapsed_seed_sec, elapsed_tune_sec),
+    Keys: summary (dict with total_spectra, total_under_10, seed_stem, elapsed_seed_sec, elapsed_tune_sec),
           seed_result (dict with lipid_nm, aqueous_nm, mucus_nm, deviation_pct),
           results (list of dicts with stem, lipid_nm, aqueous_nm, mucus_nm, deviation_pct, under_10).
     """
@@ -200,6 +204,9 @@ def run_last_two_cycles_seed_tune_sync(
             "seed_result": None,
             "results": [],
         }
+    total = len(pairs)
+    if progress_callback:
+        progress_callback(0, total, "seed")
     seed_index = min(seed_index, len(pairs) - 1)
     seed_meas, seed_bf, _ = pairs[seed_index]
     rest = [(m, b, t) for i, (m, b, t) in enumerate(pairs) if i != seed_index]
@@ -237,6 +244,8 @@ def run_last_two_cycles_seed_tune_sync(
             "results": [],
         }
     seed_result = seed_results[0]
+    if progress_callback:
+        progress_callback(1, total, "tune")
     bf_wl, bf_refl = load_bestfit_spectrum(seed_bf)
     seed_dev = compute_deviation_for_params(
         grid_search, wl_fit, meas_fit, bf_wl, bf_refl,
@@ -246,7 +255,7 @@ def run_last_two_cycles_seed_tune_sync(
     under_10_count = 1 if seed_dev and seed_dev["composite_dev"] <= 10.0 else 0
     under_10_list = [seed_meas.stem] if (seed_dev and seed_dev["composite_dev"] <= 10.0) else []
 
-    # Step 2: Tune on rest
+    # Step 2: Tune on rest (sequential; each run_grid_search uses all cores internally)
     l_lo = max(9.0, seed_result.lipid_nm - 30)
     l_hi = min(250.0, seed_result.lipid_nm + 30)
     a_lo = max(800.0, seed_result.aqueous_nm - 300)
@@ -257,12 +266,11 @@ def run_last_two_cycles_seed_tune_sync(
     t_tune_start = time.perf_counter()
     processed = 0
     for meas_path, bf_path, _ in rest:
-        if under_10_count >= GOAL_UNDER_10_PCT:
-            break
         wl_fit, meas_fit = fit_wl_meas(meas_path)
         try:
             tuned = grid_search.run_grid_search(
-                wl_fit, meas_fit,
+                wl_fit,
+                meas_fit,
                 lipid_range=(l_lo, l_hi, 5.0),
                 aqueous_range=(a_lo, a_hi, 50.0),
                 roughness_range=(r_lo, r_hi, 100.0),
@@ -274,10 +282,16 @@ def run_last_two_cycles_seed_tune_sync(
         except Exception:
             results_list.append({"stem": meas_path.stem, "deviation_pct": None, "under_10": False})
             processed += 1
+            if progress_callback:
+                progress_callback(1 + processed, total, "tune")
+            logger.info("Spectrum %s/%s processed", 1 + processed, total)
             continue
         if not tuned:
             results_list.append({"stem": meas_path.stem, "deviation_pct": None, "under_10": False})
             processed += 1
+            if progress_callback:
+                progress_callback(1 + processed, total, "tune")
+            logger.info("Spectrum %s/%s processed", 1 + processed, total)
             continue
         best = tuned[0]
         bf_wl, bf_refl = load_bestfit_spectrum(bf_path)
@@ -299,29 +313,89 @@ def run_last_two_cycles_seed_tune_sync(
             "under_10": u10,
         })
         processed += 1
+        if progress_callback:
+            progress_callback(1 + processed, total, "tune")
+        logger.info("Spectrum %s/%s processed", 1 + processed, total)
     elapsed_tune = time.perf_counter() - t_tune_start
+
+    # SNR and theoretical spectra (backend does the work for UI)
+    import sys
+    _src = PROJECT_ROOT / "src"
+    if str(_src) not in sys.path:
+        sys.path.insert(0, str(_src))
+    from analysis.quality_metrics import calculate_snr
+    SNR_NOISY_THRESHOLD = 20.0
+
+    def _snr_for_spectrum(wl: np.ndarray, refl: np.ndarray):
+        try:
+            res = calculate_snr(wl, refl, band_nm=(WL_MIN, WL_MAX))
+            return res.value, res.status, res.value < SNR_NOISY_THRESHOLD
+        except Exception:
+            return float("nan"), "unknown", True
+
+    wl_common, _ = fit_wl_meas(seed_meas)
+    # Seed: SNR and theoretical
+    seed_wl, seed_refl = load_measured_spectrum(seed_meas)
+    seed_mask = (seed_wl >= WL_MIN) & (seed_wl <= WL_MAX)
+    seed_snr_val, seed_snr_status, seed_noisy = _snr_for_spectrum(seed_wl[seed_mask], seed_refl[seed_mask])
+    seed_theoretical = grid_search.calculate_theoretical_spectrum(
+        wl_common, seed_result.lipid_nm, seed_result.aqueous_nm,
+        seed_result.mucus_nm / 10.0, enable_roughness=True,
+    )
+
+    for r in results_list:
+        stem = r.get("stem")
+        if stem:
+            meas_path = corrected_dir / f"{stem}.txt"
+            if meas_path.exists():
+                wl, refl = load_measured_spectrum(meas_path)
+                mask = (wl >= WL_MIN) & (wl <= WL_MAX)
+                wl_c, refl_c = wl[mask], refl[mask]
+                snr_val, snr_status, noisy = _snr_for_spectrum(wl_c, refl_c)
+                r["snr_value"] = snr_val
+                r["snr_status"] = snr_status
+                r["noisy"] = noisy
+            else:
+                r["snr_value"] = float("nan")
+                r["snr_status"] = "unknown"
+                r["noisy"] = True
+            # PyElli theoretical for overlay
+            r["wavelengths"] = wl_common.tolist()
+            r["theoretical_spectrum"] = grid_search.calculate_theoretical_spectrum(
+                wl_common, r["lipid_nm"], r["aqueous_nm"],
+                (r.get("mucus_nm") or 6500) / 10.0, enable_roughness=True,
+            ).tolist()
 
     summary = {
         "total_spectra": len(pairs),
         "seed_stem": seed_meas.stem,
         "total_under_10": under_10_count,
-        "goal_under_10": GOAL_UNDER_10_PCT,
-        "goal_reached": under_10_count >= GOAL_UNDER_10_PCT,
         "elapsed_seed_sec": round(elapsed_seed, 2),
         "elapsed_tune_sec": round(elapsed_tune, 2),
         "elapsed_total_sec": round(elapsed_seed + elapsed_tune, 2),
-        "processed": 1 + processed,
+        "processed": 1 + len(results_list),
         "stems_under_10": under_10_list[:20],
         "window_plot_s": window_info.get("window_plot_s"),
         "window_run_s": window_info.get("window_run_s"),
         "used_blink_txt": window_info.get("used_blink_txt", False),
     }
+    n_noisy = sum(1 for r in results_list if r.get("noisy", False))
+    if seed_noisy:
+        n_noisy += 1
+    summary["total_noisy"] = n_noisy
+    summary["snr_noisy_threshold"] = SNR_NOISY_THRESHOLD
+
     seed_result_dict = {
         "lipid_nm": float(seed_result.lipid_nm),
         "aqueous_nm": float(seed_result.aqueous_nm),
         "mucus_nm": float(seed_result.mucus_nm),
         "deviation_pct": float(seed_dev_pct) if seed_dev else None,
         "under_10": seed_dev is not None and seed_dev["composite_dev"] <= 10.0,
+        "snr_value": seed_snr_val,
+        "snr_status": seed_snr_status,
+        "noisy": seed_noisy,
+        "wavelengths": wl_common.tolist(),
+        "theoretical_spectrum": seed_theoretical.tolist(),
     }
     return {"summary": summary, "seed_result": seed_result_dict, "results": results_list}
 
@@ -438,9 +512,9 @@ def main() -> int:
     if wp:
         print(f"Window (plot time, like AllLayersGraph): {wp[0]:.2f} s to {wp[1]:.2f} s (~{wp[1]-wp[0]:.1f} s). Used Blink.txt: {summary.get('used_blink_txt')}")
     print(f"Seed: {summary.get('seed_stem', '')}  L={out.get('seed_result', {}).get('lipid_nm')} A={out.get('seed_result', {}).get('aqueous_nm')} R={out.get('seed_result', {}).get('mucus_nm')}")
-    print(f"Under 10%: {summary.get('total_under_10')}  Goal reached: {summary.get('goal_reached')}")
+    print(f"Under 10%: {summary.get('total_under_10')} / {summary.get('total_spectra', 0)}")
     print(f"Elapsed: seed={summary.get('elapsed_seed_sec')}s tune={summary.get('elapsed_tune_sec')}s total={summary.get('elapsed_total_sec')}s")
-    return 0 if summary.get("goal_reached") else 1
+    return 0
 
 
 if __name__ == "__main__":

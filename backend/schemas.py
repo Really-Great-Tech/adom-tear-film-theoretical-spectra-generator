@@ -123,6 +123,6 @@ class LastTwoCyclesRequest(BaseModel):
 
 class LastTwoCyclesResponse(BaseModel):
     """Response for POST /last-two-cycles-seed-tune."""
-    summary: dict = Field(..., description="total_spectra, total_under_10, goal_reached, elapsed_*_sec, etc.")
+    summary: dict = Field(..., description="total_spectra, total_under_10, elapsed_*_sec, etc.")
     seed_result: Optional[dict] = Field(None, description="Seed fit L, A, R and deviation_pct")
     results: List[dict] = Field(default_factory=list, description="Per-spectrum tune results")

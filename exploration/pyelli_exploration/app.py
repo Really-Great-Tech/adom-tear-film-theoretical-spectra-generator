@@ -122,7 +122,13 @@ from exploration.pyelli_exploration.pyelli_grid_search import (
 )
 from exploration.pyelli_exploration.backend_client import (
     BACKEND_REQUIRED_MESSAGE,
+    ensure_backend_running,
     get_backend_url,
+    get_grid_search_progress as backend_get_grid_search_progress,
+    get_last_two_cycles_progress as backend_get_last_two_cycles_progress,
+    get_spectrum_content as backend_get_spectrum_content,
+    get_spectrum_files as backend_get_spectrum_files,
+    get_spectrum_sources as backend_get_spectrum_sources,
     post_grid_search as backend_post_grid_search,
     post_theoretical as backend_post_theoretical,
     post_align_spectra as backend_post_align_spectra,
@@ -449,6 +455,40 @@ st.markdown(
     /* Ensure regular buttons in sidebar are visible */
     [data-testid="stSidebar"] .stButton button {
         display: block !important;
+    }
+    /* Ensure form submit and primary buttons in main content are visible */
+    [data-testid="stAppViewContainer"] .stForm button,
+    [data-testid="stAppViewContainer"] .stButton button {
+        display: inline-block !important;
+        visibility: visible !important;
+        opacity: 1 !important;
+    }
+    /* Run full test button: blue with white text by default (not only on hover) */
+    [data-testid="stAppViewContainer"] .stForm button,
+    [data-testid="stAppViewContainer"] form[data-testid="stForm"] button,
+    [data-testid="stAppViewContainer"] .stForm button[kind="primary"],
+    [data-testid="stAppViewContainer"] .stForm button[data-testid="baseButton-primary"] {
+        background: #1e40af !important;
+        background-color: #1e40af !important;
+        color: #ffffff !important;
+        border: none !important;
+        border-radius: 10px !important;
+        padding: 12px 28px !important;
+        font-weight: 600 !important;
+        font-size: 1rem !important;
+        box-shadow: 0 2px 6px rgba(30, 64, 175, 0.35) !important;
+        transition: background 0.2s ease, box-shadow 0.2s ease !important;
+    }
+    [data-testid="stAppViewContainer"] .stForm button:hover,
+    [data-testid="stAppViewContainer"] .stForm button:focus {
+        background: #1e3a8a !important;
+        background-color: #1e3a8a !important;
+        color: #ffffff !important;
+        box-shadow: 0 4px 10px rgba(30, 64, 175, 0.4) !important;
+    }
+    [data-testid="stAppViewContainer"] .stForm button p,
+    [data-testid="stAppViewContainer"] .stForm button span {
+        color: #ffffff !important;
     }
     
     /* Remove default padding */
@@ -934,6 +974,11 @@ with st.sidebar:
                     st.session_state.last_two_blinks_pairs = last_two_blinks_pairs
                     st.session_state.last_two_blinks_info = last_two_blinks_info
                     st.session_state.run_dir_for_seed_tune = str(run_dir_path)
+                    # Clear previous run result when folder changes so "before run" view and button show
+                    prev_folder = st.session_state.get("run_folder_name_for_seed_tune")
+                    if prev_folder != selected_run_folder_name:
+                        st.session_state.seed_tune_result = None
+                        st.session_state.seed_tune_error = None
                     st.session_state.run_folder_name_for_seed_tune = selected_run_folder_name
                     n_spectra = len(last_two_blinks_pairs)
                     wp = last_two_blinks_info.get("window_plot_s")
@@ -942,6 +987,32 @@ with st.sidebar:
                     if wp:
                         cap += f" — plot time {wp[0]:.1f}–{wp[1]:.1f} s"
                     st.caption(cap)
+                    st.markdown("### 🔬 Full cycle analysis")
+                    # Button lives in main content only (sidebar had duplicate that didn't render)
+                    if st.session_state.get("seed_tune_result"):
+                        out = st.session_state.seed_tune_result
+                        summary = out.get("summary", {})
+                        seed_result = out.get("seed_result")
+                        results = out.get("results", [])
+                        st.markdown("**Summary**")
+                        if summary.get("error"):
+                            st.warning(summary["error"])
+                        else:
+                            c1, c2 = st.columns(2)
+                            with c1:
+                                st.metric("Spectra in cycle", summary.get("total_spectra", 0))
+                            with c2:
+                                st.metric("Under 10% deviation", summary.get("total_under_10", 0))
+                            st.caption(f"Seed: {summary.get('seed_stem', '')}  |  Elapsed: {summary.get('elapsed_total_sec')}s")
+                        if seed_result:
+                            st.markdown("**Seed result** — L={:.1f} nm, A={:.1f} nm, R={:.0f} Å, deviation={:.2f}%".format(
+                                seed_result.get("lipid_nm", 0), seed_result.get("aqueous_nm", 0),
+                                seed_result.get("mucus_nm", 0), seed_result.get("deviation_pct") or 0,
+                            ))
+                        if results:
+                            st.markdown("**Per-spectrum results** (first 20)")
+                            df = pd.DataFrame(results[:20])
+                            st.dataframe(df, use_container_width=True, hide_index=True)
                 else:
                     spectrum_files = []
                     st.session_state.run_folder_name_for_seed_tune = None
@@ -953,7 +1024,6 @@ with st.sidebar:
     else:
         st.session_state.run_folder_name_for_seed_tune = None
         source_path = spectrum_sources[selected_source]
-        # Log path resolution for debugging
         logger.debug(f"📂 Selected source: {selected_source}")
         logger.debug(f"   Resolved path: {source_path}")
         logger.debug(f"   Path exists: {source_path.exists() if source_path else False}")
@@ -961,7 +1031,6 @@ with st.sidebar:
 
         # Fallback: if path doesn't exist, try resolving from current working directory
         if source_path and not source_path.exists():
-            # Try alternative resolution if primary path doesn't exist
             cwd_path = (
                 Path.cwd() / source_path.relative_to(PROJECT_ROOT)
                 if source_path.is_relative_to(PROJECT_ROOT)
@@ -975,15 +1044,10 @@ with st.sidebar:
                 if abs_path.exists():
                     source_path = abs_path
 
+        _source_is_remote = False
+
         if source_path and source_path.exists():
-            if selected_source in ["Sample Data (Good Fit)", "Sample Data (Bad Fit)"]:
-                spectrum_files = []
-                for subdir in sorted(source_path.iterdir()):
-                    if subdir.is_dir():
-                        for f in subdir.glob("(Run)spectra_*.txt"):
-                            if "_BestFit" not in f.name:
-                                spectrum_files.append(f)
-            elif selected_source == "New Spectra":
+            if selected_source in ["Sample Data (Good Fit)", "Sample Data (Bad Fit)", "New Spectra"]:
                 spectrum_files = []
                 for subdir in sorted(source_path.iterdir()):
                     if subdir.is_dir():
@@ -999,22 +1063,28 @@ with st.sidebar:
                     ]
                 )
         else:
+            # Local path missing — try loading file list from backend (production fallback)
             spectrum_files = []
-            if source_path:
-                st.warning(f"⚠️ Source path not found: `{source_path}`")
-                st.info(
-                    f"💡 **Debug Info:**\n- PROJECT_ROOT: `{PROJECT_ROOT}`\n- Working Directory: `{Path.cwd()}`\n- Path exists: `{source_path.exists()}`"
-                )
-                logger.warning(f"⚠️ Source path not found: {source_path}")
+            try:
+                remote_files = backend_get_spectrum_files(selected_source)
+                spectrum_files = [rf["name"] for rf in remote_files]
+                _source_is_remote = True
+                logger.info(f"📡 Loaded {len(spectrum_files)} files from backend for '{selected_source}'")
+            except Exception as exc:
+                logger.warning(f"⚠️ Backend spectrum-files call failed for '{selected_source}': {exc}")
+                if source_path:
+                    st.warning(f"⚠️ Source path not found locally (`{source_path}`) and backend returned no files.")
+
+        st.session_state.spectrum_source_is_remote = _source_is_remote
+        st.session_state.remote_source_name = selected_source if _source_is_remote else None
 
     if spectrum_files:
         selected_file = st.selectbox(
             f"Select Spectrum ({len(spectrum_files)} files)",
             spectrum_files,
-            format_func=lambda x: x.name,
+            format_func=lambda x: x.name if hasattr(x, "name") and not isinstance(x, str) else str(x),
             key="autofit_file_main",
         )
-        # Store in session state for access in main area
         st.session_state.selected_file = selected_file
 
         st.markdown("---")
@@ -1652,55 +1722,8 @@ with st.sidebar:
             600,
             1120,
         )  # Default matches LTA analysis region (600-1120 nm)
-        # Full test cycle (phase two): show only Run full cycle — no single-spectrum fit
-        run_folder = st.session_state.get("run_folder_name_for_seed_tune")
-        if selected_source == "Full test cycle (run folder)" and run_folder:
-            st.markdown("---")
-            st.markdown("### 🔬 Full cycle analysis")
-            run_full_cycle_clicked = st.button(
-                "🔬 Run full cycle",
-                key="run_seed_tune_btn",
-                type="primary",
-                help="Run seed+tune on all spectra in the cycle (backend). Uses last-two-blinks when Blink.txt is present, else last 8 s.",
-            )
-            if run_full_cycle_clicked:
-                try:
-                    with st.spinner("Running seed+tune on backend (this may take several minutes)..."):
-                        out = backend_post_last_two_cycles_seed_tune(run_folder)
-                    st.session_state.seed_tune_result = out
-                except Exception as exc:
-                    st.session_state.seed_tune_result = None
-                    st.session_state.seed_tune_error = str(exc)
-            if st.session_state.get("seed_tune_error"):
-                st.error(st.session_state.seed_tune_error)
-                st.session_state.seed_tune_error = None
-            if st.session_state.get("seed_tune_result"):
-                out = st.session_state.seed_tune_result
-                summary = out.get("summary", {})
-                seed_result = out.get("seed_result")
-                results = out.get("results", [])
-                st.markdown("**Summary**")
-                if summary.get("error"):
-                    st.warning(summary["error"])
-                else:
-                    c1, c2, c3 = st.columns(3)
-                    with c1:
-                        st.metric("Spectra in cycle", summary.get("total_spectra", 0))
-                    with c2:
-                        st.metric("Under 10% deviation", summary.get("total_under_10", 0))
-                    with c3:
-                        st.metric("Goal reached", "Yes" if summary.get("goal_reached") else "No")
-                    st.caption(f"Seed: {summary.get('seed_stem', '')}  |  Elapsed: {summary.get('elapsed_total_sec')}s")
-                if seed_result:
-                    st.markdown("**Seed result** — L={:.1f} nm, A={:.1f} nm, R={:.0f} Å, deviation={:.2f}%".format(
-                        seed_result.get("lipid_nm", 0), seed_result.get("aqueous_nm", 0),
-                        seed_result.get("mucus_nm", 0), seed_result.get("deviation_pct") or 0,
-                    ))
-                if results:
-                    st.markdown("**Per-spectrum results** (first 20)")
-                    df = pd.DataFrame(results[:20])
-                    st.dataframe(df, use_container_width=True, hide_index=True)
-        else:
+        # Full test cycle: button and results are shown in the Full test cycle branch (above), not here
+        if selected_source != "Full test cycle (run folder)":
             st.info("👈 No spectrum files found")
 
 
@@ -1755,6 +1778,320 @@ COLORS = {
     "residual": "#d97706",  # Amber for residual
 }
 
+
+def _load_lta_height_file(path: Path):
+    """Load LTA height file (time, value columns, space-separated). Return (times, values) arrays."""
+    if not path.exists():
+        return np.array([]), np.array([])
+    times, values = [], []
+    for line in path.read_text().splitlines():
+        parts = line.strip().split()
+        if len(parts) >= 2:
+            try:
+                times.append(float(parts[0]))
+                values.append(float(parts[1]))
+            except ValueError:
+                pass
+    return np.array(times), np.array(values)
+
+
+def _load_blink_times(path: Path):
+    """Load first column of Blink.txt. Return list of float."""
+    if not path.exists():
+        return []
+    out = []
+    for line in path.read_text().splitlines():
+        parts = line.strip().split()
+        if parts:
+            try:
+                out.append(float(parts[0]))
+            except ValueError:
+                pass
+    return out
+
+
+def _render_full_cycle_main_content():
+    """When Full test cycle is selected: show summary, LTA preview (before run), or thickness + deviation plots (after run)."""
+    run_dir = Path(st.session_state.get("run_dir_for_seed_tune", "") or "")
+    run_folder_name = st.session_state.get("run_folder_name_for_seed_tune") or ""
+    info = st.session_state.get("last_two_blinks_info") or {}
+    pairs = st.session_state.get("last_two_blinks_pairs") or []
+    seed_tune_result = st.session_state.get("seed_tune_result")
+    n_spectra = len(pairs)
+    window_plot = info.get("window_plot_s")
+    used_blink = info.get("used_blink_txt", False)
+
+    st.markdown("### 🔬 Full test cycle")
+    st.markdown(f"**{run_folder_name}**")
+    if window_plot and len(window_plot) >= 2:
+        st.caption(f"{n_spectra} spectra in cycle  •  Window: {window_plot[0]:.1f}–{window_plot[1]:.1f} s (plot time)")
+    else:
+        st.caption(f"{n_spectra} spectra in cycle")
+    if used_blink:
+        st.caption("Window from Blink.txt")
+    else:
+        st.caption("Last 8 s (no Blink.txt)")
+
+    if not seed_tune_result:
+        # Before run: single "Run full test" button (form submit so it always renders), then LTA preview
+        st.markdown("---")
+        with st.form(key="run_full_test_form"):
+            submitted = st.form_submit_button("Run full test", type="primary")
+        if submitted:
+            progress_placeholder = st.empty()
+            t0 = time.perf_counter()
+            n_in_cycle = n_spectra  # for status text
+            try:
+                ensure_backend_running(
+                    progress_callback=lambda msg: progress_placeholder.info(msg)
+                )
+                start_resp = backend_post_last_two_cycles_seed_tune(run_folder_name)
+                if start_resp.get("job_id") == run_folder_name:
+                    pass  # 202 accepted, poll below
+                elif isinstance(start_resp.get("summary"), dict) and "results" in start_resp:
+                    # Legacy 200 with full result
+                    elapsed = time.perf_counter() - t0
+                    out = start_resp
+                    out.setdefault("summary", {})["elapsed_total_sec"] = round(elapsed, 2)
+                    processed = out.get("summary", {}).get("processed", n_in_cycle)
+                    progress_placeholder.empty()
+                    mins, secs = divmod(int(elapsed), 60)
+                    progress_placeholder.success(
+                        f"✅ Full test completed in **{mins:02d}:{secs:02d}** ({elapsed:.1f}s)  •  **{processed}** spectra analyzed"
+                    )
+                    st.session_state.seed_tune_result = out
+                    st.session_state.seed_tune_error = None
+                    st.rerun()
+                else:
+                    progress_placeholder.empty()
+                    st.session_state.seed_tune_error = "Unexpected response from backend (expected 202 with job_id or 200 with result)"
+                    st.session_state.seed_tune_result = None
+                    st.rerun()
+                # Poll until done or failed (no long-lived HTTP connection)
+                while True:
+                    elapsed = time.perf_counter() - t0
+                    mins, secs = divmod(int(elapsed), 60)
+                    progress_text = f"⏳ Running full test… **{mins:02d}:{secs:02d}** elapsed  •  Up to **{n_in_cycle}** spectra in cycle"
+                    progress_pct = min(0.99, elapsed / 900)  # fallback
+                    try:
+                        prog = backend_get_last_two_cycles_progress()
+                        if prog.get("run_folder") == run_folder_name and prog.get("total", 0) > 0:
+                            p, t = prog.get("processed", 0), prog.get("total", 1)
+                            progress_text = f"⏳ Running full test… **{mins:02d}:{secs:02d}** elapsed  •  **{p}/{t}** spectra processed"
+                            progress_pct = min(0.99, p / t) if t else progress_pct
+                        if prog.get("stage") == "done":
+                            out = prog.get("result")
+                            if out is None:
+                                st.session_state.seed_tune_error = "Backend finished but no result returned"
+                                st.session_state.seed_tune_result = None
+                            else:
+                                out.setdefault("summary", {})["elapsed_total_sec"] = round(elapsed, 2)
+                                processed = out.get("summary", {}).get("processed", out.get("summary", {}).get("total_spectra", n_in_cycle))
+                                progress_placeholder.empty()
+                                progress_placeholder.success(
+                                    f"✅ Full test completed in **{mins:02d}:{secs:02d}** ({elapsed:.1f}s)  •  **{processed}** spectra analyzed"
+                                )
+                                st.session_state.seed_tune_result = out
+                                st.session_state.seed_tune_error = None
+                            st.rerun()
+                        if prog.get("stage") == "failed":
+                            progress_placeholder.empty()
+                            st.session_state.seed_tune_error = prog.get("error", "Backend reported failure")
+                            st.session_state.seed_tune_result = None
+                            st.rerun()
+                    except Exception as poll_exc:
+                        pass  # keep polling
+                    progress_placeholder.progress(progress_pct, text=progress_text)
+                    time.sleep(0.5)
+            except Exception as exc:
+                progress_placeholder.empty()
+                st.session_state.seed_tune_result = None
+                st.session_state.seed_tune_error = str(exc)
+                st.rerun()
+        if st.session_state.get("seed_tune_error"):
+            st.error(st.session_state.seed_tune_error)
+        # LTA thickness preview
+        if run_dir.exists():
+            aq_path = run_dir / "Aqueous_Height.txt"
+            lip_path = run_dir / "Lipid_Height.txt"
+            blink_path = run_dir / "Blink.txt"
+            t_aq, v_aq = _load_lta_height_file(aq_path)
+            t_lip, v_lip = _load_lta_height_file(lip_path)
+            blink_times = _load_blink_times(blink_path)
+            if len(t_aq) > 0 or len(t_lip) > 0:
+                fig = make_subplots(rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.08, subplot_titles=("Aqueous (nm)", "Lipid (nm)"))
+                if len(t_aq) > 0:
+                    fig.add_trace(go.Scatter(x=t_aq, y=v_aq, mode="lines", name="LTA Aqueous", line=dict(color="#db2777", width=2)), row=1, col=1)
+                if len(t_lip) > 0:
+                    fig.add_trace(go.Scatter(x=t_lip, y=v_lip, mode="lines", name="LTA Lipid", line=dict(color="#db2777", width=2)), row=2, col=1)
+                for bt in blink_times:
+                    fig.add_vline(x=bt, line_dash="dot", line_color="gray", opacity=0.6)
+                if window_plot:
+                    fig.add_vrect(x0=window_plot[0], x1=window_plot[1], fillcolor="lightblue", opacity=0.15)
+                fig.update_layout(height=400, showlegend=True)
+                st.plotly_chart(fig, use_container_width=True)
+        return
+
+    # After run: timing, summary, drift/SNR note, then thickness vs time + deviation
+    summary = seed_tune_result.get("summary", {})
+    results = list(seed_tune_result.get("results", []))
+    seed_result = seed_tune_result.get("seed_result")
+    seed_stem = summary.get("seed_stem")
+    elapsed_sec = summary.get("elapsed_total_sec")
+    if elapsed_sec is not None:
+        st.caption(f"✅ Full test completed in **{elapsed_sec} s**")
+    with st.expander("Drift & SNR checks", expanded=False):
+        st.markdown(
+            "**Full cycle:** Lipid and Aqueous drift (linear trend nm/s) and **SNR** (per spectrum) are shown below. "
+            "Noisy spectra (SNR below threshold) are counted in the SNR section. "
+            "For single-spectrum peak/amplitude drift, use **Amplitude Analysis**; for detailed **Quality Metrics**, select a spectrum from the sidebar."
+        )
+    if seed_result and seed_stem:
+        seed_row = {"stem": seed_stem, "lipid_nm": seed_result.get("lipid_nm"), "aqueous_nm": seed_result.get("aqueous_nm"), "mucus_nm": seed_result.get("mucus_nm"), "deviation_pct": seed_result.get("deviation_pct")}
+        for k in ("snr_value", "snr_status", "noisy", "wavelengths", "theoretical_spectrum"):
+            if k in seed_result:
+                seed_row[k] = seed_result[k]
+        results.insert(0, seed_row)
+    stem_to_time = {Path(meas_path).stem: t for meas_path, _, t in pairs}
+    t_min = min(stem_to_time.values()) if stem_to_time else 0
+    plot_times = []
+    pyelli_L, pyelli_A, dev_pct, snr_values = [], [], [], []
+    for r in results:
+        stem = r.get("stem")
+        if stem and stem in stem_to_time:
+            t = stem_to_time[stem]
+            plot_times.append(t - t_min)
+            pyelli_L.append(r.get("lipid_nm") or 0)
+            pyelli_A.append(r.get("aqueous_nm") or 0)
+            d = r.get("deviation_pct")
+            dev_pct.append(float(d) if d is not None else float("nan"))
+            sv = r.get("snr_value")
+            snr_values.append(float(sv) if sv is not None else float("nan"))
+    if not plot_times:
+        st.warning("No time-matched results to plot.")
+        return
+    plot_times = np.array(plot_times)
+    pyelli_L = np.array(pyelli_L)
+    pyelli_A = np.array(pyelli_A)
+    dev_pct = np.array(dev_pct)
+    snr_values = np.array(snr_values)
+    # Data is already last-two-cycles only; plot_times are 0-based (t - t_min), so use as-is
+    t_max = max(stem_to_time.values()) if stem_to_time else t_min
+
+    run_dir = Path(st.session_state.get("run_dir_for_seed_tune", "") or "")
+    t_aq, v_aq = _load_lta_height_file(run_dir / "Aqueous_Height.txt") if run_dir.exists() else (np.array([]), np.array([]))
+    t_lip, v_lip = _load_lta_height_file(run_dir / "Lipid_Height.txt") if run_dir.exists() else (np.array([]), np.array([]))
+    blink_times = _load_blink_times(run_dir / "Blink.txt") if run_dir.exists() else []
+    # LTA: slice to same run-time range as our spectra [t_min, t_max], then x = t - t_min (0 to ~8)
+    if len(t_aq) > 0:
+        mask_aq = (t_aq >= t_min) & (t_aq <= t_max)
+        t_aq_win = (t_aq[mask_aq] - t_min)
+        v_aq_win = v_aq[mask_aq]
+    else:
+        t_aq_win = np.array([])
+        v_aq_win = np.array([])
+    if len(t_lip) > 0:
+        mask_lip = (t_lip >= t_min) & (t_lip <= t_max)
+        t_lip_win = (t_lip[mask_lip] - t_min)
+        v_lip_win = v_lip[mask_lip]
+    else:
+        t_lip_win = np.array([])
+        v_lip_win = np.array([])
+
+    # 1) LTA + PyElli Lipid & Aqueous (last two cycles) — same plot so we can compare each over time
+    fig = make_subplots(rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.08, subplot_titles=("Lipid (nm) — PyElli vs LTA", "Aqueous (nm) — PyElli vs LTA"))
+    # Row 1: Lipid — PyElli and LTA
+    fig.add_trace(go.Scatter(x=plot_times, y=pyelli_L, mode="lines", name="PyElli Lipid", line=dict(color="#2563eb", width=2)), row=1, col=1)
+    if len(t_lip_win) > 0:
+        fig.add_trace(go.Scatter(x=t_lip_win, y=v_lip_win, mode="lines", name="LTA Lipid", line=dict(color="#dc2626", width=2, dash="dash")), row=1, col=1)
+    if len(plot_times) >= 2:
+        drift_L = np.polyfit(plot_times, pyelli_L, 1)
+        fig.add_trace(go.Scatter(x=plot_times, y=np.polyval(drift_L, plot_times), mode="lines", name=f"Drift L ({drift_L[0]:.3f} nm/s)", line=dict(color="#93c5fd", dash="dot")), row=1, col=1)
+    # Row 2: Aqueous — PyElli and LTA
+    fig.add_trace(go.Scatter(x=plot_times, y=pyelli_A, mode="lines", name="PyElli Aqueous", line=dict(color="#2563eb", width=2)), row=2, col=1)
+    if len(t_aq_win) > 0:
+        fig.add_trace(go.Scatter(x=t_aq_win, y=v_aq_win, mode="lines", name="LTA Aqueous", line=dict(color="#dc2626", width=2, dash="dash")), row=2, col=1)
+    if len(plot_times) >= 2:
+        drift_A = np.polyfit(plot_times, pyelli_A, 1)
+        fig.add_trace(go.Scatter(x=plot_times, y=np.polyval(drift_A, plot_times), mode="lines", name=f"Drift A ({drift_A[0]:.2f} nm/s)", line=dict(color="#93c5fd", dash="dot")), row=2, col=1)
+    if len(t_lip_win) == 0 and len(t_aq_win) == 0:
+        st.caption("LTA data not found (Lipid_Height.txt / Aqueous_Height.txt in run folder).")
+    fig.update_layout(xaxis_title="Time (s)", height=420, showlegend=True)
+    st.plotly_chart(fig, use_container_width=True)
+
+    # 2) All best fits overlay
+    st.markdown("**All best fits (overlay)**")
+    bestfit_view = st.radio("Show", ["LTA BestFit", "PyElli theoretical"], horizontal=True, key="full_cycle_bestfit_view")
+    if bestfit_view == "LTA BestFit":
+        bestfit_dir = run_dir / "BestFit" if run_dir.exists() else None
+        if bestfit_dir and bestfit_dir.exists():
+            fig_bf = go.Figure()
+            for r in results[:50]:
+                stem = r.get("stem")
+                if not stem:
+                    continue
+                bf_path = bestfit_dir / f"{stem}_BestFit.txt"
+                if bf_path.exists():
+                    try:
+                        bf_wl, bf_refl = load_bestfit_spectrum(bf_path)
+                        fig_bf.add_trace(go.Scatter(x=bf_wl, y=bf_refl, mode="lines", name=stem, line=dict(width=1), opacity=0.7))
+                    except Exception:
+                        pass
+            fig_bf.update_layout(xaxis_title="Wavelength (nm)", yaxis_title="Reflectance", height=400, showlegend=False)
+            st.plotly_chart(fig_bf, use_container_width=True)
+        else:
+            st.caption("BestFit folder not found.")
+    else:
+        fig_bf = go.Figure()
+        for r in results[:50]:
+            wl = r.get("wavelengths")
+            theo = r.get("theoretical_spectrum")
+            if wl and theo and len(wl) == len(theo):
+                fig_bf.add_trace(go.Scatter(x=wl, y=theo, mode="lines", name=r.get("stem", ""), line=dict(width=1), opacity=0.7))
+        if fig_bf.data:
+            fig_bf.update_layout(xaxis_title="Wavelength (nm)", yaxis_title="Reflectance", height=400, showlegend=False)
+            st.plotly_chart(fig_bf, use_container_width=True)
+        else:
+            st.caption("No PyElli theoretical spectra in result (re-run full test).")
+
+    # 3) SNR over time (threshold = 20)
+    SNR_THRESHOLD = 20.0
+    n_noisy = int(summary.get("total_noisy", 0))
+    snr_thresh = float(summary.get("snr_noisy_threshold", SNR_THRESHOLD))
+    if snr_thresh != SNR_THRESHOLD:
+        snr_thresh = SNR_THRESHOLD  # always show threshold at 20
+    st.markdown("**SNR (all spectra)**")
+    st.caption(f"Noisy (SNR < {snr_thresh}): **{n_noisy}** of {len(results)} spectra.")
+    fig_snr = go.Figure()
+    fig_snr.add_trace(go.Scatter(x=plot_times, y=snr_values, mode="lines+markers", name="SNR", line=dict(color="#7c3aed")))
+    fig_snr.add_hline(y=snr_thresh, line_dash="dash", line_color="orange", annotation_text=f"threshold ({snr_thresh})")
+    fig_snr.update_layout(xaxis_title="Time (s)", yaxis_title="SNR", height=260)
+    st.plotly_chart(fig_snr, use_container_width=True)
+
+    # 4) Deviation vs LTA over time
+    st.markdown("**Deviation vs LTA over time**")
+    fig2 = go.Figure()
+    fig2.add_trace(go.Scatter(x=plot_times, y=dev_pct, mode="lines+markers", name="Deviation %", line=dict(color="#059669")))
+    fig2.add_hline(y=10, line_dash="dash", line_color="orange")
+    fig2.update_layout(xaxis_title="Time (s)", yaxis_title="Deviation %", height=280)
+    st.plotly_chart(fig2, use_container_width=True)
+
+    # 5) Cycle jumps detected over time (step size in L and A as proxy)
+    st.markdown("**Cycle jumps detected over time**")
+    if len(plot_times) >= 2 and len(pyelli_L) >= 2:
+        t_mid = 0.5 * (plot_times[:-1] + plot_times[1:])
+        jump_L = np.abs(np.diff(pyelli_L))
+        jump_A = np.abs(np.diff(pyelli_A))
+        fig_jump = go.Figure()
+        fig_jump.add_trace(go.Scatter(x=t_mid, y=jump_L, mode="lines+markers", name="|Δ Lipid| (nm)", line=dict(color="#2563eb")))
+        fig_jump.add_trace(go.Scatter(x=t_mid, y=jump_A, mode="lines+markers", name="|Δ Aqueous| (nm)", line=dict(color="#059669")))
+        fig_jump.update_layout(xaxis_title="Time (s)", yaxis_title="Step size (nm)", height=280, showlegend=True)
+        st.caption("Large steps between consecutive spectra may indicate cycle jumps (wrong thickness multiple).")
+        st.plotly_chart(fig_jump, use_container_width=True)
+    else:
+        st.caption("Not enough points for cycle jump plot.")
+
+
 # Get sidebar values from session state (set in sidebar section above)
 selected_file = st.session_state.get("selected_file", None)
 run_autofit = st.session_state.get("run_autofit", False)
@@ -1766,6 +2103,12 @@ current_mucus = st.session_state.get("current_mucus", 2000)
 show_residual = st.session_state.get("show_res_main", True)
 show_bestfit = st.session_state.get("show_bestfit", False)
 show_both_theoretical = st.session_state.get("show_both_theoretical", False)
+
+# Full test cycle: single view (no tabs); otherwise show tabs
+is_full_cycle_view = st.session_state.get("run_folder_name_for_seed_tune") is not None
+if is_full_cycle_view:
+    _render_full_cycle_main_content()
+    st.stop()
 
 # Three tabs: Spectrum Comparison, Amplitude Analysis, and Quality Metrics
 tabs = st.tabs(
@@ -1792,9 +2135,24 @@ with tabs[0]:
 # Shared Data Loading and Processing (runs once, used by both tabs)
 # =============================================================================
 
-if selected_file and Path(selected_file).exists():
+_can_load_spectrum = False
+if selected_file:
+    if isinstance(selected_file, (str, Path)) and Path(selected_file).exists():
+        _can_load_spectrum = True
+    elif st.session_state.get("spectrum_source_is_remote"):
+        _can_load_spectrum = True
+
+if _can_load_spectrum:
     try:
-        wavelengths, measured = load_measured_spectrum(selected_file)
+        if st.session_state.get("spectrum_source_is_remote"):
+            _remote_data = backend_get_spectrum_content(
+                st.session_state["remote_source_name"],
+                str(selected_file),
+            )
+            wavelengths = np.asarray(_remote_data["wavelengths"])
+            measured = np.asarray(_remote_data["measured"])
+        else:
+            wavelengths, measured = load_measured_spectrum(selected_file)
 
         wl_mask = (wavelengths >= wavelength_range[0]) & (
             wavelengths <= wavelength_range[1]
@@ -1823,8 +2181,11 @@ if selected_file and Path(selected_file).exists():
 
             progress_placeholder.progress(0, text='⏳ Starting grid search...')
 
-            def _call_backend():
-                return backend_post_grid_search(
+            try:
+                ensure_backend_running(
+                    progress_callback=lambda msg: progress_placeholder.info(msg)
+                )
+                start_resp = backend_post_grid_search(
                     wavelengths.tolist(), measured.tolist(),
                     captured_lipid_range, captured_aqueous_range, captured_roughness_range,
                     top_k=10, search_strategy='Dynamic Search', max_combinations=30000,
@@ -1833,20 +2194,28 @@ if selected_file and Path(selected_file).exists():
                     mucus_file=st.session_state.get('selected_mucus_material'),
                     substratum_file=st.session_state.get('selected_substratum_material'),
                 )
-
-            try:
-                with ThreadPoolExecutor(max_workers=1) as executor:
-                    future = executor.submit(_call_backend)
-                    while not future.done():
+                # 202 = async; poll for result. 200 = legacy sync response.
+                if start_resp.get("results") is not None:
+                    results_raw = start_resp["results"]
+                else:
+                    while True:
                         elapsed = time.perf_counter() - start_time
                         mins, secs = divmod(int(elapsed), 60)
-                        progress_pct = min(0.99, elapsed / 600)  # cap at 10 min for bar
+                        progress_pct = min(0.99, elapsed / 600)
                         progress_placeholder.progress(
                             progress_pct,
                             text=f'⏳ Running grid search... **{mins:02d}:{secs:02d}** elapsed',
                         )
+                        try:
+                            prog = backend_get_grid_search_progress()
+                            if prog.get("stage") == "done":
+                                results_raw = prog.get("result") or []
+                                break
+                            if prog.get("stage") == "failed":
+                                raise RuntimeError(prog.get("error", "Grid search failed"))
+                        except RuntimeError:
+                            raise
                         time.sleep(0.5)
-                    results_raw = future.result()
                 results = [result_dict_to_view(r) for r in results_raw]
             except Exception as exc:
                 progress_placeholder.empty()
