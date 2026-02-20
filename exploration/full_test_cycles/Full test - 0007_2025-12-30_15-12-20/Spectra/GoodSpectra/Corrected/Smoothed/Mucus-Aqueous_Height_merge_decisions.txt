@@ -1,0 +1,24 @@
+﻿# Merge Decisions Log
+# Total merges: 5
+# Format: SegmentID | Group1->Group2 | Point[idx1,idx2] | DT(ms) | Dthickness(nm) | iter | level
+
+Segment4: Group1->Group2 via points [68,69]: DT=685.0ms (0.685s), Dthick=106.2nm, iter=1, level=1
+  Point68: t=19.855s, thickness=2302.8nm
+  Point69: t=20.540s, thickness=2196.7nm
+
+Segment4: Group3->Group4 via points [91,95]: DT=254.0ms (0.254s), Dthick=37.9nm, iter=1, level=1
+  Point91: t=22.440s, thickness=3014.2nm
+  Point95: t=22.694s, thickness=2976.3nm
+
+Segment4: Group5->Group6 via points [141,142]: DT=166.0ms (0.166s), Dthick=137.1nm, iter=1, level=1
+  Point141: t=25.383s, thickness=2525.3nm
+  Point142: t=25.549s, thickness=2388.3nm
+
+Segment4: Group2->Group3 via points [101,102]: DT=57.0ms (0.057s), Dthick=129.1nm, iter=1, level=1
+  Point101: t=23.088s, thickness=2928.9nm
+  Point102: t=23.145s, thickness=2799.8nm
+
+Segment5: Group1->Group2 via points [170,172]: DT=164.0ms (0.164s), Dthick=29.2nm, iter=1, level=1
+  Point170: t=27.511s, thickness=1936.0nm
+  Point172: t=27.675s, thickness=1906.8nm
+

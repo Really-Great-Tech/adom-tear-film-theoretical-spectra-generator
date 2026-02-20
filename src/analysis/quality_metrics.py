@@ -74,15 +74,21 @@ def calculate_snr(
     filter_order: int = 3,
     signal_center_fraction: float = 0.6,
     baseline_edge_fraction: float = 0.1,
+    band_nm: Optional[Tuple[float, float]] = None,
+    use_smooth_residual: bool = True,
+    boxcar_width_nm: float = 11.0,
+    boxcar_repeats: int = 2,
 ) -> QualityMetricResult:
     """Calculate Signal-to-Noise Ratio (SNR).
 
     Metric 1: Signal-to-Noise Ratio (SNR)
 
-    Formula (HORIBA FSD Standard): SNR = (max(signal) - mean(baseline)) / std(baseline)
+    Default (use_smooth_residual=True): Detrend → boxcar smooth (11 nm, Shlomo) → residual
+    = detrended - smooth. Signal = ptp(smooth), noise = std(residual). More consistent
+    for noisy spectra. Set boxcar_width_nm to 17 for previous optimum.
 
-    For interference spectra, the signal should be detrended first to separate
-    the interference fringes from the overall spectral envelope.
+    Legacy (use_smooth_residual=False): Signal = ptp(detrended), noise = first-diff
+    over band (no edge baseline).
 
     Args:
         wavelengths: Wavelength array in nm
@@ -90,8 +96,12 @@ def calculate_snr(
         use_detrended: Whether to detrend before SNR calculation (default True)
         cutoff_frequency: Cutoff frequency for detrending (default 0.008)
         filter_order: Filter order for detrending (default 3)
-        signal_center_fraction: Fraction for center signal region (default 0.6 = 60%)
-        baseline_edge_fraction: Fraction for edge baseline regions (default 0.1 = 10%)
+        signal_center_fraction: Unused (kept for API compatibility)
+        baseline_edge_fraction: Unused (kept for API compatibility)
+        band_nm: (min, max) wavelength band in nm (default 600–1120)
+        use_smooth_residual: Use smooth/residual separation with boxcar (default True)
+        boxcar_width_nm: Boxcar width in nm for smooth (default 11, Shlomo)
+        boxcar_repeats: Number of boxcar passes (default 2)
 
     Returns:
         QualityMetricResult with SNR assessment
@@ -112,73 +122,83 @@ def calculate_snr(
             details={},
         )
 
-    # Detrend the signal if requested (recommended for interference spectra)
-    signal_for_snr = reflectance
-    if use_detrended:
-        from analysis.measurement_utils import detrend_signal
+    from analysis.snr import compute_global_snr
 
-        signal_for_snr = detrend_signal(
-            wavelengths, reflectance, cutoff_frequency, filter_order
-        )
-
-    # Apply HORIBA FSD Standard formula
-    n = len(signal_for_snr)
-    edge_size = max(1, int(n * baseline_edge_fraction))
-    center_start = int(n * (1 - signal_center_fraction) / 2)
-    center_end = n - center_start
-
-    # Signal region: Center 60% of wavelength range
-    signal_max = float(np.max(signal_for_snr[center_start:center_end]))
-
-    # Baseline/noise region: First and last 10% of wavelength range (edges)
-    baseline_mean = float(
-        np.mean(
-            np.concatenate([signal_for_snr[:edge_size], signal_for_snr[-edge_size:]])
-        )
+    band = band_nm or (ANALYSIS_WAVELENGTH_MIN, 1120.0)
+    g = compute_global_snr(
+        wavelengths,
+        reflectance,
+        band_nm=band,
+        detrend_cutoff=cutoff_frequency,
+        detrend_order=filter_order,
+        use_smooth_residual=use_smooth_residual,
+        boxcar_width_nm=boxcar_width_nm,
+        boxcar_repeats=boxcar_repeats,
     )
-    baseline_std = float(
-        np.std(
-            np.concatenate([signal_for_snr[:edge_size], signal_for_snr[-edge_size:]]),
-            ddof=1,
+    if not use_detrended:
+        # Raw: crop to band, signal = ptp, noise = first-diff over band (no detrend)
+        wl, refl = np.asarray(wavelengths), np.asarray(reflectance)
+        mask = (wl >= band[0]) & (wl <= band[1])
+        wl, refl = wl[mask], refl[mask]
+        if len(wl) < 3:
+            return QualityMetricResult(
+                passed=False, value=0.0, threshold=1.0, metric_name="SNR",
+                status="Reject", details={"method": "Raw (band cropped)"},
+            )
+        sig_ptp = float(np.ptp(refl))
+        d = np.diff(refl.astype(float))
+        noise_std = float(np.std(d, ddof=1)) / np.sqrt(2.0) if len(d) else 0.0
+        snr = (sig_ptp / noise_std) if noise_std > 1e-12 else 0.0
+        if snr >= 2.5:
+            quality = "Excellent"
+        elif snr >= 1.5:
+            quality = "Good"
+        elif snr >= 1.0:
+            quality = "Marginal"
+        else:
+            quality = "Reject"
+        return QualityMetricResult(
+            passed=snr >= 1.0,
+            value=float(snr),
+            threshold=1.0,
+            metric_name="SNR",
+            status=quality,
+            details={
+                "snr": snr,
+                "signal_ptp": sig_ptp,
+                "noise_std": noise_std,
+                "quality_level": quality,
+                "method": "Raw (band 600–1120 nm, first-diff noise)",
+                "detrended": False,
+            },
         )
-    )
 
-    snr = (signal_max - baseline_mean) / baseline_std if baseline_std > 1e-10 else 0.0
-
-    # Thresholds (Empirically Derived for Detrended Interference Spectra)
-    # Based on batch analysis of 449 real spectra:
-    #   - Median SNR: 1.52
-    #   - 75th percentile: 2.10
-    #   - 90th percentile: 2.73
-    #   - 95th percentile: 3.35
-    # Note: These differ from HORIBA FSD Standard (SNR≥3) because detrending
-    # changes the signal characteristics (centered around zero, lower baseline std)
-    if snr >= 2.5:
-        quality = "Excellent"  # Top ~15% of spectra
-    elif snr >= 1.5:
-        quality = "Good"  # Top ~50% of spectra
-    elif snr >= 1.0:
-        quality = "Marginal"  # Top ~80% of spectra
+    snr = g.snr
+    quality = g.quality_band.capitalize()
+    passed = snr >= 1.0
+    if use_smooth_residual:
+        method_str = f"Detrended, band 600–1120 nm, smooth/residual (boxcar {boxcar_width_nm:.0f} nm), noise=std(residual)"
     else:
-        quality = "Reject"  # Bottom ~20% of spectra
-
-    passed = snr >= 1.0  # Threshold for "Marginal"
-
+        method_str = "Detrended, band 600–1120 nm, first-diff noise (no edge baseline)"
     details = {
         "snr": snr,
-        "signal_max": signal_max,
-        "baseline_mean": baseline_mean,
-        "baseline_std": baseline_std,
+        "signal_max": g.signal_ptp,
+        "signal_ptp": g.signal_ptp,
+        "baseline_mean": 0.0,
+        "baseline_std": g.noise_std,
+        "noise_std": g.noise_std,
         "quality_level": quality,
-        "method": "HORIBA FSD Standard (Detrended)"
-        if use_detrended
-        else "HORIBA FSD Standard (Raw)",
-        "detrended": use_detrended,
+        "method": method_str,
+        "detrended": True,
+        "band_used": g.band_used,
+        "n_points": g.n_points,
     }
-
+    if use_smooth_residual:
+        details["boxcar_width_nm"] = boxcar_width_nm
+        details["boxcar_repeats"] = boxcar_repeats
     return QualityMetricResult(
         passed=passed,
-        value=snr,
+        value=float(snr),
         threshold=1.0,
         metric_name="SNR",
         status=quality,
@@ -191,75 +211,64 @@ def calculate_sliding_window_snr(
     reflectance: np.ndarray,
     window_nm: float = 100.0,
     stride_nm: Optional[float] = None,
+    boxcar_width_nm: float = 11.0,
+    boxcar_repeats: int = 2,
 ) -> Dict[str, any]:
-    """Calculate Robust SNR in a sliding window across the spectrum.
+    """Calculate SNR in sliding windows using same boxcar smooth/residual as global SNR.
 
-    NOTE: This uses the 'Robust' method (high-frequency noise residue) rather than
-    the 'Standard' detrended method used for the global spectrum assessment.
-    Detrending inside small windows can be unstable, so this local version
-    focuses on quantifying hardware noise and sensor saturation.
+    Detrend once → boxcar smooth once (600–1120 nm) → residual; per window:
+    signal = ptp(smooth), noise = std(residual), SNR = signal/noise.
 
     Args:
         wavelengths: Wavelength array (nm)
         reflectance: Reflectance array
         window_nm: Size of the sliding window in nm
         stride_nm: Step size between windows in nm (defaults to window_nm / 2)
+        boxcar_width_nm: Boxcar width for smooth (default 11)
+        boxcar_repeats: Boxcar passes (default 2)
 
     Returns:
-        Dict with 'centers', 'snr_values', 'min_snr', 'max_snr', 'avg_snr'
+        Dict with 'centers', 'snr_values', 'ranges', 'min_snr', 'max_snr', 'avg_snr', 'window_nm', 'stride_nm'
     """
     if len(wavelengths) < 2:
         return {"centers": np.array([]), "snr_values": np.array([])}
 
     stride_nm = stride_nm or (window_nm / 2)
 
-    centers = []
-    snr_values = []
-    ranges = []
+    from analysis.snr import compute_window_snr
 
-    # Filter to analysis range
-    mask = (wavelengths >= ANALYSIS_WAVELENGTH_MIN) & (
-        wavelengths <= ANALYSIS_WAVELENGTH_MAX
+    band = (ANALYSIS_WAVELENGTH_MIN, 1120.0)
+    w = compute_window_snr(
+        wavelengths,
+        reflectance,
+        band_nm=band,
+        window_nm=window_nm,
+        stride_nm=stride_nm,
+        boxcar_width_nm=boxcar_width_nm,
+        boxcar_repeats=boxcar_repeats,
     )
-    w_range = wavelengths[mask]
-    r_range = reflectance[mask]
 
-    if len(w_range) < 2:
-        return {"centers": np.array([]), "snr_values": np.array([])}
+    if len(w.snr_per_window) == 0:
+        return {
+            "centers": np.array([]),
+            "snr_values": np.array([]),
+            "ranges": [],
+            "min_snr": 0.0,
+            "max_snr": 0.0,
+            "avg_snr": 0.0,
+            "window_nm": window_nm,
+            "stride_nm": stride_nm,
+        }
 
-    current_center = np.min(w_range) + (window_nm / 2)
-    max_w = np.max(w_range)
-
-    while current_center <= max_w - (window_nm / 2):
-        w_min = current_center - (window_nm / 2)
-        w_max = current_center + (window_nm / 2)
-
-        win_mask = (w_range >= w_min) & (w_range <= w_max)
-        if np.sum(win_mask) > 5:
-            win_ref = r_range[win_mask]
-            # Use robust method for the window
-            diffs = np.diff(win_ref)
-            noise_std = np.std(diffs) / np.sqrt(2)
-            if noise_std > 0:
-                sig_range = np.max(win_ref) - np.min(win_ref)
-                snr = sig_range / noise_std
-
-                centers.append(current_center)
-                snr_values.append(float(snr))
-                ranges.append((float(w_min), float(w_max)))
-
-        current_center += stride_nm
-
-    if not snr_values:
-        return {"centers": np.array([]), "snr_values": np.array([])}
-
+    half = window_nm / 2.0
+    ranges = [(float(c - half), float(c + half)) for c in w.window_centers_nm]
     return {
-        "centers": np.array(centers),
-        "snr_values": np.array(snr_values),
+        "centers": w.window_centers_nm,
+        "snr_values": w.snr_per_window,
         "ranges": ranges,
-        "min_snr": float(np.min(snr_values)),
-        "max_snr": float(np.max(snr_values)),
-        "avg_snr": float(np.mean(snr_values)),
+        "min_snr": w.snr_min,
+        "max_snr": w.snr_max,
+        "avg_snr": w.snr_mean,
         "window_nm": window_nm,
         "stride_nm": stride_nm,
     }
@@ -851,7 +860,7 @@ def assess_spectrum_quality(
             boxcar_width_nm=11.0,
             boxcar_repeats=2,
         )
-        # For Netta tiers: raw SNR (no smoothing) and smoothing improvement
+        # For quality tiers: raw SNR (no smoothing) and smoothing improvement
         raw_noise = _noise_std_first_difference(detrended)
         raw_signal = float(np.ptp(detrended))
         raw_snr = (

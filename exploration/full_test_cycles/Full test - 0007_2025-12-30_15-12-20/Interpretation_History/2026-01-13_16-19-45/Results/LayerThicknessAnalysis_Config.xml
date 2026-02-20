@@ -1,0 +1,170 @@
+﻿<?xml version="1.0" encoding="utf-8" standalone="no"?>
+<app_config>
+  <stack_file_name val="E:\RC_SW\shlomo\Vshlomo_14-12-2025\Reading_Center_Application_Tools\TestData\Stack_eye_test.xml" />
+  <configuration_file_name val="E:\RC_SW\shlomo\Vshlomo_14-12-2025\Reading_Center_Application_Tools\TestData\Configuration1.xml" />
+  <algorithm_file_name val="E:\RC_SW\shlomo\Vshlomo_14-12-2025\Reading_Center_Application_Tools\TestData\Algorithm_eye_test_4.xml" />
+  <materials_subdir_name val="E:\RC_SW\shlomo\Vshlomo_14-12-2025\Reading_Center_Application_Tools\TestData\Materials" />
+  <default_spectrum_file_name val="E:\Measurements\003R_bausch&amp;lomb\0003_2023-08-16_11-14-54\Spectra\GoodSpectra\Corrected\(Run)spectra_11-16-16-409.txt" />
+  <ts_library_file_name val="E:\RC_SW\shlomo\Vshlomo_14-12-2025\Reading_Center_Application_Tools\TestData\TSpectraLibs\stack1_1T_2T_3R.bin" />
+  <ts_library_weights_file_name val="E:\RC_SW\shlomo\Vshlomo_14-12-2025\Reading_Center_Application_Tools\TestData\TSpectraLibs\Weights1.xml" />
+  <sensitivity_analysis_weights_file_name val="E:\RC_SW\shlomo\Vshlomo_14-12-2025\Reading_Center_Application_Tools\TestData\SensitivityAnalysis\Weights1.xml" />
+  <!-- Wave lengths range for calculation and view for regression. Must be a pair of positive integer numbers. Default is '550, 1150'. -->
+  <wave_lenghts_range_for_calc_and_view min="600" max="1150" />
+  <!-- Wave lengths range for calculation and view for stack. Must be a pair of positive integer numbers. Default is '550, 1150'. -->
+  <wave_lenghts_range_for_calc_and_view_for_stack min="550" max="1150" />
+  <!-- Wave lengths range for calculation and view for multi-stack. Must be a pair of positive integer numbers. Default is '550, 1150'. -->
+  <wave_lenghts_range_for_calc_and_view_for_multi_stack min="550" max="1150" />
+  <!-- Wave lengths range for calculation and view for materials. Must be a pair of positive integer numbers. Default is '550, 1150'. -->
+  <wave_lenghts_range_for_calc_and_view_for_materials min="550" max="1150" />
+  <!-- Wave lengths range for calculation and view for sensitivity analysis. Must be a pair of positive integer numbers. Default is '550, 1150'. -->
+  <wave_lenghts_range_for_calc_and_view_for_sensitivity_analysis min="550" max="1150" />
+  <!-- Wave lengths range for calculation and view for TSLibrary. Must be a pair of positive integer numbers. Default is '750, 1050'. -->
+  <wave_lenghts_range_for_calc_and_view_for_ts_lib min="750" max="1050" />
+  <!-- Wave lengths range for spectrum amplitude RMS. Must be a pair of positive integer numbers. Default is '720, 920'. -->
+  <wave_lenghts_range_for_spectrum_amplitude_rms min="720" max="920" />
+  <!-- Width for moving average algorithm, in nanometers. Must be a pair of positive numbers. Default is '22.6778, 67.144'. -->
+  <moving_average_width_nm min="22.6778" max="67.144" />
+  <!-- Wave lengths range for spectrum average. Must be a pair of positive integer numbers. Default is '820, 980' -->
+  <wave_lenghts_range_for_spectrum_average min="820" max="980" />
+  <!-- Percent range for spectrum average. Must be a pair of numbers in the range [0, 100]. Default is '1.6, 5.6'. -->
+  <percent_range_for_spectrum_average min="1.6" max="5.6" />
+  <!-- Maximal half-range from nominal aqua in continuous group interpretation. Must be a pair of positive integer numbers. -->
+  <!-- 1st number - for test eye, 2nd number - for contact lens. Default is '240, 750'. -->
+  <max_offset_from_nominal_aqua val1="240" val2="750" />
+  <!-- Multiplier for maximal half-range from nominal aqua in continuous group interpretation in case of full blink. Must be greater than 1. Default is 2. -->
+  <factor_for_max_offset_from_nominal_aqua val="2" />
+  <!-- Trend speed. Can be one of the following: 'Fast', 'Medium', 'Slow', 'Very_Slow', 'Stable', 'Fixed'. Default is 'Slow'. -->
+  <trend_speed val="Slow" />
+  <!-- Lipid history length for LBUT calculation. Default is 9. -->
+  <lipid_history_length val="9" />
+  <!-- Maximal time span between the last and previous points in lipid history for valid LBUT event, in milliseconds. Default is 1000. -->
+  <max_time_span_for_lipid_history_ms val="1000" />
+  <!-- Maximal time span between the first and last points in lipid history itself for valid LBUT event, in milliseconds. Default is 2000. -->
+  <max_time_span_of_lipid_history_ms val="2000" />
+  <!-- Lipid break-up threshold. Default is 0.9. -->
+  <lipid_breakup_threshold val="0.9" />
+  <!-- Aqua averaging time, in milliseconds. Default is 3000. -->
+  <aqua_averaging_time val="3000" />
+  <!-- RMS minimal ratio from maximum, in percents. Must be a number in the range [0, 100]. Default is 50. -->
+  <rms_minimal_ratio_from_max_in_percents val="50" />
+  <!-- RMS minimal absolute value. Default is 0.0007. -->
+  <rms_minimal_absolute_value val="0.0007" />
+  <!-- Dif Max Abs minimal ratio from maximum, in percents. Must be a number in the range [0, 100]. Default is 50. -->
+  <dif_max_abs_minimal_ratio_from_max_in_percents val="50" />
+  <!-- Dif Max Abs minimal absolute value. Default is 0.0001. -->
+  <dif_max_abs_minimal_absolute_value val="0.0001" />
+  <!-- Flag that determines if view spectrum graph. Can be one of the following: '0', '1'. Default is 1. -->
+  <is_view_theoretical_spectrum val="1" />
+  <!-- 'Must' parameter for group interpretation. Default is 'Aqueous.Height'. -->
+  <MustParameterForGroupInterpretation val="Aqueous.Height" />
+  <!-- Peaks detection type. Can be one of the following: 'Normal', 'Small', 'None'. Default is 'Normal'. -->
+  <PeaksDetectionType val="Normal" />
+  <!-- Flag that determines if to calculate goodness of peaks. Can be one of the following: '0', '1'. Default is 1. -->
+  <IsCalculateGoodnessOfPeaks val="1" />
+  <!-- Goodness of peaks threshold>. Must be a positive integer number. Default is 75. -->
+  <GoodnessOfPeaksThreshold val="1000" />
+  <!-- Wave lengths range for normal type peaks detection of spectrum amplitude RMS. Must be a pair of positive integer numbers. Default is '760, 1070'. -->
+  <WaveLenghtsRangeForPeaksDetectionNormal min="760" max="1070" />
+  <!-- Wave lengths range for small type peaks detection of spectrum amplitude RMS. Must be a pair of positive integer numbers. Default is '750, 940'. -->
+  <WaveLenghtsRangeForPeaksDetectionSmall min="750" max="940" />
+  <!-- Offset for wave lengths range for peaks detection of spectrum amplitude RMS. Must be a positive integer number. Default is 10. -->
+  <OffsetForWaveLenghtsRangeForPeaksDetection val="10" />
+  <!-- Width for moving average algorithm for peaks detection of spectrum amplitude RMS, in nanometers. Must be a pair of positive numbers. Default is '9, 27'. -->
+  <MovingAverageWidthForPeaksDetectionNm min="9" max="27" />
+  <!-- Number of times to perform moving average for peaks detection of spectrum amplitude RMS. Must be a positive integer number. Default is 2. -->
+  <NumberOfTimesForMovingAveragings val="2" />
+  <!-- Coefficients (constant and denominator) for formula for minimal distance between adjacent peaks for peaks detection of spectrum amplitude RMS. Must be a couple of pairs of positive integer numbers. -->
+  <!-- 1st couple - for the same type of peaks, 2nd couple - for interleaved peaks. Formula: (LambdaCur - LambdaPrev) > (Const + LambdaPrev / Den)). Default is '11, 140, 7, 70'. -->
+  <FormulaCoefficientsForMinDistanceBetweenAdjacentPeaks constant1="3" denominator1="140" constant2="3" denominator2="70" />
+  <!-- Minimal intensity between adjacent peaks for peaks detection of spectrum amplitude RMS. Must be a pair of non-negative numbers. -->
+  <!-- 1st value - for the same type of peaks, 2nd value - for interleaved peaks (NOT USED). Formula: |IntensityCur - IntensityPrev| > Val. Default is '0.00001, 0.00002'.  -->
+  <MinIntensityBetweenAdjacentPeaks val1="0.00001" val2="0.00002" />
+  <!-- Coefficients (constant and slope) for formula for nominal aqueous thickness calculation from a number of peaks of spectrum amplitude RMS for normal type peaks detection. Must be a pair of integer numbers. Default is '-628, 485'. -->
+  <FormulaCoefficientsForNominalThicknessNormal constant="-628" slope="485" />
+  <!-- Coefficients (constant and slope) for formula for nominal aqueous thickness calculation from a number of peaks of spectrum amplitude RMS for small type peaks detection. Must be a pair of integer numbers. Default is '-866, 780'. -->
+  <FormulaCoefficientsForNominalThicknessSmall constant="-866" slope="780" />
+  <!-- Minimal time span for thickness range update, in milliseconds. Must be a positive integer number. Default is 1500. -->
+  <min_time_span_for_thickness_range_update_ms val="1500" />
+  <!-- Wave lengths range for FFT. Must be a pair of positive integer numbers. Default is '750, 1050'. -->
+  <wave_lenghts_range_for_fft min="750" max="1050" />
+  <!-- Half value from first FFT peak in logarithmic scale. Must be a pair of positive numbers. Default is '0.25, 0.3'. -->
+  <half_value_from_first_fft_peak_in_log_scale val1="0.25" val2="0.3" />
+  <!-- Percent to reduce FFT largest first peak width. Must be a pair of numbers in the range [0, 100]. Default is '80, 90'. -->
+  <percent_to_reduce_fft_largest_first_peak_width val1="80" val2="90" />
+  <!-- FFT partial range wave lengths width. Default is 150. -->
+  <fft_partial_range_wave_lenghts_width val="150" />
+  <!-- FFT partial range wave lengths start point. Default is 50. -->
+  <fft_partial_range_wave_lenghts_start_point_step val="50" />
+  <!-- Wave lengths range and step for calculation and view for cauchy for materials. Must be a trinity of positive integer numbers. Default is '400, 1200, 100'. -->
+  <wave_lenghts_for_cauchy_for_materials min="400" max="1200" step="100" />
+  <!-- Percent to reduce inverse wave lengths differences RMS for peaks uniformity of spectrum amplitude RMS. Must be a number in the range [0, 100]. Default is 20. -->
+  <PercentToReduceInvWaveLengthsDifsRmsForPeaksUniformity val="20" />
+  <!-- Multiplier for Theoretical Spectra Library step for search near best node. Default is 3. -->
+  <MultiplierForTSLibStepForSearchNearBestNode val="3" />
+  <!-- Number of groups for interpretation accumulation success checking. Must be an integer number in the range [1, 10]. Default is 1. -->
+  <NumGroupsForCheck val="1" />
+  <!-- Maximal number of trials to find best spectrum. Must be a positive integer number. Default is 3. -->
+  <MaxTrialsFindBestSpectrum val="7" />
+  <!-- Minimal time span between current best spectrum and next best spectrum candidate, in milliseconds. Must be a positive integer number. Default is 500. -->
+  <MinTimeSpanFromBestSpectrumInMs val="500" />
+  <!-- Boxcar width for normalized spectra smoothing, in nanometers. Default is 11. -->
+  <BoxcarWidthForSpectraSmoothing val="11" />
+  <!-- Gaussian kernel size for spectra smoothing. Can be one of the following: '7', '9', '11'. Default is 11. -->
+  <GaussKernelSizeForSpectraSmoothing val="11" />
+  <!-- Number of layer tabs for sensitivity analysis. Can be an integer number in the range [1, 7]. Default is 3. -->
+  <NumLayerTabsForSensitivityAnalysis val="3" />
+  <!-- Flag that determines if to perform post-processing interpretation. Can be one of the following: '0', '1'. Default is 1. -->
+  <IsPostProcessingInterpretation val="1" />
+  <!-- Minimal time span between the current spectrum and previous successfully interpreted spectrum for post-processing interpretation, in milliseconds. Default is 1500. -->
+  <MinTimeSpanForPostProcessingInterpretationMs val="1500" />
+  <!-- Flag that determines if to use maximal time span from previous blink. Can be one of the following: '0', '1'. Default is 1. -->
+  <IsUseMaxTimeSpanFromPreviousBlink val="1" />
+  <!-- Maximal time span from previous blink in order to use smaller group size, in milliseconds. Default is 1000. -->
+  <MaxTimeSpanFromPreviousBlinkInMs val="1000" />
+  <!-- Shift for aqueous graph treatment, in nanometers. Must be a positive integer number. Default is 260. -->
+  <ShiftForAqueousGraphTreatmentInNm val="-270" />
+  <stack_file_name_for_thickness_best_fit val="Stack_eye_test.xml" />
+  <!-- Thickness theoretical function type. Can be one of the following: 'Exponent', 'SumOfTwoExponents', 'LinearOfFirstOrder', 'ReciprocalOfFirstOrder', 'ReverseWithAverage', 'Quadratic', 'Cubic', 'QuadraticAndNegative'. Default is 'LinearOfFirstOrder'. -->
+  <theoretical_function_type val="Exponent" />
+  <!-- Thickness offset from average in window, in percents. Must be a pair of numbers in the range [0, 100]. Default is '5, 5'. -->
+  <thickness_offset_from_average_in_percents min="0" max="0" />
+  <!-- Minimal total number of data points for data validation. Must be a positive integer number. Default is 9. -->
+  <minimal_total_number_of_data_points_for_data_validation val="9" />
+  <!-- Total number of time space segments for data validation for theoretical function types other than 'LinearOfFirstOrder'. Must be a positive integer number. Default is 11. -->
+  <total_number_of_time_space_segments_for_data_validation_for_other_than_linear val="11" />
+  <!-- Number of excluded time space edge segments for data validation for theoretical function types other than 'LinearOfFirstOrder', from the left and right sides, respectively. -->
+  <!-- Must be a pair of non-negative integer numbers. Default is '1, 0'. -->
+  <number_of_excluded_time_space_edge_segments_for_data_validation_for_other_than_linear left="0" right="0" />
+  <!-- Maximal number of excluded time space central segments for data validation for theoretical function types other than 'LinearOfFirstOrder'. Must be a non-negative integer number. Default is 5. -->
+  <maximal_number_of_excluded_time_space_cental_segments_for_data_validation_for_other_than_linear val="5" />
+  <!-- Total number of time space segments for data validation for theoretical function type 'LinearOfFirstOrder'. Must be a positive integer number. Default is 7. -->
+  <total_number_of_time_space_segments_for_data_validation_for_linear val="7" />
+  <!-- Number of excluded time space edge segments for data validation for theoretical function type 'LinearOfFirstOrder', from the left and right sides, respectively. Must be a pair of non-negative integer numbers. Default is '2, 1'. -->
+  <number_of_excluded_time_space_edge_segments_for_data_validation_for_linear left="0" right="0" />
+  <!-- Maximal number of excluded time space central segments for data validation for theoretical function type 'LinearOfFirstOrder'. Must be a non-negative integer number. Default is 2. -->
+  <maximal_number_of_excluded_time_space_cental_segments_for_data_validation_for_linear val="2" />
+  <!-- Number of data points for coefficient of variance. Must be a positive integer number. Default is 7. -->
+  <number_of_data_points_for_coefficient_of_variance val="7" />
+  <!-- Minimal duration for automatic time range, in milliseconds. Must be a positive integer number. Default is 300. -->
+  <minimal_duration_for_automatic_time_range_in_ms val="300" />
+  <!-- Percent to reduce largest difference for points. Must be a number in the range [0, 100]. Default is 15. -->
+  <percent_to_reduce_largest_difference_for_points val="15" />
+  <!-- Maximal number of non-blink frames between distinct blinks to consider them as a continuous one. Can be an integer number in the range [0, 10]. Default is 3. -->
+  <MaximalGapForContinuousBlink val="3" />
+  <!-- Flag that determines if to use spectra preprocessing scheme. Can be one of the following: '0', '1'. If '0', then 'IsUseSpectraDefaultPreprocessingScheme' does not play a role. Default is 1. -->
+  <IsUseSpectraPreprocessingScheme val="1" />
+  <!-- Flag that determines if to use spectra default preprocessing scheme. Can be one of the following: '0', '1'. Default is 1. -->
+  <IsUseSpectraDefaultPreprocessingScheme val="1" />
+  <!-- Flag that determines if to use spectra filtering scheme. Can be one of the following: '0', '1'. If '0', then 'IsUseSpectraDefaultFilteringScheme' does not play a role. Default is 1. -->
+  <IsUseSpectraFilteringScheme val="0" />
+  <!-- Flag that determines if to use spectra default filtering scheme. Can be one of the following: '0', '1'. -->
+  <IsUseSpectraDefaultFilteringScheme val="0" />
+  <!-- Flag that determines if to use silent mode. Can be one of the following: '0' (logging statistics from Algorithm XML, displaying result graph with GOP - like MRA), '1'. Default is 0. -->
+  <IsSilentMode val="0" />
+  <!-- Flag that determines if to enable grouping re-interpretation. Can be one of the following: '0', '1'. Default is 0. -->
+  <IsEnableGroupingReinterpretation val="0" />
+  <DefaultPreprocessingSchemeFileName val="DefaultPreprocessingScheme_eye_test.txt" />
+  <DefaultFilteringSchemeFileName val="DefaultFilteringScheme_eye_test.txt" />
+  <!-- Number of sub-sections for filtering histogram. Must be a positive integer number. Default is 20. -->
+  <NumFilterHistogramSubsections val="20" />
+</app_config>

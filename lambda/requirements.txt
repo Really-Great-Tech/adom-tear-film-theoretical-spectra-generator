@@ -1,0 +1,2 @@
+# For local testing / packaging. boto3 is provided by Lambda runtime.
+requests>=2.28.0

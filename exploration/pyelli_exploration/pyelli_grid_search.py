@@ -700,12 +700,14 @@ def calculate_peak_based_score(
     c_count = float(peak_count_score)
     c_amplitude = float(amplitude_score)
     
+    # Old weights (reverted for last-two-cycles seed+tune; tuned weights gave 0 under 10% on full test)
+    # Tuned weights (commented out): 0.021 rmse, 0.126 amplitude, 0.016 corr, 0.414 delta, 0.423 count
     composite_score = (
         0.25 * c_rmse +
         0.20 * c_amplitude +
         0.15 * c_corr +
         0.15 * c_delta +
-        0.25 * c_count     # INCREASED from 5% to 25% - finding peaks is critical
+        0.25 * c_count
     )
     
     # CRITICAL: Penalty for peak count mismatch
@@ -1464,6 +1466,11 @@ def _evaluate_combination_fast(args: Tuple[float, float, float]) -> Optional[PyE
             score_result = {
                 "score": float(np.clip(simple_score, 0.0, 1.0)),
                 "correlation": quick_corr,
+                "correlation_score": correlation_score,
+                "rmse_score": rmse_score,
+                "amplitude_score": amplitude_score,
+                "peak_delta_score": 0.0,
+                "peak_count_score": 0.0,
                 "oscillation_ratio": osc_ratio,
                 "matched_peaks": 0,
                 "mean_delta_nm": 1000.0,
@@ -1485,14 +1492,14 @@ def _evaluate_combination_fast(args: Tuple[float, float, float]) -> Optional[PyE
             residual = meas_focus_scaled - theo_focus_scaled
             rmse = float(np.sqrt(np.mean(residual ** 2)))
             correlation = score_result.get('correlation', quick_corr)
-        
+
         meas_peaks_count = int(score_result.get('measurement_peaks', 0))
         theo_peaks_count = int(score_result.get('theoretical_peaks', 0))
         peak_count_delta = abs(meas_peaks_count - theo_peaks_count)
         mean_delta_nm = float(score_result.get('mean_delta_nm', 0.0))
-        
+
         dev_vs_meas = compute_deviation_vs_measured(wl_focus, meas_focus_scaled, theo_focus_scaled)
-        
+
         return PyElliResult(
             lipid_nm=float(lipid),
             aqueous_nm=float(aqueous),
@@ -1975,6 +1982,8 @@ class PyElliGridSearch:
         min_correlation_filter: float = 0.85,  # Keep selective
         search_strategy: str = 'Coarse Search',  # 'Coarse Search', 'Full Grid Search', or 'Dynamic Search'
         max_combinations: Optional[int] = 10000,  # Max combinations for Coarse/Dynamic search
+        all_candidates_path: Optional[Path] = None,  # If set, save (params + component scores) CSV for weight optimization
+        max_rmse_filter: float = 0.002,  # Reject candidates with RMSE > this in Stage 1 (relax when saving candidates for weight opt)
     ) -> List[PyElliResult]:
         """
         Run grid search with IMPROVED scoring based on reverse engineering analysis.
@@ -2033,7 +2042,9 @@ class PyElliGridSearch:
         elif search_strategy == 'Dynamic Search':
             return self._run_dynamic_search(
                 wavelengths, measured, lipid_range, aqueous_range, roughness_range,
-                top_k, enable_roughness, min_correlation_filter, max_combinations
+                top_k, enable_roughness, min_correlation_filter, max_combinations,
+                all_candidates_path=all_candidates_path,
+                max_rmse_filter=max_rmse_filter,
             )
         else:  # Default to Coarse Search
             return self._run_coarse_search(
@@ -2207,12 +2218,9 @@ class PyElliGridSearch:
                 
                 result = future.result()
                 if result is not None:
-                    # CRITICAL: Filter by correlation AND RMSE to reject bad fits
-                    # LTA achieves RMSE ~0.0006, so be very strict
-                    # Reject anything with RMSE > 0.002 (still 3x worse than LTA, but reasonable)
-                    # Also filter by correlation to reject anti-correlated fits
+                    # Coarse search: filter by correlation and RMSE (no candidate-saving path here)
                     if (result.correlation >= min_correlation_filter and 
-                        result.rmse <= 0.002):  # Reject fits with RMSE > 0.002
+                        result.rmse <= 0.002):
                         results.append(result)
                     else:
                         filtered_out += 1
@@ -2225,7 +2233,7 @@ class PyElliGridSearch:
             logger.info(f'   Filtered out: {filtered_out:,} (correlation < {min_correlation_filter} or RMSE > 0.002)')
         
         if len(results) == 0:
-            logger.warning('⚠️ No results passed filters! All candidates had correlation < 0.85 or RMSE > 0.002. Try expanding search ranges or relaxing filters.')
+            logger.warning(f'⚠️ No results passed filters! All candidates had correlation < {min_correlation_filter} or RMSE > 0.002. Try expanding search ranges or relaxing filters.')
             return []
         
         # Sort by score first, then by smallest peak_count_delta, then matched_peaks (score and matched_peaks descending, delta ascending)
@@ -2383,7 +2391,7 @@ class PyElliGridSearch:
                         
                         result = future.result()
                         if result is not None:
-                            # Filter refined results by correlation and RMSE
+                            # Coarse search: filter refined results by correlation and RMSE
                             if (result.correlation >= min_correlation_filter and 
                                 result.rmse <= 0.002):
                                 refined_results.append(result)
@@ -2415,6 +2423,26 @@ class PyElliGridSearch:
                     unique_results.append(r)
                 else:
                     duplicates_removed += 1
+            
+            # Save all candidates (params + component scores) for weight optimization
+            if all_candidates_path is not None and unique_results:
+                all_candidates_path = Path(all_candidates_path)
+                all_candidates_path.parent.mkdir(parents=True, exist_ok=True)
+                df = pd.DataFrame([
+                    {
+                        "lipid_nm": r.lipid_nm,
+                        "aqueous_nm": r.aqueous_nm,
+                        "roughness_angstrom": r.mucus_nm,
+                        "rmse_score": r.rmse_score,
+                        "amplitude_score": r.amplitude_score,
+                        "correlation_score": r.correlation_score,
+                        "peak_delta_score": r.peak_delta_score,
+                        "peak_count_score": r.peak_count_score,
+                    }
+                    for r in unique_results
+                ])
+                df.to_csv(all_candidates_path, index=False)
+                logger.info(f'   Saved {len(unique_results)} candidates to {all_candidates_path}')
             
             total_elapsed = time_module.time() - search_start_time
             logger.info('')
@@ -2608,6 +2636,8 @@ class PyElliGridSearch:
         enable_roughness: bool,
         min_correlation_filter: float,
         max_combinations: Optional[int] = 5000,
+        all_candidates_path: Optional[Path] = None,
+        max_rmse_filter: float = 0.002,
     ) -> List[PyElliResult]:
         """
         Dynamic search: Adaptive step sizes that focus more computation on promising regions.
@@ -2806,20 +2836,25 @@ class PyElliGridSearch:
         logger.info(f'🚀 Starting parallel evaluation with {os.cpu_count() or 4} workers...')
         
         # Evaluate coarse grid (now uses intelligently sampled dimensions)
+        # When saving candidates for weight optimization, do not filter (keep all non-None)
+        saving_candidates = all_candidates_path is not None
+        if saving_candidates:
+            logger.info(f'💾 CANDIDATE SAVE MODE: all_candidates_path={all_candidates_path} (no correlation/RMSE filter)')
         coarse_results = self._evaluate_parameter_grid(
             wavelengths, measured, lipid_values_coarse, aqueous_values_coarse, roughness_values_coarse,
             top_k=20,  # Get more candidates for dynamic refinement
             enable_roughness=enable_roughness,
-            min_correlation_filter=min_correlation_filter
+            min_correlation_filter=min_correlation_filter,
+            filter_results=(all_candidates_path is None),
         )
         # Track actual Stage 1 usage (equals coarse_total after sampling)
         stage1_actual_used = coarse_total
         
         stage1_elapsed = time_module.time() - stage1_start
         logger.info(f'✅ Stage 1 completed in {stage1_elapsed:.1f}s')
-        logger.info(f'   Found {len(coarse_results)} candidates passing filters')
+        logger.info(f'   Found {len(coarse_results)} candidates passing filters' + (' (kept all, no filter)' if saving_candidates else ''))
         
-        if len(coarse_results) == 0:
+        if len(coarse_results) == 0 and all_candidates_path is None:
             logger.warning('⚠️ No promising candidates found in coarse search')
             return []
         
@@ -3016,8 +3051,10 @@ class PyElliGridSearch:
                 
                 result = future.result()
                 if result is not None:
-                    if (result.correlation >= min_correlation_filter and 
-                        result.rmse <= 0.002):
+                    if all_candidates_path is not None:
+                        dynamic_results.append(result)
+                    elif (result.correlation >= min_correlation_filter and 
+                          result.rmse <= max_rmse_filter):
                         dynamic_results.append(result)
                     else:
                         filtered_out += 1
@@ -3025,8 +3062,9 @@ class PyElliGridSearch:
         stage2_elapsed = time_module.time() - stage2_start
         logger.info(f'✅ Stage 2 completed in {stage2_elapsed:.1f}s')
         logger.info(f'   Evaluated: {completed_count:,} combinations')
-        logger.info(f'   Passed filters: {len(dynamic_results):,}')
-        logger.info(f'   Filtered out: {filtered_out:,} (correlation < {min_correlation_filter} or RMSE > 0.002)')
+        logger.info(f'   Passed filters: {len(dynamic_results):,}' + (' (kept all, no filter)' if all_candidates_path is not None else ''))
+        if filtered_out > 0 and all_candidates_path is None:
+            logger.info(f'   Filtered out: {filtered_out:,} (correlation < {min_correlation_filter} or RMSE > {max_rmse_filter})')
         
         # Sort by score first, then peak_count_delta, then matched_peaks (for candidate identification)
         # Note: min_matched_peaks=0 for intermediate sorting (filtering happens later)
@@ -3064,6 +3102,29 @@ class PyElliGridSearch:
         logger.info(f'   - Stage 2 candidates: {len(dynamic_results)}')
         logger.info(f'   - Duplicates removed: {duplicates_removed}')
         logger.info(f'   - Unique results: {len(unique_results)}')
+        # Save all candidates (params + component scores) for weight optimization
+        if all_candidates_path is not None:
+            if unique_results:
+                out_path = Path(all_candidates_path)
+                out_path.parent.mkdir(parents=True, exist_ok=True)
+                logger.info(f'💾 Writing candidate CSV: {out_path} ({len(unique_results)} rows)')
+                df = pd.DataFrame([
+                    {
+                        "lipid_nm": r.lipid_nm,
+                        "aqueous_nm": r.aqueous_nm,
+                        "roughness_angstrom": r.mucus_nm,
+                        "rmse_score": r.rmse_score,
+                        "amplitude_score": r.amplitude_score,
+                        "correlation_score": r.correlation_score,
+                        "peak_delta_score": r.peak_delta_score,
+                        "peak_count_score": r.peak_count_score,
+                    }
+                    for r in unique_results
+                ])
+                df.to_csv(out_path, index=False)
+                logger.info(f'   ✅ Wrote candidate CSV: {out_path} ({len(unique_results)} rows)')
+            else:
+                logger.warning(f'💾 all_candidates_path was set but unique_results is empty — no CSV written to {all_candidates_path}')
         # Get measured peaks count for minimum matching requirement
         wl_mask = (wavelengths >= 600) & (wavelengths <= 1120)
         wl_focus = wavelengths[wl_mask] if wl_mask.any() else wavelengths
@@ -3221,9 +3282,11 @@ class PyElliGridSearch:
         top_k: int,
         enable_roughness: bool,
         min_correlation_filter: float,
+        filter_results: bool = True,
     ) -> List[PyElliResult]:
         """
         Helper method to evaluate a parameter grid. Used by all search strategies.
+        When filter_results is False (e.g. when saving all candidates for weight optimization), keep every non-None result.
         """
         results: List[PyElliResult] = []
         total = len(lipid_values) * len(aqueous_values) * len(roughness_values)
@@ -3283,13 +3346,15 @@ class PyElliGridSearch:
                 
                 result = future.result()
                 if result is not None:
-                    if (result.correlation >= min_correlation_filter and 
-                        result.rmse <= 0.002):
+                    if not filter_results:
+                        results.append(result)
+                    elif (result.correlation >= min_correlation_filter and 
+                          result.rmse <= 0.002):
                         results.append(result)
                     else:
                         filtered_out += 1
         
-        if filtered_out > 0:
+        if filtered_out > 0 and filter_results:
             logger.info(f'📊 Filtered out {filtered_out} results (correlation < {min_correlation_filter} or RMSE > 0.002)')
         
         if len(results) == 0:

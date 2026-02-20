@@ -30,14 +30,18 @@ ENV PATH="/opt/venv/bin:$PATH"
 WORKDIR /app
 
 RUN mkdir -p /app/data/Materials \
-    /app/exploration/sample_data \
+    /app/exploration/sample_data/good_fit \
+    /app/exploration/sample_data/bad_fit \
     /app/exploration/new_spectra \
     /app/exploration/spectra_from_shlomo \
-    /app/exploration/more_good_spectras \
-    /app/exploration/measurements
+    /app/exploration/more_good_spectras/Corrected_Spectra \
+    /app/exploration/more_good_spectras/BestFit \
+    /app/exploration/measurements \
+    /app/exploration/full_test_cycles
 
 COPY .streamlit/ /app/.streamlit/
 COPY src/ /app/src/
+COPY data/ /app/data/
 COPY exploration/ /app/exploration/
 
 ENV PYTHONPATH=/app

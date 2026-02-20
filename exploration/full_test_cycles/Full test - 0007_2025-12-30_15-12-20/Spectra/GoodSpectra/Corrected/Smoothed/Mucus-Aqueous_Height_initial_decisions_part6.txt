@@ -1,0 +1,100 @@
+﻿# ============================================
+# Initial Grouping Decisions - PART 6
+# Run: Smoothed
+# DateTime: 2026-01-13 16:35:12
+# SegmentId: 6
+# BlinkTimes: [1.201s, 1.301s, 7.502s, 7.602s, 9.202s, 9.302s, 13.204s, 19.605s, 19.705s, 25.706s, 31.307s, 31.408s, 31.508s, 36.109s]
+# Thresholds:
+#   initial_dt <= 1.3s (1300ms)
+#   initial_dn <= 100.0nm
+#   dead_zone = +/-0.00s (0ms)
+# ============================================
+
+Point | Time(s) | Thickness(nm) | Left Neighbor | Dt(ms) | Dnm | Decision | Reason | Right Neighbor | Dt(ms) | Dnm | Decision | Reason | Group | Size
+------|---------|---------------|---------------|--------|-----|----------|--------|----------------|--------|-----|----------|--------|-------|-----
+  225 |  31.568 |          -1.0 |             - |      - |   - |     SKIP |    invalid_thickness |              - |      - |   - |     SKIP |    invalid_thickness |     - |    -
+  226 |  31.641 |        2246.0 |           225 |   73.0 | 2247.0 |   REJECT |    invalid_thickness |            227 |   39.0 | 40.5 |   ATTACH |    within_thresholds |     1 |   77
+  227 |  31.680 |        2205.5 |           226 |   39.0 | 40.5 |   ATTACH |    within_thresholds |            228 |   71.0 | 25.9 |   ATTACH |    within_thresholds |     1 |   77
+  228 |  31.751 |        2179.6 |           227 |   71.0 | 25.9 |   ATTACH |    within_thresholds |            229 |   42.0 | 19.6 |   ATTACH |    within_thresholds |     1 |   77
+  229 |  31.793 |        2160.0 |           228 |   42.0 | 19.6 |   ATTACH |    within_thresholds |            230 |   59.0 | 23.3 |   ATTACH |    within_thresholds |     1 |   77
+  230 |  31.852 |        2136.6 |           229 |   59.0 | 23.3 |   ATTACH |    within_thresholds |            231 |   57.0 | 24.9 |   ATTACH |    within_thresholds |     1 |   77
+  231 |  31.909 |        2111.7 |           230 |   57.0 | 24.9 |   ATTACH |    within_thresholds |            232 |   67.0 | 13.1 |   ATTACH |    within_thresholds |     1 |   77
+  232 |  31.976 |        2098.6 |           231 |   67.0 | 13.1 |   ATTACH |    within_thresholds |            233 |   46.0 | 12.9 |   ATTACH |    within_thresholds |     1 |   77
+  233 |  32.022 |        2085.7 |           232 |   46.0 | 12.9 |   ATTACH |    within_thresholds |            234 |   53.0 | 24.2 |   ATTACH |    within_thresholds |     1 |   77
+  234 |  32.075 |        2061.4 |           233 |   53.0 | 24.2 |   ATTACH |    within_thresholds |            235 |   65.0 | 17.9 |   ATTACH |    within_thresholds |     1 |   77
+  235 |  32.140 |        2043.6 |           234 |   65.0 | 17.9 |   ATTACH |    within_thresholds |            236 |   44.0 | 3.8 |   ATTACH |    within_thresholds |     1 |   77
+  236 |  32.184 |        2039.8 |           235 |   44.0 | 3.8 |   ATTACH |    within_thresholds |            237 |   61.0 | 3.6 |   ATTACH |    within_thresholds |     1 |   77
+  237 |  32.245 |        2036.2 |           236 |   61.0 | 3.6 |   ATTACH |    within_thresholds |            238 |   55.0 | 12.3 |   ATTACH |    within_thresholds |     1 |   77
+  238 |  32.300 |        2023.9 |           237 |   55.0 | 12.3 |   ATTACH |    within_thresholds |            239 |   81.0 | 19.9 |   ATTACH |    within_thresholds |     1 |   77
+  239 |  32.381 |        2003.9 |           238 |   81.0 | 19.9 |   ATTACH |    within_thresholds |            240 |   58.0 | 14.7 |   ATTACH |    within_thresholds |     1 |   77
+  240 |  32.439 |        1989.3 |           239 |   58.0 | 14.7 |   ATTACH |    within_thresholds |            241 |   59.0 | 15.8 |   ATTACH |    within_thresholds |     1 |   77
+  241 |  32.498 |        1973.5 |           240 |   59.0 | 15.8 |   ATTACH |    within_thresholds |            242 |   51.0 | 15.1 |   ATTACH |    within_thresholds |     1 |   77
+  242 |  32.549 |        1958.3 |           241 |   51.0 | 15.1 |   ATTACH |    within_thresholds |            243 |   59.0 | 14.3 |   ATTACH |    within_thresholds |     1 |   77
+  243 |  32.608 |        1944.0 |           242 |   59.0 | 14.3 |   ATTACH |    within_thresholds |            244 |   54.0 | 8.4 |   ATTACH |    within_thresholds |     1 |   77
+  244 |  32.662 |        1935.6 |           243 |   54.0 | 8.4 |   ATTACH |    within_thresholds |            245 |   87.0 | 19.2 |   ATTACH |    within_thresholds |     1 |   77
+  245 |  32.749 |        1916.5 |           244 |   87.0 | 19.2 |   ATTACH |    within_thresholds |            246 |   25.0 | 9.0 |   ATTACH |    within_thresholds |     1 |   77
+  246 |  32.774 |        1907.5 |           245 |   25.0 | 9.0 |   ATTACH |    within_thresholds |            247 |   71.0 | 18.1 |   ATTACH |    within_thresholds |     1 |   77
+  247 |  32.845 |        1889.3 |           246 |   71.0 | 18.1 |   ATTACH |    within_thresholds |            248 |   40.0 | 5.1 |   ATTACH |    within_thresholds |     1 |   77
+  248 |  32.885 |        1884.3 |           247 |   40.0 | 5.1 |   ATTACH |    within_thresholds |            249 |   61.0 | 18.1 |   ATTACH |    within_thresholds |     1 |   77
+  249 |  32.946 |        1866.1 |           248 |   61.0 | 18.1 |   ATTACH |    within_thresholds |            250 |   51.0 | 15.0 |   ATTACH |    within_thresholds |     1 |   77
+  250 |  32.997 |        1851.1 |           249 |   51.0 | 15.0 |   ATTACH |    within_thresholds |            251 |   60.0 | 12.9 |   ATTACH |    within_thresholds |     1 |   77
+  251 |  33.057 |        1838.2 |           250 |   60.0 | 12.9 |   ATTACH |    within_thresholds |            252 |   73.0 | 8.0 |   ATTACH |    within_thresholds |     1 |   77
+  252 |  33.130 |        1830.2 |           251 |   73.0 | 8.0 |   ATTACH |    within_thresholds |            253 |   36.0 | 6.9 |   ATTACH |    within_thresholds |     1 |   77
+  253 |  33.166 |        1823.3 |           252 |   36.0 | 6.9 |   ATTACH |    within_thresholds |            254 |   75.0 | 11.2 |   ATTACH |    within_thresholds |     1 |   77
+  254 |  33.241 |        1812.2 |           253 |   75.0 | 11.2 |   ATTACH |    within_thresholds |            255 |   37.0 | 10.8 |   ATTACH |    within_thresholds |     1 |   77
+  255 |  33.278 |        1801.3 |           254 |   37.0 | 10.8 |   ATTACH |    within_thresholds |            256 |   81.0 | 8.1 |   ATTACH |    within_thresholds |     1 |   77
+  256 |  33.359 |        1793.2 |           255 |   81.0 | 8.1 |   ATTACH |    within_thresholds |            257 |   30.0 | 6.1 |   ATTACH |    within_thresholds |     1 |   77
+  257 |  33.389 |        1787.1 |           256 |   30.0 | 6.1 |   ATTACH |    within_thresholds |            258 |   65.0 | 12.1 |   ATTACH |    within_thresholds |     1 |   77
+  258 |  33.454 |        1775.0 |           257 |   65.0 | 12.1 |   ATTACH |    within_thresholds |            259 |   51.0 | 7.5 |   ATTACH |    within_thresholds |     1 |   77
+  259 |  33.505 |        1767.5 |           258 |   51.0 | 7.5 |   ATTACH |    within_thresholds |            260 |   52.0 | 2.7 |   ATTACH |    within_thresholds |     1 |   77
+  260 |  33.557 |        1764.9 |           259 |   52.0 | 2.7 |   ATTACH |    within_thresholds |            261 |   83.0 | 6.7 |   ATTACH |    within_thresholds |     1 |   77
+  261 |  33.640 |        1771.6 |           260 |   83.0 | 6.7 |   ATTACH |    within_thresholds |            262 |   34.0 | 3.7 |   ATTACH |    within_thresholds |     1 |   77
+  262 |  33.674 |        1775.3 |           261 |   34.0 | 3.7 |   ATTACH |    within_thresholds |            263 |   64.0 | 21.3 |   ATTACH |    within_thresholds |     1 |   77
+  263 |  33.738 |        1754.0 |           262 |   64.0 | 21.3 |   ATTACH |    within_thresholds |            264 |   45.0 | 27.2 |   ATTACH |    within_thresholds |     1 |   77
+  264 |  33.783 |        1726.8 |           263 |   45.0 | 27.2 |   ATTACH |    within_thresholds |            265 |   52.0 | 10.7 |   ATTACH |    within_thresholds |     1 |   77
+  265 |  33.835 |        1716.1 |           264 |   52.0 | 10.7 |   ATTACH |    within_thresholds |            266 |   61.0 | 0.4 |   ATTACH |    within_thresholds |     1 |   77
+  266 |  33.896 |        1716.5 |           265 |   61.0 | 0.4 |   ATTACH |    within_thresholds |            267 |   51.0 | 1.5 |   ATTACH |    within_thresholds |     1 |   77
+  267 |  33.947 |        1718.1 |           266 |   51.0 | 1.5 |   ATTACH |    within_thresholds |            268 |   60.0 | 11.9 |   ATTACH |    within_thresholds |     1 |   77
+  268 |  34.007 |        1706.2 |           267 |   60.0 | 11.9 |   ATTACH |    within_thresholds |            269 |   53.0 | 14.8 |   ATTACH |    within_thresholds |     1 |   77
+  269 |  34.060 |        1691.3 |           268 |   53.0 | 14.8 |   ATTACH |    within_thresholds |            270 |   57.0 | 8.6 |   ATTACH |    within_thresholds |     1 |   77
+  270 |  34.117 |        1682.7 |           269 |   57.0 | 8.6 |   ATTACH |    within_thresholds |            271 |   58.0 | 16.1 |   ATTACH |    within_thresholds |     1 |   77
+  271 |  34.175 |        1698.8 |           270 |   58.0 | 16.1 |   ATTACH |    within_thresholds |            272 |   82.0 | 5.8 |   ATTACH |    within_thresholds |     1 |   77
+  272 |  34.257 |        1693.0 |           271 |   82.0 | 5.8 |   ATTACH |    within_thresholds |            273 |   68.0 | 16.9 |   ATTACH |    within_thresholds |     1 |   77
+  273 |  34.325 |        1676.0 |           272 |   68.0 | 16.9 |   ATTACH |    within_thresholds |            274 |   45.0 | 7.3 |   ATTACH |    within_thresholds |     1 |   77
+  274 |  34.370 |        1668.7 |           273 |   45.0 | 7.3 |   ATTACH |    within_thresholds |            275 |   62.0 | 8.2 |   ATTACH |    within_thresholds |     1 |   77
+  275 |  34.432 |        1660.5 |           274 |   62.0 | 8.2 |   ATTACH |    within_thresholds |            276 |   49.0 | 34.8 |   ATTACH |    within_thresholds |     1 |   77
+  276 |  34.481 |        1625.7 |           275 |   49.0 | 34.8 |   ATTACH |    within_thresholds |            277 |   69.0 | 3.2 |   ATTACH |    within_thresholds |     1 |   77
+  277 |  34.550 |        1622.5 |           276 |   69.0 | 3.2 |   ATTACH |    within_thresholds |            278 |   44.0 | 17.3 |   ATTACH |    within_thresholds |     1 |   77
+  278 |  34.594 |        1605.1 |           277 |   44.0 | 17.3 |   ATTACH |    within_thresholds |            279 |   58.0 | 10.4 |   ATTACH |    within_thresholds |     1 |   77
+  279 |  34.652 |        1594.8 |           278 |   58.0 | 10.4 |   ATTACH |    within_thresholds |            280 |   55.0 | 24.2 |   ATTACH |    within_thresholds |     1 |   77
+  280 |  34.707 |        1570.6 |           279 |   55.0 | 24.2 |   ATTACH |    within_thresholds |            281 |   59.0 | 24.0 |   ATTACH |    within_thresholds |     1 |   77
+  281 |  34.766 |        1546.6 |           280 |   59.0 | 24.0 |   ATTACH |    within_thresholds |            282 |   77.0 | 8.1 |   ATTACH |    within_thresholds |     1 |   77
+  282 |  34.843 |        1538.5 |           281 |   77.0 | 8.1 |   ATTACH |    within_thresholds |            283 |   60.0 | 8.5 |   ATTACH |    within_thresholds |     1 |   77
+  283 |  34.903 |        1530.0 |           282 |   60.0 | 8.5 |   ATTACH |    within_thresholds |            284 |   63.0 | 10.8 |   ATTACH |    within_thresholds |     1 |   77
+  284 |  34.966 |        1519.2 |           283 |   63.0 | 10.8 |   ATTACH |    within_thresholds |            285 |   45.0 | 2.6 |   ATTACH |    within_thresholds |     1 |   77
+  285 |  35.011 |        1521.8 |           284 |   45.0 | 2.6 |   ATTACH |    within_thresholds |            286 |   61.0 | 7.2 |   ATTACH |    within_thresholds |     1 |   77
+  286 |  35.072 |        1514.6 |           285 |   61.0 | 7.2 |   ATTACH |    within_thresholds |            287 |   62.0 | 2.7 |   ATTACH |    within_thresholds |     1 |   77
+  287 |  35.134 |        1517.3 |           286 |   62.0 | 2.7 |   ATTACH |    within_thresholds |            288 |   51.0 | 7.9 |   ATTACH |    within_thresholds |     1 |   77
+  288 |  35.185 |        1509.4 |           287 |   51.0 | 7.9 |   ATTACH |    within_thresholds |            289 |   55.0 | 1.3 |   ATTACH |    within_thresholds |     1 |   77
+  289 |  35.240 |        1510.8 |           288 |   55.0 | 1.3 |   ATTACH |    within_thresholds |            290 |   53.0 | 14.6 |   ATTACH |    within_thresholds |     1 |   77
+  290 |  35.293 |        1496.1 |           289 |   53.0 | 14.6 |   ATTACH |    within_thresholds |            291 |   56.0 | 16.3 |   ATTACH |    within_thresholds |     1 |   77
+  291 |  35.349 |        1479.9 |           290 |   56.0 | 16.3 |   ATTACH |    within_thresholds |            292 |   55.0 | 2.6 |   ATTACH |    within_thresholds |     1 |   77
+  292 |  35.404 |        1477.2 |           291 |   55.0 | 2.6 |   ATTACH |    within_thresholds |            293 |   61.0 | 2.4 |   ATTACH |    within_thresholds |     1 |   77
+  293 |  35.465 |        1474.9 |           292 |   61.0 | 2.4 |   ATTACH |    within_thresholds |            294 |   75.0 | 5.9 |   ATTACH |    within_thresholds |     1 |   77
+  294 |  35.540 |        1469.0 |           293 |   75.0 | 5.9 |   ATTACH |    within_thresholds |            295 |   31.0 | 1.1 |   ATTACH |    within_thresholds |     1 |   77
+  295 |  35.571 |        1467.8 |           294 |   31.0 | 1.1 |   ATTACH |    within_thresholds |            296 |   76.0 | 2.6 |   ATTACH |    within_thresholds |     1 |   77
+  296 |  35.647 |        1465.3 |           295 |   76.0 | 2.6 |   ATTACH |    within_thresholds |            297 |   37.0 | 2.5 |   ATTACH |    within_thresholds |     1 |   77
+  297 |  35.684 |        1467.8 |           296 |   37.0 | 2.5 |   ATTACH |    within_thresholds |            298 |   67.0 | 4.4 |   ATTACH |    within_thresholds |     1 |   77
+  298 |  35.751 |        1472.1 |           297 |   67.0 | 4.4 |   ATTACH |    within_thresholds |            299 |   52.0 | 5.7 |   ATTACH |    within_thresholds |     1 |   77
+  299 |  35.803 |        1466.4 |           298 |   52.0 | 5.7 |   ATTACH |    within_thresholds |            300 |   51.0 | 0.7 |   ATTACH |    within_thresholds |     1 |   77
+  300 |  35.854 |        1467.0 |           299 |   51.0 | 0.7 |   ATTACH |    within_thresholds |            301 |   59.0 | 5.4 |   ATTACH |    within_thresholds |     1 |   77
+  301 |  35.913 |        1461.6 |           300 |   59.0 | 5.4 |   ATTACH |    within_thresholds |            302 |   52.0 | 1.3 |   ATTACH |    within_thresholds |     1 |   77
+  302 |  35.965 |        1463.0 |           301 |   52.0 | 1.3 |   ATTACH |    within_thresholds |              - |      - |   - |        - |                    - |     1 |   77
+
+# ============================================
+# Rejection Summary:
+#   dead_zone = 0
+#   cross_part_boundary = 0
+#   threshold_dt = 0
+#   threshold_dn = 0
+# ============================================

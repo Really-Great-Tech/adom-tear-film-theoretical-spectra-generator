@@ -8,8 +8,10 @@ services:
       - "8000:8000"
     volumes:
       - ./data/Materials:/app/data/Materials:ro
+      - ./exploration/full_test_cycles:/app/exploration/full_test_cycles:ro
     environment:
       - BACKEND_MATERIALS_PATH=/app/data/Materials
+      - BACKEND_FULL_TEST_CYCLES_DIR=/app/exploration/full_test_cycles
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
       interval: 30s
@@ -30,6 +32,7 @@ services:
       - ./exploration/sample_data:/app/exploration/sample_data
       - ./exploration/new_spectra:/app/exploration/new_spectra
       - ./exploration/more_good_spectras:/app/exploration/more_good_spectras
+      - ./exploration/full_test_cycles:/app/exploration/full_test_cycles
     depends_on:
       backend:
         condition: service_healthy

@@ -110,3 +110,19 @@ class AlignSpectraRequest(BaseModel):
 class AlignSpectraResponse(BaseModel):
     """Response for POST /align-spectra."""
     aligned: List[float] = Field(..., description="Aligned theoretical spectrum")
+
+
+# -----------------------------------------------------------------------------
+# Last-two-cycles seed+tune (full test cycle analysis)
+# -----------------------------------------------------------------------------
+
+class LastTwoCyclesRequest(BaseModel):
+    """Request body for POST /last-two-cycles-seed-tune."""
+    run_folder_name: str = Field(..., description="Name of run folder under full_test_cycles (e.g. 'Full test - 0007_2025-12-30_15-12-20')")
+
+
+class LastTwoCyclesResponse(BaseModel):
+    """Response for POST /last-two-cycles-seed-tune."""
+    summary: dict = Field(..., description="total_spectra, total_under_10, elapsed_*_sec, etc.")
+    seed_result: Optional[dict] = Field(None, description="Seed fit L, A, R and deviation_pct")
+    results: List[dict] = Field(default_factory=list, description="Per-spectrum tune results")

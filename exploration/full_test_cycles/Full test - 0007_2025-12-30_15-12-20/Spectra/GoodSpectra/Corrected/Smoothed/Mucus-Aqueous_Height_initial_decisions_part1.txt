@@ -1,0 +1,42 @@
+﻿# ============================================
+# Initial Grouping Decisions - PART 1
+# Run: Smoothed
+# DateTime: 2026-01-13 16:35:12
+# SegmentId: 1
+# BlinkTimes: [1.201s, 1.301s, 7.502s, 7.602s, 9.202s, 9.302s, 13.204s, 19.605s, 19.705s, 25.706s, 31.307s, 31.408s, 31.508s, 36.109s]
+# Thresholds:
+#   initial_dt <= 1.3s (1300ms)
+#   initial_dn <= 100.0nm
+#   dead_zone = +/-0.00s (0ms)
+# ============================================
+
+Point | Time(s) | Thickness(nm) | Left Neighbor | Dt(ms) | Dnm | Decision | Reason | Right Neighbor | Dt(ms) | Dnm | Decision | Reason | Group | Size
+------|---------|---------------|---------------|--------|-----|----------|--------|----------------|--------|-----|----------|--------|-------|-----
+    0 |   0.012 |        2127.3 |             - |      - |   - |        - |                    - |              1 |   56.0 | 55.1 |   ATTACH |    within_thresholds |     1 |   20
+    1 |   0.068 |        2182.4 |             0 |   56.0 | 55.1 |   ATTACH |    within_thresholds |              2 |   59.0 | 25.1 |   ATTACH |    within_thresholds |     1 |   20
+    2 |   0.127 |        2157.3 |             1 |   59.0 | 25.1 |   ATTACH |    within_thresholds |              3 |   53.0 | 32.5 |   ATTACH |    within_thresholds |     1 |   20
+    3 |   0.180 |        2124.8 |             2 |   53.0 | 32.5 |   ATTACH |    within_thresholds |              4 |   57.0 | 5.1 |   ATTACH |    within_thresholds |     1 |   20
+    4 |   0.237 |        2119.7 |             3 |   57.0 | 5.1 |   ATTACH |    within_thresholds |              5 |   58.0 | 11.9 |   ATTACH |    within_thresholds |     1 |   20
+    5 |   0.295 |        2107.8 |             4 |   58.0 | 11.9 |   ATTACH |    within_thresholds |              6 |   61.0 | 9.0 |   ATTACH |    within_thresholds |     1 |   20
+    6 |   0.356 |        2098.9 |             5 |   61.0 | 9.0 |   ATTACH |    within_thresholds |              7 |   49.0 | 6.9 |   ATTACH |    within_thresholds |     1 |   20
+    7 |   0.405 |        2092.0 |             6 |   49.0 | 6.9 |   ATTACH |    within_thresholds |              8 |   55.0 | 12.8 |   ATTACH |    within_thresholds |     1 |   20
+    8 |   0.460 |        2079.2 |             7 |   55.0 | 12.8 |   ATTACH |    within_thresholds |              9 |   54.0 | 0.2 |   ATTACH |    within_thresholds |     1 |   20
+    9 |   0.514 |        2079.4 |             8 |   54.0 | 0.2 |   ATTACH |    within_thresholds |             10 |   57.0 | 5.4 |   ATTACH |    within_thresholds |     1 |   20
+   10 |   0.571 |        2084.8 |             9 |   57.0 | 5.4 |   ATTACH |    within_thresholds |             11 |   61.0 | 4.4 |   ATTACH |    within_thresholds |     1 |   20
+   11 |   0.632 |        2080.4 |            10 |   61.0 | 4.4 |   ATTACH |    within_thresholds |             12 |   72.0 | 16.1 |   ATTACH |    within_thresholds |     1 |   20
+   12 |   0.704 |        2064.3 |            11 |   72.0 | 16.1 |   ATTACH |    within_thresholds |             13 |   43.0 | 6.6 |   ATTACH |    within_thresholds |     1 |   20
+   13 |   0.747 |        2057.7 |            12 |   43.0 | 6.6 |   ATTACH |    within_thresholds |             14 |   49.0 | 3.4 |   ATTACH |    within_thresholds |     1 |   20
+   14 |   0.796 |        2061.1 |            13 |   49.0 | 3.4 |   ATTACH |    within_thresholds |             15 |   58.0 | 1.9 |   ATTACH |    within_thresholds |     1 |   20
+   15 |   0.854 |        2059.1 |            14 |   58.0 | 1.9 |   ATTACH |    within_thresholds |             16 |   53.0 | 4.9 |   ATTACH |    within_thresholds |     1 |   20
+   16 |   0.907 |        2054.3 |            15 |   53.0 | 4.9 |   ATTACH |    within_thresholds |             17 |   53.0 | 22.9 |   ATTACH |    within_thresholds |     1 |   20
+   17 |   0.960 |        2031.4 |            16 |   53.0 | 22.9 |   ATTACH |    within_thresholds |             18 |   79.0 | 4.0 |   ATTACH |    within_thresholds |     1 |   20
+   18 |   1.039 |        2035.4 |            17 |   79.0 | 4.0 |   ATTACH |    within_thresholds |             19 |   36.0 | 20.3 |   ATTACH |    within_thresholds |     1 |   20
+   19 |   1.075 |        2055.7 |            18 |   36.0 | 20.3 |   ATTACH |    within_thresholds |              - |      - |   - |        - |                    - |     1 |   20
+
+# ============================================
+# Rejection Summary:
+#   dead_zone = 0
+#   cross_part_boundary = 0
+#   threshold_dt = 0
+#   threshold_dn = 0
+# ============================================

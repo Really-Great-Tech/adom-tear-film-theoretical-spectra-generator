@@ -1,0 +1,19 @@
+﻿<?xml version="1.0" encoding="utf-8" standalone="no"?>
+<recipe>
+  <configuration_file_name val="Configuration1.xml" />
+  <general_excel_file_name val="5X_short_Dror.xlsx" />
+  <color_calibration_file_name val="ColorCalibration_eye_test.bin" />
+  <!-- Interpretation type. Can be one of the following: 'Regression', 'TSpectra_Library'. -->
+  <interpretation_type val="Regression" />
+  <!-- Interpretation action. Can be one of the following: 'Interpretation' (for 'Regression'); 'Find_Best_Node_and_Search_Around', 'Find_Best_Node_and_Interpolate' (for 'TSpectra_Library'). -->
+  <interpretation_action val="Interpretation" />
+  <ts_library_file_name val="stack1_1T_2T_3R.bin" />
+  <ts_library_weights_file_name val="Weights1.xml" />
+  <!-- Peaks detection type. Can be one of the following: 'Normal', 'Small', 'None'. -->
+  <PeaksDetectionType val="Normal" />
+  <!-- Maximal half-range from nominal aqua in continuous group interpretation. Must be a positive integer number. -->
+  <max_offset_from_nominal_aqua val="240" /> 
+  <!-- Boxcar width for normalized spectra smoothing, in nanometers. 0 - Not used. -->
+  <!-- Works on corrected spectra only, with overwrite. -->
+  <BoxcarWidthForSpectraSmoothing val="0" />  
+</recipe>
